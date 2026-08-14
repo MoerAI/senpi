@@ -10,6 +10,9 @@
 
 ### Added
 
+- `/btw` now keeps branch-local side-question history. Bare `/btw` opens a keyboard-driven viewer, and follow-up side
+  questions can use the newest ten earlier side answers without adding them to the main model conversation.
+
 ### Changed
 
 ### Removed
@@ -74,9 +77,6 @@
 ### Breaking Changes
 
 ### Added
-
-- `/btw` now keeps branch-local side-question history. Bare `/btw` opens a keyboard-driven viewer, and follow-up side
-  questions can use the newest ten earlier side answers without adding them to the main model conversation.
 
 ### Changed
 
