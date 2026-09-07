@@ -2,16 +2,23 @@ import * as nodePath from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { findRuleCandidates } from "../../../src/core/extensions/builtin/rules/rules/finder.ts";
 
-const { projectRoot, crossDriveTarget, crossDriveAgentsMd, caseVariantTarget, aboveRootAgentsMd, homeDir, existingFiles } =
-	vi.hoisted(() => ({
-		projectRoot: "C:\\workspace\\proj",
-		crossDriveTarget: "D:\\other\\file.ts",
-		crossDriveAgentsMd: "D:\\other\\AGENTS.md",
-		caseVariantTarget: "c:\\workspace\\proj\\src\\file.ts",
-		aboveRootAgentsMd: "c:\\workspace\\AGENTS.md",
-		homeDir: "C:\\Users\\test",
-		existingFiles: new Set<string>(),
-	}));
+const {
+	projectRoot,
+	crossDriveTarget,
+	crossDriveAgentsMd,
+	caseVariantTarget,
+	aboveRootAgentsMd,
+	homeDir,
+	existingFiles,
+} = vi.hoisted(() => ({
+	projectRoot: "C:\\workspace\\proj",
+	crossDriveTarget: "D:\\other\\file.ts",
+	crossDriveAgentsMd: "D:\\other\\AGENTS.md",
+	caseVariantTarget: "c:\\workspace\\proj\\src\\file.ts",
+	aboveRootAgentsMd: "c:\\workspace\\AGENTS.md",
+	homeDir: "C:\\Users\\test",
+	existingFiles: new Set<string>(),
+}));
 
 vi.mock("node:fs", () => ({
 	existsSync: (path: string) => existingFiles.has(path),
