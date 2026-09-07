@@ -1,4 +1,4 @@
-import { win32 } from "node:path";
+import * as nodePath from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { findRuleCandidates } from "../../../src/core/extensions/builtin/rules/rules/finder.ts";
 
@@ -18,10 +18,11 @@ vi.mock("node:fs", () => ({
 }));
 
 vi.mock("node:path", async (importOriginal) => {
-	const path = await importOriginal<typeof import("node:path")>();
+	const path = (await importOriginal()) as typeof nodePath;
 	return {
 		...path,
 		dirname: path.win32.dirname,
+		isAbsolute: path.win32.isAbsolute,
 		join: path.win32.join,
 		relative: path.win32.relative,
 		resolve: path.win32.resolve,
@@ -31,7 +32,7 @@ vi.mock("node:path", async (importOriginal) => {
 describe("rules finder cross-drive project scope", () => {
 	it("#given a target file on a different drive than the project root #when collecting project rule candidates #then rules outside the project root are not collected", () => {
 		// given
-		expect(win32.relative(projectRoot, "D:\\other")).toBe("D:\\other");
+		expect(nodePath.win32.relative(projectRoot, "D:\\other")).toBe("D:\\other");
 
 		// when
 		const candidates = findRuleCandidates({
