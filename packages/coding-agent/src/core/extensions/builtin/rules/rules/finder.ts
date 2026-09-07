@@ -228,7 +228,9 @@ function getWalkDirectories(projectRoot: string, targetFile: string | null): Wal
 
 	while (true) {
 		walkDirectories.push({ directory: currentDirectory, distance });
-		if (currentDirectory === projectRoot) {
+		// Windows drive letters are case-insensitive, so an exact string compare misses
+		// "c:\proj" against a "C:\proj" root and walks past it; relative() folds the case.
+		if (relative(projectRoot, currentDirectory) === "") {
 			break;
 		}
 
