@@ -9,6 +9,7 @@ import {
 	waitForRawStdoutBackpressure,
 	writeRawStdout,
 } from "../../core/output-guard.ts";
+import type { CliRuntimeConfiguration } from "../../main.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import type { RpcConnectionSink } from "./connection-handler.ts";
 import { parseClientCapabilities } from "./custom-capability.ts";
@@ -21,16 +22,27 @@ import { type RpcBindingFactory, SessionCommandRouter } from "./session-command-
 import { SessionEventWriter } from "./session-event-writer.ts";
 import { RpcSessionRegistry } from "./session-registry.ts";
 import {
+	PUBLIC_SOCKET_IDENTITY_FILE,
+	readSocketIdentityFile,
+	type SocketFileIdentity,
+	shieldSocketDuringClose,
+	statSocketIdentity,
+	unlinkOwnedSocket,
+	waitForSocketIdentityFile,
+} from "./socket-ownership.ts";
+import {
 	authenticateSocket,
 	ensureSocketSecret,
 	resolveSocketTransportAddress,
 	SOCKET_SECRET_FILE_ENV,
 	socketSecretPath,
 } from "./socket-transport.ts";
+import { WorkerSessionRegistry } from "./worker-session-registry.ts";
 
 export interface MultiSessionHostOptions {
 	agentDir: string;
 	createRuntime: CreateAgentSessionRuntimeFactory;
+	workerConfiguration?: CliRuntimeConfiguration;
 	cwd: string;
 	permissionPreset?: string;
 	creationModel?: { provider: string; modelId: string };
@@ -42,16 +54,12 @@ export interface MultiSessionHostOptions {
 
 /** Environment override for the idle-session eviction window, in milliseconds. */
 export const RPC_SESSION_IDLE_EVICTION_MS_ENV = "SENPI_RPC_SESSION_IDLE_EVICTION_MS";
-/** Environment override for the concurrent open-session cap. */
-export const RPC_MAX_SESSIONS_ENV = "SENPI_RPC_MAX_SESSIONS";
 /** Environment override for the empty-host exit window, in milliseconds. */
 export const RPC_HOST_EMPTY_EXIT_MS_ENV = "SENPI_RPC_HOST_EMPTY_EXIT_MS";
 /** Environment override for the graceful close_session teardown window, in milliseconds. */
 export const RPC_CLOSE_GRACE_MS_ENV = "SENPI_RPC_CLOSE_GRACE_MS";
 /** Default idle-eviction window: 30 minutes after a session's last routed command or settled turn. */
 export const DEFAULT_SESSION_IDLE_EVICTION_MS = 30 * 60_000;
-/** Default session cap: an idle session holds a full runtime (~340-510 MB RSS measured). */
-export const DEFAULT_MAX_SESSIONS = 8;
 /** Default empty-host exit: 15 minutes with zero open sessions, matching the supervisor's idle window. */
 export const DEFAULT_HOST_EMPTY_EXIT_MS = 15 * 60_000;
 /** Win32 named-pipe close can leave libuv's server callback pending after handles are destroyed. */
@@ -62,7 +70,6 @@ export interface HostIdleOverrides {
 	now?: () => number;
 	idleEvictionMs?: number;
 	emptyExitMs?: number;
-	maxSessions?: number;
 	closeGraceMs?: number;
 	/** Shutdown hook the empty-exit window invokes; hosts pass their exit path. */
 	onEmptyExit?: () => void;
@@ -70,17 +77,13 @@ export interface HostIdleOverrides {
 	canExitWhenEmpty?: () => boolean;
 }
 
-function parseSessionCap(value: string | undefined): number | undefined {
-	if (value === undefined || !/^\d+$/.test(value.trim())) return undefined;
-	const parsed = Number(value.trim());
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-/** Precedence: explicit overrides beat environment variables beat documented defaults. */
+/**
+ * Resolve the host's idle lifecycle policy.
+ */
 export function resolveHostIdlePolicy(
 	env: Readonly<Record<string, string | undefined>>,
 	overrides: HostIdleOverrides = {},
-): { now: () => number; idleEvictionMs: number; emptyExitMs: number; maxSessions: number } {
+): { now: () => number; idleEvictionMs: number; emptyExitMs: number } {
 	return {
 		now: overrides.now ?? Date.now,
 		idleEvictionMs:
@@ -89,7 +92,6 @@ export function resolveHostIdlePolicy(
 			DEFAULT_SESSION_IDLE_EVICTION_MS,
 		emptyExitMs:
 			overrides.emptyExitMs ?? parseIdleExitMs(env[RPC_HOST_EMPTY_EXIT_MS_ENV]) ?? DEFAULT_HOST_EMPTY_EXIT_MS,
-		maxSessions: overrides.maxSessions ?? parseSessionCap(env[RPC_MAX_SESSIONS_ENV]) ?? DEFAULT_MAX_SESSIONS,
 	};
 }
 
@@ -119,13 +121,18 @@ export function createHostCore(
 ) {
 	const policy = resolveHostIdlePolicy(process.env, idle);
 	const router = new SessionCommandRouter(
-		new RpcSessionRegistry({
-			agentDir: options.agentDir,
-			createRuntime: options.createRuntime,
-			now: policy.now,
-			maxSessions: policy.maxSessions,
-			closeGraceMs: idle.closeGraceMs ?? parseIdleExitMs(process.env[RPC_CLOSE_GRACE_MS_ENV]) ?? 10_000,
-		}),
+		options.workerConfiguration
+			? new WorkerSessionRegistry({
+					configuration: options.workerConfiguration,
+					now: policy.now,
+					closeGraceMs: idle.closeGraceMs ?? parseIdleExitMs(process.env[RPC_CLOSE_GRACE_MS_ENV]) ?? 10_000,
+				})
+			: new RpcSessionRegistry({
+					agentDir: options.agentDir,
+					createRuntime: options.createRuntime,
+					now: policy.now,
+					closeGraceMs: idle.closeGraceMs ?? parseIdleExitMs(process.env[RPC_CLOSE_GRACE_MS_ENV]) ?? 10_000,
+				}),
 		writer,
 		options,
 		options.createBinding,
@@ -179,9 +186,12 @@ async function runStdioHost(options: MultiSessionHostOptions): Promise<never> {
 	};
 	const onEnd = () => void shutdown();
 	process.stdin.on("end", onEnd);
-	const detachReader = attachJsonlLineReader(process.stdin, (line) => void handle(line), {
+	const reportInputFailure = (cause: unknown): void => {
+		process.stderr.write(`senpi rpc stdio request failed: ${errorMessage(cause)}\n`);
+	};
+	const detachReader = attachJsonlLineReader(process.stdin, (line) => void handle(line).catch(reportInputFailure), {
 		maxLineLength: MAX_RPC_LINE_CHARACTERS,
-		onOversizedLine: () => void writer.enqueueControl(parseError(oversizedLineError())),
+		onOversizedLine: () => void writer.enqueueControl(parseError(oversizedLineError())).catch(reportInputFailure),
 	});
 	const detach = () => {
 		detachReader();
@@ -213,6 +223,22 @@ async function runSocketHost(options: MultiSessionHostOptions, socketPath: strin
 		process.platform === "win32"
 			? await ensureSocketSecret(process.env[SOCKET_SECRET_FILE_ENV] ?? socketSecretPath(socketPath))
 			: undefined;
+	const watchdogConfig = readHostWatchdogConfigFromBrandEnv();
+	// Crash-path ownership for the supervisor's PUBLIC socket: the supervisor
+	// records the identity of the entry it bound (inside its private scratch
+	// directory, which no replacement supervisor writes) right after its listen,
+	// and this host removes that path only while the identity still matches. A
+	// blind path removal here would unlink a newer host's freshly published
+	// entry after a takeover - the startup path already refuses to touch a
+	// socket owned by a live server; teardown follows the same rule.
+	const supervisorPublicSocketPath =
+		process.platform === "win32" || socketPath.startsWith("\0") ? undefined : watchdogConfig?.publicSocket;
+	const supervisorPublicOwnerFile =
+		supervisorPublicSocketPath && watchdogConfig?.scratchDir
+			? join(watchdogConfig.scratchDir, PUBLIC_SOCKET_IDENTITY_FILE)
+			: undefined;
+	let boundIdentity: SocketFileIdentity | undefined;
+	let supervisorPublicIdentity: SocketFileIdentity | undefined;
 	const server = createServer((socket) => {
 		const accept = (): void => {
 			const id = `socket-${++nextConnection}`;
@@ -277,12 +303,23 @@ async function runSocketHost(options: MultiSessionHostOptions, socketPath: strin
 				connection.detach();
 				connection.close();
 			}
-			await (process.platform === "win32"
-				? Promise.race([closeServer(server), delay(WINDOWS_SHUTDOWN_HARD_EXIT_MS)])
-				: closeServer(server));
+			// libuv unlinks the bound NAME when the listening handle closes - which
+			// would delete a newer host's entry renamed over this path. Shield the
+			// current entry for the close, then let the ownership check decide.
+			await shieldSocketDuringClose(socketPath, () =>
+				process.platform === "win32"
+					? Promise.race([closeServer(server), delay(WINDOWS_SHUTDOWN_HARD_EXIT_MS)])
+					: closeServer(server),
+			);
 			await router.dispose();
 			await writer.flush();
-			await removeSocketPath(socketPath);
+			// Ownership-checked: unlink only the entry THIS process bound. After a
+			// takeover renamed a newer host's socket over the same path, the
+			// identity no longer matches and the replacement stays published.
+			await unlinkOwnedSocket(socketPath, boundIdentity, hostLog);
+			if (supervisorPublicSocketPath) {
+				await unlinkOwnedSocket(supervisorPublicSocketPath, supervisorPublicIdentity, hostLog);
+			}
 			if (watchdogCleanup) await watchdogCleanup;
 		} finally {
 			// Explicitly terminate after every shutdown trigger. Windows named-pipe
@@ -294,7 +331,20 @@ async function runSocketHost(options: MultiSessionHostOptions, socketPath: strin
 	registerShutdownSignals(shutdown);
 	// Arm before listen: a supervisor death during the listen transition must
 	// still close the child and clean its private endpoint.
-	armHostWatchdog(readHostWatchdogConfigFromBrandEnv(), (reason, cleanup) => {
+	const watchdog =
+		watchdogConfig && supervisorPublicOwnerFile
+			? {
+					...watchdogConfig,
+					// The supervisor may die while this host is still waiting for the token
+					// below; read it before the watchdog removes the scratch directory, or the
+					// shutdown's ownership check has nothing to prove with and leaves the
+					// public socket behind.
+					beforeCleanup: async () => {
+						supervisorPublicIdentity ??= await readSocketIdentityFile(supervisorPublicOwnerFile);
+					},
+				}
+			: watchdogConfig;
+	armHostWatchdog(watchdog, (reason, cleanup) => {
 		process.stderr.write(`senpi rpc host: ${reason}; shutting down\n`);
 		// Enter shutdown before killing session-owned child processes. The Windows
 		// tree killer is synchronous, while the shutdown fallback must be armed
@@ -302,7 +352,13 @@ async function runSocketHost(options: MultiSessionHostOptions, socketPath: strin
 		void shutdown(0, cleanup);
 		setImmediate(killTrackedDetachedChildren);
 	});
-	await listen(server, socketPath, secret);
+	boundIdentity = await listen(server, socketPath, secret);
+	if (supervisorPublicOwnerFile) {
+		// The supervisor publishes its public-socket token after this internal
+		// listener is ready, so a short bounded wait keeps the lifecycles in step
+		// without delaying unsupervised hosts.
+		supervisorPublicIdentity = await waitForSocketIdentityFile(supervisorPublicOwnerFile);
+	}
 	process.stderr.write(`senpi rpc listening on ${formatSocketAddress(socketPath)}\n`);
 
 	// Opt-in only: set by the lifecycle supervisor so this host can never outlive
@@ -392,14 +448,19 @@ function probeSocket(socketPath: string): Promise<boolean> {
 	});
 }
 
-function listen(server: Server, socketPath: string, secret?: Uint8Array): Promise<void> {
+function listen(server: Server, socketPath: string, secret?: Uint8Array): Promise<SocketFileIdentity | undefined> {
 	return new Promise((resolve, reject) => {
 		server.once("error", reject);
 		server.listen(resolveSocketTransportAddress(socketPath, process.platform, secret), async () => {
 			server.off("error", reject);
 			try {
-				if (process.platform !== "win32" && !socketPath.startsWith("\0")) await chmod(socketPath, 0o600);
-				resolve();
+				if (process.platform !== "win32" && !socketPath.startsWith("\0")) {
+					await chmod(socketPath, 0o600);
+					// Record which filesystem entry THIS listener created; shutdown
+					// removes the path only while this identity still matches.
+					return resolve(await statSocketIdentity(socketPath));
+				}
+				resolve(undefined);
 			} catch (cause) {
 				reject(cause);
 			}
@@ -413,13 +474,8 @@ function closeServer(server: Server): Promise<void> {
 	});
 }
 
-async function removeSocketPath(socketPath: string): Promise<void> {
-	if (process.platform === "win32" || socketPath.startsWith("\0")) return;
-	try {
-		await unlink(socketPath);
-	} catch (cause) {
-		if (!isNodeErrorCode(cause, "ENOENT")) throw cause;
-	}
+function hostLog(message: string): void {
+	process.stderr.write(`senpi rpc host: ${message}\n`);
 }
 
 function isNodeErrorCode(cause: unknown, code: string): boolean {

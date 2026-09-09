@@ -124,11 +124,19 @@ function handleMessage(
 	if (!turn || !registry.isCurrentGeneration(entry.senpiSessionId, turn.generation)) return false;
 	if (!turn.claimed) {
 		if (isReplayFor(message, turn.uuid)) {
-			// The SDK echoing our user message proves it runs under this session id.
 			entry.sdkSessionIdConfirmed = true;
-			claimTurn(entry, turn);
+			for (const buffered of claimTurn(entry, turn)) {
+				if (buffered.type === "result") finishTurn(registry, entry, turn, buffered);
+				else deliver(entry, turn, buffered);
+			}
 		} else if (message.type === "stream_event") bufferBeforeReplay(registry, entry, turn, message);
-		else if (message.type === "result") {
+		else if (message.type === "result" && resultMatchesTurn(message, turn)) {
+			const failure = sdkResultFailure(message);
+			if (failure) throw failure;
+			for (const buffered of claimTurn(entry, turn)) deliver(entry, turn, buffered);
+			finishTurn(registry, entry, turn, message);
+			return false;
+		} else if (message.type === "result") {
 			// A result that fails before the SDK ever echoed our user message (a
 			// 400 version floor, a session limit) must surface as that failure so
 			// failover can classify and rotate; only a genuine success-before-claim

@@ -54,6 +54,25 @@ task-tool names are known.
 A missing optional interpreter removes that language from the session's `eval`
 schema; it is not an installation failure.
 
+Every `eval` run must explicitly select an enabled `language` (`js`, `py`, `rb`,
+or `jl`); there is no default kernel, even when only one language is enabled.
+Omitting `action` means `run`, so it also requires `language`. Control requests
+with `action: "peek"` or `action: "stop"` use `cell_id` and do not require a
+language.
+
+### Session environment
+
+Every kernel starts with the active session's `PI_*` environment — `PI_SESSION_ID`,
+`PI_SESSION_FILE` (when the session is persistent), `PI_PROVIDER`, `PI_MODEL`, and
+`PI_REASONING_LEVEL` (when set) — resolved at session start, mirroring the bash tool's
+session environment contract. The values are visible to `env()`/`process.env`/`os.environ`
+inside cells and are inherited by every child process a cell spawns
+(`Bun.$`, `Bun.spawn`, `child_process`, `subprocess`, ...). Inherited `PI_*` values from
+the launching environment are dropped first, so a child spawned from a cell sees exactly
+what a child spawned from the bash tool sees. The values snapshot at kernel start, so a
+mid-session model switch updates the bash tool's next command but not already-running
+kernels; a new session starts fresh kernels with fresh values.
+
 ## Settings
 
 Configuration is loaded in this order:
@@ -116,7 +135,7 @@ options object and asynchronous helpers are `await`-able.
 | `print(value, ...)` | Emits text output. |
 | `read(path, offset?, limit?)` | Reads text with 1-indexed line slicing. `local://` paths resolve under the session artifact root. |
 | `write(path, content)` | Creates parent directories and writes text. `local://` paths persist in the session artifact root. |
-| `env(key?, value?)` | Reads all kernel environment values, one value, or sets one value. |
+| `env(key?, value?)` | Reads all kernel environment values, one value, or sets one value. Includes the session's `PI_*` values (see [Session environment](#session-environment)). |
 | `tool.<name>(args)` | Invokes an active Senpi tool through the normal `pi.executeTool` pipeline and returns `{ text, images?, details?, hasError? }` in every kernel; image blocks arrive as `images[i] = { mimeType, dataBase64 }`. |
 | `tool_schema(name?)` | Returns a tool's parameter schema without calling it; omit `name` to list tool names. |
 | `completion(prompt, model?, system?, schema?)` | Requests a one-shot host completion; `schema` asks the host to parse structured output. |
@@ -166,10 +185,26 @@ when the call had no summary), clearing as soon as the last detached cell settle
 
 Use `eval({ action: "peek", cell_id })` for its state and buffered output, or
 `eval({ action: "stop", cell_id })` to cancel it. Python stop interrupts the
-existing kernel and preserves variables. JavaScript stop kills and restarts its
-worker, so JavaScript VM state is lost. Detached completion messages state when
-kernel variables are available to the next eval cell; oversized buffered output
-is written under the session local root and referenced as `local://…`.
+existing kernel and preserves variables. JavaScript stop is cooperative first:
+the worker rejects the cell's pending bridge `tool.*` calls and kills the
+`Bun.spawn` children it started, and a cell that settles within the 2 s grace
+keeps the worker and every global. Only a cell that stays unsettled (a
+never-resolving promise, an un-abortable `fetch`, a `Bun.$` command) costs the
+worker VM. A worker blocked in a synchronous call (`Bun.spawnSync`,
+`child_process.spawnSync`) cannot be stopped at all; after a 3 s termination
+deadline a fresh worker replaces it, the cell output gains a stderr line naming
+the blocked synchronous call, and the blocked call keeps running until it
+returns. Kernel-level timeouts follow the same path. Stop results and detached
+completion messages report the real outcome - variables preserved, worker
+restarted, or outcome unknown - never a per-language assumption; oversized
+buffered output is written under the session local root and referenced as
+`local://…`.
+
+Commands a cell runs through `Bun.$` never read the host's terminal: the worker
+thread shares the TUI's stdin, so the shell wrapper hands every template an
+empty pipe (`true | ( … )`) while a cell is active. Output, exit codes, `cwd`,
+`env`, and explicit `< ${input}` redirects are unchanged; `Bun.spawn` and
+`Bun.spawnSync` already default stdin to `/dev/null`.
 
 ## Output and artifacts
 

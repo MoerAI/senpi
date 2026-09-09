@@ -6,8 +6,144 @@
   with no default kernel, while keeping it optional for `peek` and `stop`.
 - Request parsing distinguishes an omitted language from an unsupported value
   and lists the supported language identifiers for invalid values.
+- The README documents explicit language selection for runs and language-free
+  `peek`/`stop` requests.
 - Regression: `test/eval-request-language.test.ts` covers distinct diagnostics,
   omitted run languages, and language-free control requests. Fixes #1395.
+
+## 2026-09-09 - Eval description teaches cell mechanics; routing moved to the presets
+
+### What changed
+
+- `src/prompt/eval-prompt.ts`: every dialect block (`<eval_first_batching>`, `<gpt_eval_dialect>`, codex, kimi, default) drops the "default execution surface / one cell per multi-call step / never a chain / return ONLY distilled facts" wording and keeps mechanics: batch a step's independent calls in one cell with `parallel(thunks)`, write real code around them, keep every failed or missing item in the result verbatim, re-read truncated output before deciding, and (with monitor) start long-running work through `tool.monitor`. `BATCHING_GUIDELINES` are one-line pointers without capitals. The routing decision (what is batched, what runs one at a time and is observed) now lives once, in the model's preset.
+- `test/prompt.test.ts`: the guideline equality uses the new default line; dialect markers are checked by tag and by shape (no all-caps words of five or more letters in the Kimi instruction, no `NEVER` in the default instruction) instead of pinned slogans.
+
+### Why
+
+- The same instruction rendered in three homes per session (tool description, preset rule, system guideline). Prompt-engineering skill: one home per rule; the description is the right home for mechanics because it renders for every model, the preset for routing because that wording is per model. Distilled-only returns hid the detail the next step needed in 14% of sampled cells (2026-09-09 census), so the description now names the failure-verbatim rule instead of "return ONLY distilled facts". o200k: default 1396 -> 1278, claude 1390 -> 1291, kimi 1397 -> 1277, codex/gpt 1325 -> 1321.
+
+## 2026-09-07 - Bun.spawnSync inherits the pinned session environment
+
+### What changed
+
+- `src/kernels/js/worker-shell-capture.js` wraps `Bun.spawnSync` under the same environment pin gate as `Bun.spawn`: when a session environment was applied and the call passes no explicit `env`, the worker's `process.env` view is injected (array and object call forms); explicit `env` is left untouched and the original is restored on uninstall.
+
+### Why
+
+- Measured on Bun 1.4.0: a Worker's `process.env` writes are visible to `Bun. and `node:child_process` but not to `Bun.spawn`/`Bun.spawnSync` without an explicit `env`, which inherit the OS environ. The 2026-09-07 session-environment change covered `Bun.spawn` only, so a cell using `Bun.spawnSync` could still route per-session tooling (e.g. the omo ulw-loop toolkit keyed on `PI_SESSION_ID`) to the wrong scope.
+
+### Tests
+
+- `test/js-kernel-shell-capture.test.ts`: pinned / explicit-env / object-form `spawnSync` cases and a no-session pass-through plus restore case (fake Bun records `spawnSync` calls).
+- `test/js-kernel-session-env.test.ts`: the worker + inline matrix runs a real `Bun.spawnSync` child when the cell runtime is Bun.
+
+
+## 2026-09-07 - Eval kernels carry the session environment
+
+### What changed
+
+- New `src/kernels/session-env.ts` resolves the per-session `PI_*` environment (`PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, `PI_REASONING_LEVEL`) from the extension session context and merges it over the inherited environment with the bash tool's delete-then-set semantics.
+- `runtime-factory` resolves the environment at session start and threads it through `CreateCodemodeSessionManagerOptions.sessionEnv` into every kernel: the JS worker applies it to its own `process.env` at worker init (so `env()`, `process.env`, `Bun.$`, `Bun.spawn`, and `child_process` children all see it), and the py/rb/jl interpreters spawn with it merged into their environment (so `os.environ` and their children see it). Restarted or reset interpreters re-apply it because it is a kernel option, not a one-shot spawn side effect.
+- Under Bun a `delete process.env.X` does not unsetenv, so `worker-shell-capture.js` additionally pins the worker's environment view (`$.env` seed plus explicit `env` on captured `Bun.spawn` calls without one) whenever the session environment deleted inherited keys; without this, children would still see deleted `PI_*` values in the OS environment.
+
+### Why
+
+- A child spawned from an eval cell saw no `PI_SESSION_ID`, so `omo-agent-toolkit ulw-loop` invoked from a cell resolved the cwd-global state instead of the active session — a real data-corruption path. The contract is that a child spawned from eval sees the same session environment a child spawned from the `bash` tool sees; the core exposes no importable helper for that set (its bash implementation is private and the host package is a type-only dependency here), so the five-key contract is mirrored in one documented helper.
+
+## 2026-09-07 - Fail clearly when compiled codemode assets are missing
+
+### What changed
+
+- Kernel runtime asset resolution now rejects Bun virtual paths and reports the missing codemode sidecar beside the executable, while skill contribution resolution remains non-throwing.
+
+### Why
+
+- Compiled binaries cannot pass embedded `/$bunfs` paths to workers or subprocesses; the actionable error identifies the expected sidecar asset and deployment fix.
+
+
+## 2026-09-06 - Bun eval description steers away from Bun.spawnSync
+
+### What changed
+
+- `src/prompt/eval-prompt.ts`: the Bun runtime sentence gains one instruction after the WebView
+  clause: "Shell out through `Bun.$` or `Bun.spawn`, never `Bun.spawnSync`: a synchronous child blocks
+  the worker, so a stop or timeout then loses every variable."
+
+### Why
+
+- Session audit (#1403): models wrapped shell commands in `Bun.spawnSync` inside cells; a worker blocked
+  in a synchronous call cannot honour `interrupt`, so the stop that #1406 made bounded still has to
+  replace the worker and drop its globals. The model cannot derive the worker-thread limit; the async
+  forms settle cooperatively and keep the kernel.
+
+### Why an extension could not handle it
+
+- Prompt text owned by this package; no runtime behavior changed.
+
+### Expected merge conflict zones
+
+- LOW: fork-only description text.
+
+## 2026-09-06 - JS kernel: cooperative interrupt, bounded stop, stdin isolation (#1403)
+
+### What changed
+
+- `src/kernels/js/worker-core.js`: handles the `interrupt` bridge message. It emits an
+  `interrupt-ack` status at once, rejects every pending bridge `tool.*` call and any later call from
+  the same cell with `CellInterruptedError` (`JS cell interrupted: <reason>`), and asks the runtime to
+  kill the cell's children, so a cell parked on a bridge call or a spawned child settles without
+  losing the worker.
+- `src/kernels/js/worker-runtime.js`: tracks `Bun.spawn` children created during the active cell
+  (forgotten when they exit or the cell ends) and kills the live ones on `interrupt()`.
+- `src/kernels/js/worker-shell-capture.js` (+ `.d.ts`): while a cell is active every `Bun.$`
+  template is framed as `true | (\n<template>\n)` so no command inherits the host's terminal as
+  stdin; `Bun.spawn` children are reported through the new optional `onChild` hook.
+- `src/kernels/js/context-manager.ts`: `interrupt()` and the kernel timeout go through
+  `#stopActive` - post `interrupt`, wait for the ack (`INTERRUPT_ACK_MS`) and then the settlement
+  grace (`JS_INTERRUPT_GRACE_MS`), and only replace the worker when the cell stays unsettled;
+  the host-composed result (`interruptResult`) wins over the worker's own error text; a worker
+  abandoned at the termination deadline gets a stderr note into the cell output. The worker
+  generation moved to `src/kernels/js/worker-slot.ts` (startup with inline fallback, message
+  fencing, bounded retirement) and the startup sequence to `src/kernels/js/worker-startup.ts`
+  (also the new home of `resolveJsWorkerEntryUrl`, re-exported from `context-manager.ts`).
+- `src/kernels/js/interrupt-bounds.ts`: `awaitCooperativeSettlement`, `retireWorker` (bounded by
+  `WORKER_TERMINATE_DEADLINE_MS`), `abandonedWorkerNote`.
+- `src/kernels/js/run-queue.ts`: pending runs carry `settlement`, `interruptResult`,
+  `interruptAck`, `settledByWorker`; `settleAll` prefers the in-flight interrupt result.
+- `src/bridge/reserved.ts`: `INTERRUPT_ACK_OP`.
+- `src/tool/detached-cell-manager.ts`: `stop` and the hard limit cancel through `#cancel`, which
+  parks the completion notification (`interruptOutcome`) until the kernel reported whether state
+  survived and keeps the handle's `note`; the public snapshot/notifier/options interfaces moved to
+  `src/tool/detached-cell-contract.ts` (re-exported) and the status/wake-source projections to
+  `src/tool/detached-cell-status.ts`; `src/tool/detached-notification-queue.ts` awaits async
+  snapshots; `src/tool/detached-cell-snapshot.ts` and `src/tool/detached-eval-result.ts` carry
+  `interruptNote` into the stop result.
+- `src/tool/cell-execution.ts` + `src/tool/interrupt-note.ts`: the foreground timeout path keeps the
+  whole interrupt handle (`interruptHandle`) so `describeTimeoutState` can wait for a bounded stop
+  and append the kernel's note; `src/tool/types.ts` adds the optional `note` to
+  `KernelInterruptHandle`.
+- `src/tool/detached-cell-notification.ts`: the state note comes from `interruptionStateNote` /
+  `unknownInterruptionStateNote` (`src/tool/interrupt-note.ts`) instead of a per-language constant.
+
+### Why
+
+- Audit of 30k eval calls (#1403): `stop` on a worker blocked in `Bun.spawnSync` hung the tool call
+  (51 min in production) because `worker.terminate()` had no deadline; `Bun.$` inherited the TUI's
+  stdin so `cat`, ssh/git prompts, and keychain dialogs blocked cells forever; every interrupt or
+  timeout wiped the VM and the note claimed the worker was "unresponsive" without ever asking it.
+  Python already preserves state on SIGINT; JavaScript now matches it where the cell can settle and
+  tells the truth where it cannot.
+
+### Why an extension could not handle it
+
+- Interrupt delivery, worker lifecycle, and the shell wrapper live inside the kernel package's
+  worker protocol; no extension can reach the worker thread or the run queue.
+
+### Expected merge conflict zones
+
+- MEDIUM: `src/kernels/js/context-manager.ts` was split; an upstream change to worker startup or
+  interrupt lands in `worker-slot.ts` / `worker-startup.ts` / `interrupt-bounds.ts` now.
+- LOW: `worker-core.js`, `worker-runtime.js`, `worker-shell-capture.js`, `detached-cell-*.ts`.
 
 ## 2026-09-05 - GPT eval dialect routes waits through tool.monitor
 

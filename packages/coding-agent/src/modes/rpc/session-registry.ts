@@ -9,6 +9,7 @@ import {
 } from "../../core/agent-session-runtime.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { beginSessionClose, closeMarkedSession, closeSession, type SessionTeardownHost } from "./session-teardown.ts";
+import type { SessionWorkerClient } from "./session-worker-client.ts";
 
 /** The immutable flags selected when a routing session is opened. */
 export interface RpcSessionLaunchProfile extends AgentSessionLaunchProfile {
@@ -16,11 +17,12 @@ export interface RpcSessionLaunchProfile extends AgentSessionLaunchProfile {
 }
 
 export type SessionRuntime = AgentSessionRuntime;
-export type RpcSessionState = "opening" | "open" | "closing" | "closed";
+export type RpcSessionState = "opening" | "open" | "closing" | "quarantined" | "closed";
 
 export interface RpcSessionEntry {
 	state: RpcSessionState;
 	runtime?: SessionRuntime;
+	worker?: SessionWorkerClient;
 	/** Resolves replacement against the runtime currently owned by this entry. */
 	switchSession?: SessionRuntime["switchSession"];
 	/** Rebind callback installed by the shared RPC connection handler. */
@@ -44,13 +46,7 @@ export interface RpcSessionEntry {
 }
 
 export class RpcSessionRegistryError extends Error {
-	readonly code:
-		| "unknown_session"
-		| "session_closing"
-		| "session_path_in_use"
-		| "invalid_path"
-		| "open_failed"
-		| "too_many_sessions";
+	readonly code: "unknown_session" | "session_closing" | "session_path_in_use" | "invalid_path" | "open_failed";
 
 	constructor(code: RpcSessionRegistryError["code"], reason?: string) {
 		super(code === "open_failed" && reason ? `${code}: ${reason}` : code);
@@ -64,8 +60,6 @@ export interface RpcSessionRegistryOptions {
 	createRuntime: CreateAgentSessionRuntimeFactory;
 	/** Injectable clock (defaults to Date.now) so idle bookkeeping is testable. */
 	now?: () => number;
-	/** Cap on concurrently opening/open sessions; attach-on-open is exempt. */
-	maxSessions?: number;
 	/** Maximum time to wait for graceful runtime teardown before forced release. */
 	closeGraceMs?: number;
 }
@@ -142,13 +136,6 @@ export class RpcSessionRegistry {
 				sessionPath: entry.sessionPath,
 				attached: true,
 			};
-		}
-		const maxSessions = this.options.maxSessions;
-		if (maxSessions !== undefined && this.countActiveSessions() >= maxSessions) {
-			// Reconnect-churn backstop: every open_session owns a complete runtime
-			// (hundreds of MB measured), so admission is bounded. Attachments to a
-			// live session add none and stay allowed via the branch above.
-			throw new RpcSessionRegistryError("too_many_sessions");
 		}
 		if (sessionPath) this.reservations.add(sessionPath);
 
@@ -290,7 +277,7 @@ export class RpcSessionRegistry {
 		sessionPath?: string;
 		cwd: string;
 		name?: string;
-		status: RpcSessionState;
+		status: Exclude<RpcSessionState, "quarantined">;
 	}> {
 		this.syncRuntimeMetadata();
 		return [...this.entries].map(([sessionId, entry]) => ({
@@ -299,7 +286,7 @@ export class RpcSessionRegistry {
 			sessionPath: entry.sessionPath,
 			cwd: entry.cwd,
 			name: entry.runtime?.session.sessionManager.getSessionName(),
-			status: entry.state,
+			status: entry.state === "quarantined" ? "closing" : entry.state,
 		}));
 	}
 
@@ -329,13 +316,5 @@ export class RpcSessionRegistry {
 		if (!isAbsolute(profile.cwd) || (profile.sessionPath !== undefined && !isAbsolute(profile.sessionPath))) {
 			throw new RpcSessionRegistryError("invalid_path");
 		}
-	}
-
-	private countActiveSessions(): number {
-		let count = 0;
-		for (const entry of this.entries.values()) {
-			if (entry.state === "opening" || entry.state === "open") count += 1;
-		}
-		return count;
 	}
 }
