@@ -1,4 +1,40 @@
 
+## 2026-09-09 - Surface required compaction after oversized resume
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: renders the existing session event notice when resume admission defers an unusable restored projection to required compaction.
+
+### Why
+
+- Users must be told that the first prompt will compact instead of seeing a constructor-time model budget refusal.
+
+### Why an extension could not handle it
+
+- The notice originates in core before extension hooks bind; interactive mode is the existing session-event presentation surface.
+
+### Expected merge conflict zones
+
+- LOW: the `handleEvent` switch beside other model and session notices.
+
+## 2026-09-08 - Shortcut context exposes the effective service tier
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: the extension shortcut context built by `setupExtensionShortcuts` sets the new optional `effectiveServiceTier` field from `session.effectiveServiceTier`, next to `serviceTier`.
+
+### Why
+
+- `ExtensionContext.effectiveServiceTier` (code-yeongyu/oh-my-openagent#6795) is what delegating hosts read to inherit a parent's fast mode; the hand-built shortcut context must report the same value the runner's contexts do.
+
+### Why an extension could not handle it
+
+- The shortcut context literal is host code; extensions only receive it.
+
+### Expected merge conflict zones
+
+- LOW: the `createContext` literal in `setupExtensionShortcuts`.
+
 ## 2026-09-07 - Add a workflow tip for the report-bug skill
 
 ### What changed
