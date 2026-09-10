@@ -1,4 +1,62 @@
+## 2026-09-10 - The "." manual-continue shortcut paints no user echo
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: submissions go through `beginUserEcho()`, which skips the optimistic echo for a bare `.` on a session that already has messages (via the shared `isManualContinueSubmission`); `OptimisticUserEchoController.promptOptions/reject/remove` and `InteractiveUserInput.pendingEchoId` accept `undefined` as "nothing was painted".
+
+### Why
+
+- The session routes that `.` as a hidden continuation, so the echo painted at submit time showed a user bubble the transcript never receives.
+
+### Why this lives in the fork
+
+- The `.` manual-continue shortcut and the optimistic user echo are both fork behavior in `AgentSession.prompt()` and interactive mode.
+
+### Expected merge conflict zones
+
+- LOW: `OptimisticUserEchoController`, `InteractiveUserInput`, and the echo call sites in `setupEditorSubmitHandler` / `handleFollowUp`.
+
+## /tree renders a refused model switch (2026-09-10)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/tree-selector.ts`: `model_change_rejected` gains a render case (`[model rejected: <id> (<reason>)]`, warning colour), search text (`model rejected <id> <reason>`), and membership in the settings/bookkeeping set hidden from the default view.
+
+### Why
+
+- Without the cases the entry fell to `default: result = ""`, so a refused switch (#1526) appeared in `/tree`'s default view as a blank, unsearchable row - the one entry browser the product ships could not reconstruct the incident the record exists for.
+
+### Why an extension could not handle it
+
+- The tree selector owns entry rendering, filtering and search text; extensions cannot contribute renderers for core entry types.
+
+### Expected merge conflict zones
+
+- LOW: the `isSettingsEntry` predicate, `entrySearchText`, and the entry render switch.
+
 ## 2026-09-10 - /tree edits carry the leaf token and reach shared hosts
+# changes
+
+## 2026-09-02 - Do not paint two live login inputs
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/login-dialog.ts`: `showManualInput` and `showPrompt` remount the single Input widget instead of adding it twice, so a browser-callback login no longer shows two stacked `>` prompts. Every `(to cancel)` / `(to close)` hint row is routed through one tracked live hint (`setLiveHint`), so `showWaiting` and `showInfo(showCloseHint)` REPLACE a previous hint instead of painting beside it, and every content-clearing path resets the tracked hint.
+- `packages/coding-agent/test/suite/regressions/5433-extension-oauth-prompt-input.test.ts`: covers an unsubmitted paste-code prompt followed by the account-name prompt - asserting exactly one live `>` row - plus an interleaved waiting step that must leave exactly one live hint row.
+
+### Why
+
+- Anthropic OAuth completes via localhost callback while the paste-code input is still mounted. The name prompt then added the same Input child again, and the TUI painted two live `>` rows.
+
+### Why an extension could not handle it
+
+- Login chrome is the interactive LoginDialogComponent, not an extension surface.
+
+### Expected merge conflict zones
+
+- LOW: `showManualInput` / `showPrompt` in `login-dialog.ts`.
+
+## 2026-09-01 - Never swallow an interactive quit request
 
 ### What changed
 
