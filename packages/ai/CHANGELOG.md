@@ -6,9 +6,15 @@
 
 ### Added
 
+- Venice AI is a built-in provider: id `venice`, `VENICE_API_KEY`, base URL `https://api.venice.ai/api/v1`, and a 104-model OpenAI-compatible catalog generated from models.dev whose ids were all confirmed against Venice's live `/models` listing. Venice's `ChatCompletionRequest` schema is `additionalProperties: false`, so a new `veniceParameters` compat flag shapes the one Venice-only request field: the catalog sets `venice_parameters: { include_venice_system_prompt: false }`, without which Venice prepends its own default system prompt ahead of the caller's ([#1551](https://github.com/code-yeongyu/senpi/issues/1551))
+
+- OpenAI images: `background`, `outputFormat`, `outputCompression`, `moderation`, and `mask` options reach the wire as `background`, `output_format`, `output_compression`, `moderation`, and a `mask` upload; transparent-with-jpeg, compression-with-png, out-of-range compression, and mask-without-image are rejected before any request. Responses report `background`, returned bytes are labeled by their magic (falling back to the requested format), image input tokens are priced with the new optional `ImagesModel.cost.imageInput` rate ($8/M for GPT Image 2 and 2.5), and `KnownImagesProvider` includes `openai`. `parseOpenAIImageOutputOptions` and the option types are exported through the compat surface.
+
 ### Changed
 
 ### Fixed
+
+- OAuth token refresh no longer holds the credential store lock across the network: `Models.getAuth()` runs the provider's token exchange outside `CredentialStore.modify`, then re-enters the store and writes only if the slot's refresh token is unchanged (a slot rotated meanwhile by another process is adopted instead of overwritten). Concurrent requests for one slot join a single exchange, and a `Models.refresh()`/`setProvider()` for the same provider joins an in-flight token refresh instead of aborting it through the per-provider catalog-refresh controller ([#1542](https://github.com/code-yeongyu/senpi/issues/1542)).
 
 ### Removed
 
