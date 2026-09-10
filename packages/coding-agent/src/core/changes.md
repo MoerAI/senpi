@@ -1,3 +1,121 @@
+## Leaf token and typed errors for assistant edits (2026-09-10)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: `TreeNavigationOptions.expectedLeafId`; `editAssistantMessage` checks streaming first, then the token (before the `unchanged` short-circuit), and `_navigateTree` checks the token before its no-op return; both streaming guards throw `SessionStreamingError`.
+- `packages/coding-agent/src/core/edited-assistant-message.ts`: `AssistantEditReason` gains `stale-leaf`, `AssistantEditError.code` maps reasons to wire codes, `SessionStreamingError`, and `assertExpectedLeaf()`.
+
+### Why
+
+- A client holding a stale view must be refused before any mutation, and every refusal needs a stable code a transport can forward.
+
+### Why an extension could not handle it
+
+- The guard has to run inside the core mutation, ahead of `session_before_tree`.
+
+### Expected merge conflict zones
+
+- LOW: `editAssistantMessage` / `_navigateTree` heads in `agent-session.ts`; the fork-only `edited-assistant-message.ts`.
+
+## Honor an inline isError on executeTool results (2026-09-10)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: the direct `executeTool` path sets `isError = result.isError === true` after a tool settles, so `tool_result` hooks observe the same error flag the agent loop now derives from a returned `isError: true`.
+
+### Why
+
+- A tool that reports a structured failure without throwing was delivered to `tool_result` hooks as a success on the `pi.executeTool` path, diverging from the agent-loop path fixed in `packages/agent/src/agent-loop.ts`.
+
+### Why an extension could not handle it
+
+- The flag is computed inside `AgentSession` before hooks run; a hook can only override it after the fact and per tool.
+
+### Expected merge conflict zones
+
+- LOW: the `executeTool` try block in `packages/coding-agent/src/core/agent-session.ts`.
+||||||| parent of e351a846f (docs(rpc): document edit_assistant_message, the leaf token, and the entry_appended identity channel)
+## askUser settings and --no-ask-user session override (2026-09-10)
+
+### What changed
+
+- `settings-shapes.ts`: adds `AskUserSettings` (`enabled`, `timeoutMinutes`) plus clamp constants (default 30, range 1–120).
+- `settings-manager.ts`: `Settings.askUser` and `getAskUserSettings()` resolve merged settings with boolean type-checks, default `enabled: true`, and clamped `timeoutMinutes`.
+- `agent-session.ts`: `--no-ask-user` in `runtime.flagValues` applies a non-persistent `askUser.enabled=false` override (same path as `--no-model-fallback`) and exposes `getAskUserSettings` on the extension context.
+
+### Why
+
+- The question tool needs a session-readable enable switch and idle timeout, plus a per-run CLI disable that wins over saved settings without writing them.
+
+### Why an extension could not handle it
+
+- Settings shapes, merged resolution, and constructor-time flag overrides live on `SettingsManager` / `AgentSession` before extension `session_start`.
+
+### Expected merge conflict zones
+
+- LOW: `settings-shapes.ts` next to `LookAtSettings`; `settings-manager.ts` `Settings` field list and getters next to prompt-cache helpers.
+- MEDIUM: `agent-session.ts` constructor flag overrides next to `--no-model-fallback` and `bindCore` accessors next to `getLookAtSettings`.
+
+## 2026-09-10 - Venice default model and display name
+
+### What changed
+
+- `packages/coding-agent/src/core/model-resolver.ts` maps `venice` to the default model `z-ai-glm-5-3`.
+- `packages/coding-agent/src/core/provider-display-names.ts` (fork-only) labels the provider "Venice AI".
+
+### Why
+
+- Selecting a provider without a model falls back to this map; Venice's GLM 5.3 is the catalog's strongest general coding model with a 1M context window, matching how `zai` and `baseten` default to the same family.
+
+### Why an extension could not handle it
+
+- Default-model resolution runs inside model selection, before the session (and its extensions) exists.
+
+### Expected merge conflict zones
+
+- LOW: the `DEFAULT_MODELS` map when upstream adds providers.
+
+## Deterministic resume recovery when the restored context exceeds the window (2026-09-10)
+
+### What changed
+
+- `packages/coding-agent/src/core/sdk.ts`: the resume-admission catch still rethrows for fresh starts, non-budget errors and compaction-disabled sessions, and now splits the remaining case. A projection whose live context still fits the raw window keeps taking the existing compaction-required admission; a projection whose live context alone exceeds the window asks `planResumeSlice()` for a deterministic reduction and rethrows the original budget error unchanged when no safe cut fits.
+- `packages/coding-agent/src/core/agent-session.ts`: new `applyResumeSlice()` appends the reduction as a `senpi.compaction.resume-slice.v1` compaction entry that preserves the recorded transcript, rebuilds the live context, writes one `resume_context_reduced` session-log line, and publishes a `resume_context_reduced` event which `subscribe()` replays for listeners that attach after `createAgentSession()` returns.
+- `packages/coding-agent/src/core/session-manager.ts` is deliberately unchanged: `_trimMirrorAfterCompaction()` only trims the in-memory mirror, and `getEntries()`, `getEntry()` and `getBranch()` reload the full history from the session file once `mirrorTrimmed` is set, so the recorded transcript already survives an admission-time reduction.
+
+### Why
+
+- Issue #1524: a `gpt-6-astra` session whose restored transcript alone exceeded the model window (live 965,016 tokens against an 850,000-token window) could never be reopened. The compaction-eligible resume branch only relaxes admission while summarization still fits, and the compaction-required admission only covers a live context within the raw window, so this band had no recovery path and every reopen failed inside `assertModelUsable` before any extension was wired.
+
+### Why an extension could not handle it
+
+- The refusal happens inside `createAgentSession()` before extensions are loaded or bound, and the recovery must append a session entry and rebuild the live context while the session is still being constructed.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/coding-agent/src/core/sdk.ts` resume-admission catch block, which is also the merge zone of the earlier compaction-required admission.
+- LOW: `packages/coding-agent/src/core/agent-session.ts` event union, `subscribe()` replay and the method added beside `admitResumeCompactionRequired()`.
+## Editable assistant responses from the session tree (2026-09-10)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: `navigateTree()` delegates to a private `_navigateTree()` that also accepts a replacement assistant message; new public `editAssistantMessage(entryId, text, options)` validates the target, treats unchanged text as a no-op (`unchanged: true`), and otherwise branches to the target's parent and appends the edited copy as the new leaf, reusing the branch-summary flow, labels, agent-state restore and `session_before_tree` / `session_tree` events. New exported `TreeNavigationOptions` and `AssistantEditResult` types. Guard order is streaming -> target lookup -> empty-text rejection (built first) -> unchanged no-op, so an identical-text request during a response still throws and a textless (tool-call-only) assistant cannot be "edited" to blank.
+- `packages/coding-agent/src/core/edited-assistant-message.ts` (new): `buildEditedAssistantMessage()` keeps only the trimmed text (tool calls, thinking and provider-native blocks dropped, `stopReason: "stop"`, model/provider/api/usage preserved), `assistantTextEquals()`, and `AssistantEditError`.
+- `packages/coding-agent/src/core/keybindings.ts`: new `app.tree.editMessage` action (default `ctrl+e`, legacy alias `treeEditMessage`).
+
+### Why
+
+- `/tree` could re-open a user message for editing but offered no way to correct an assistant response; users had to fork or re-prompt to steer past a wrong answer.
+
+### Why an extension could not handle it
+
+- Extensions can replace a message only at `message_end` time; rewriting an already persisted entry needs the session leaf move plus append that only `AgentSession` owns, and the tree keybinding lives in the core keybinding registry.
+
+### Expected merge conflict zones
+
+- MEDIUM: `agent-session.ts` `navigateTree()` body (renamed to `_navigateTree`, three small hunks for the replacement branch).
+- LOW: `keybindings.ts` tree action tables; the new module is fork-only.
+
 ## Registration-time shared-host capability (2026-09-09)
 
 ### What changed

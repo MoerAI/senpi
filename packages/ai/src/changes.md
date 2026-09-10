@@ -1,3 +1,90 @@
+## 2026-09-10 - Map ask_user_question to Claude Code's AskUserQuestion wire name
+
+### What changed
+
+- `packages/ai/src/api/anthropic-messages.ts`: map the registered `ask_user_question` tool to `AskUserQuestion` for Anthropic Claude Code wire requests, and map it back only when the registered tools include the alias.
+
+### Why
+
+- Claude Code's Anthropic wire contract uses `AskUserQuestion`; without the explicit alias, the built-in tool name cannot round-trip through streamed `tool_use` blocks.
+
+### Why an extension could not handle it
+
+- Tool-name conversion happens inside the Anthropic provider adapter while constructing and decoding provider messages, before an extension can repair the wire name.
+
+### Expected merge conflict zones
+
+- LOW: the Claude Code tool lookup and conversion helpers in `packages/ai/src/api/anthropic-messages.ts`.
+
+## 2026-09-10 - OAuth refresh runs outside the credential lock and the catalog lane joins it (#1542)
+
+### What changed
+
+- `packages/ai/src/auth/oauth-refresh.ts` (new): `refreshOAuthCredential({ credentials, providerId, oauth, stale, slotName, isStale, signal, owning })` re-reads the stored credential, runs `oauth.refresh` OUTSIDE `CredentialStore.modify` under `AbortSignal.any([exchange, timeout 15s])`, then re-enters `modify` and compare-and-swaps: the rotated token is written only when the slot's refresh token still equals the one the exchange consumed; on mismatch the newer stored value is adopted and no write happens. Concurrent refreshes of the same `(store, provider, slot, refresh token)` join one in-flight exchange; owning waiters (per-request resolution) cancel the exchange once none is left waiting and a result arriving after that is not persisted; a non-owning waiter (the catalog lane) only stops waiting. The write itself is not cancellable because the exchange already consumed the refresh token. Exports `OAuthRefreshExchangeError` / `OAuthRefreshStoreError` for code mapping and `projectOAuthSlot`.
+- `packages/ai/src/auth/resolve.ts`: `resolveStoredOAuth` no longer runs the refresh inside `credentials.modify`; it calls `refreshOAuthCredential` as an owning waiter and maps failures through the new exported `oauthRefreshModelsError` (`oauth` for the exchange, `auth` for the store) so `ModelsError` codes and messages are unchanged. `DEFAULT_OAUTH_REFRESH_TIMEOUT_MS` moved to `oauth-refresh.ts`.
+- `packages/ai/src/auth/refresh-credential.ts` (new, extracted from `models.ts` for the LOC ceiling): `resolveRefreshCredential(provider, credentials, authContext, stored, signal)` is the catalog lane's effective-credential step; the expired-OAuth branch joins `refreshOAuthCredential` with `owning: false`.
+- `packages/ai/src/models.ts`: `ModelsImpl.refresh` calls the extracted `resolveRefreshCredential`. The per-provider catalog-refresh controller (`supersedeProviderRefresh` on `setProvider`/`deleteProvider`/`refresh`) therefore no longer reaches the token exchange: a superseded catalog refresh stops waiting while the exchange completes and persists.
+
+### Why
+
+- Issue #1542: with several `openai-codex` OAuth slots, one slot's refresh held the single `auth.json` lock for the whole up-to-15s HTTP exchange while every other slot, provider and login gave up after `FILE_STORAGE_LOCK_RETRY_BUDGET_MS` (5.5s) with `CredentialStoreBusyError`; and any login/logout/`setRuntimeApiKey` for the shared provider id aborted an in-flight token refresh through the catalog-refresh controller.
+
+### Why an extension could not handle it
+
+- The lock scope is inside `resolveStoredOAuth` -> `CredentialStore.modify`, below every extension hook, and the catalog-refresh controller is private to `ModelsImpl`.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/ai/src/auth/resolve.ts` `resolveStoredOAuth` (the refresh block is now a call into `oauth-refresh.ts`).
+- MEDIUM: `packages/ai/src/models.ts` `refresh()` credential step and the removed private `resolveRefreshCredential`.
+- LOW: new files `auth/oauth-refresh.ts`, `auth/refresh-credential.ts`.
+
+## 2026-09-10 - Venice AI provider registration and venice_parameters
+
+### What changed
+
+- `packages/ai/src/types.ts` adds `"venice"` to `KnownProvider` and a `veniceParameters` field to `OpenAICompletionsCompat`, carrying Venice's only non-OpenAI request object (`{ include_venice_system_prompt?: boolean }`).
+- `packages/ai/src/api/openai-completions.ts` emits that object as the top-level `venice_parameters` request field, alongside the existing OpenRouter and Vercel gateway routing hooks, and declares it on `OpenAICompletionsRequestParams`. `packages/ai/src/utils/prompt-cache-ttl.ts` keeps it optional in `ResolvedOpenAICompletionsCompat` so auto-detection never has to synthesize one.
+- `packages/ai/src/env-api-keys.ts` maps `venice` to `VENICE_API_KEY`; `packages/ai/src/providers/all.ts` registers the fork-only `veniceProvider()` factory.
+
+### Why
+
+- Venice's `ChatCompletionRequest` schema is `additionalProperties: false` (`components.schemas.ChatCompletionRequest` in https://api.venice.ai/api/v1/swagger.yaml), so a Venice-only field cannot be smuggled in as an ad-hoc key and every other field senpi sends had to be checked against Venice's accepted list. It already accepts `store`, `developer` role, `reasoning_effort`, `stream_options.include_usage`, `max_completion_tokens`, `prompt_cache_key`, `prompt_cache_retention`, and `strict` tools, so the auto-detected compat defaults were left untouched.
+- Without `include_venice_system_prompt: false`, Venice prepends its own default system prompt ahead of the agent's.
+
+### Why an extension could not handle it
+
+- Provider registration, credential detection, and the outbound request body are all inside the AI adapter boundary, below the point where extension code can rewrite a provider request.
+
+### Expected merge conflict zones
+
+- LOW: the `KnownProvider` union tail and the `builtinProviders()` array in `providers/all.ts` when upstream adds providers.
+- LOW: the compat field list in `types.ts` / `prompt-cache-ttl.ts` and the request-field block in `openai-completions.ts` when upstream adds provider-specific request options.
+
+## 2026-09-10 - OpenAI images output options, masks, and image-token pricing
+
+### What changed
+
+- `packages/ai/src/api/openai-images-params.ts`: `OpenAIImagesOptions` gains `background`, `outputFormat`, `outputCompression`, `moderation`, and `mask`; `buildParams` forwards them and `parseOpenAIImageOutputOptions` (exported through compat) rejects transparent+jpeg, compression on png, non-integer or out-of-range compression, and a mask without an input image before any request.
+- `packages/ai/src/api/openai-images-edit.ts`: uploads the mask as `mask.<ext>` next to the reference images.
+- `packages/ai/src/images.ts`: re-exports `parseOpenAIImageOutputOptions`, `OpenAIImageBackground`, `OpenAIImageOutputFormat`, `OpenAIImageModeration`, and `OpenAIImageOutputOptions` through the compat surface.
+- `packages/ai/src/api/openai-images-result.ts` (moved out of `openai-images.ts` for the LOC ceiling): b64 payloads are labeled by their magic bytes, falling back to the requested container; URL hydration is unchanged.
+- `packages/ai/src/api/openai-images.ts`: echoes the response `background`, and `parseUsage` prices `input_tokens_details.image_tokens` with `cost.imageInput ?? cost.input`.
+- `packages/ai/src/types.ts`: `ImagesModelCost.imageInput`, `AssistantImages.background`, and `KnownImagesProvider` now includes `openai` so `getImageModel("openai", id)` type-checks.
+- `packages/ai/scripts/generate-image-models.ts` + regenerated `image-models.generated.ts`: `imageInput: 8` on gpt-image-2 and both 2.5 entries.
+
+### Why
+
+- GPT Image 2.5 supports transparent backgrounds, jpeg/webp containers, compression, moderation, and inpainting masks that the adapter could not request; image input tokens are billed at $8/M, not the $5/M text rate; and a gateway that ignores `output_format` returned png bytes labeled `image/webp`.
+
+### Why an extension could not handle it
+
+- The wire payload, response decoding, and usage pricing live inside the provider adapter behind the compat surface.
+
+### Expected merge conflict zones
+
+- MEDIUM: `openai-images.ts` (helper extraction) and `openai-images-params.ts`.
+- LOW: `types.ts` additions, generator array, tests.
 ## 2026-09-09 - GPT Image 2.5 generation and reference-image editing
 
 ### What changed
