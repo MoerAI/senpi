@@ -4,7 +4,6 @@ import {
 	type Model,
 	type Provider,
 	type ModelsPublication,
-	type RefreshModelsContext,
 } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {

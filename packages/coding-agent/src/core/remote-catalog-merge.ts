@@ -57,7 +57,7 @@ export function parseRemoteCatalog(providerId: string, value: unknown): Model<Ap
 			: typeof value === "object" && value !== null
 				? Object.values(value)
 				: undefined;
-	if (!entries || !entries.every(isModelCatalogEntry)) {
+	if (!entries?.every(isModelCatalogEntry)) {
 		throw new Error(`Invalid model catalog for provider "${providerId}"`);
 	}
 	return entries.map((model) => ({ ...model, provider: providerId }));
