@@ -12,6 +12,7 @@
 ### Why this lives in the fork
 
 - The error flag is decided inside the loop's execution outcome before any hook runs; extensions can only rewrite it per tool through `tool_result`, not restore the contract for every tool.
+- This deliberately diverges from upstream pi-mono, which documents "returning a value never sets the error flag"; `packages/coding-agent/docs/extensions.md` now documents both signaling paths.
 
 ### Expected merge conflict zones
 
