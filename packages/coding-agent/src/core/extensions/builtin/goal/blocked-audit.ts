@@ -17,13 +17,17 @@ export const GOAL_BLOCKED_MIN_GOAL_TURNS = 3;
  * entries keeps the number derived from the branch, never from model narration.
  */
 export function goalTurnsSinceActivation(entries: readonly SessionEntry[], goal: Goal): number {
-	const activatedAtMs = (goal.lastStartedAt ?? goal.createdAt) * 1000;
+	// The store clock is second-granular and bumps updatedAt monotonically, so a
+	// resume right after another mutation stamps lastStartedAt ahead of the wall
+	// clock. Compare in store seconds, clamped to now, or a continuation delivered
+	// in that same second would read as older than the activation it followed.
+	const activatedAtSeconds = Math.min(goal.lastStartedAt ?? goal.createdAt, Math.trunc(Date.now() / 1000));
 	let continuations = 0;
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index];
 		if (entry === undefined) continue;
-		const entryMs = entryTimestampMs(entry);
-		if (entryMs !== undefined && entryMs < activatedAtMs) break;
+		const entrySeconds = entryTimestampSeconds(entry);
+		if (entrySeconds !== undefined && entrySeconds < activatedAtSeconds) break;
 		if (entry.type === "message" && entry.message.role === "user") break;
 		if (entry.type === "custom_message" && entry.customType === GOAL_CONTINUATION_MESSAGE_TYPE) continuations += 1;
 	}
@@ -48,9 +52,9 @@ export function goalTurnFloorBlockError(goalTurns: number): string {
 	);
 }
 
-function entryTimestampMs(entry: SessionEntry): number | undefined {
+function entryTimestampSeconds(entry: SessionEntry): number | undefined {
 	const timestamp = (entry as { timestamp?: unknown }).timestamp;
 	if (typeof timestamp !== "string") return undefined;
 	const parsed = Date.parse(timestamp);
-	return Number.isNaN(parsed) ? undefined : parsed;
+	return Number.isNaN(parsed) ? undefined : Math.trunc(parsed / 1000);
 }

@@ -128,6 +128,16 @@ describe("goal blocked audit turn counting", () => {
 		// then
 		expect(goalTurnsSinceActivation([continuationEntry(stale), continuationEntry(stale)], goal)).toBe(1);
 	});
+
+	it("keeps counting when the store clock ran ahead of the wall clock at activation", () => {
+		// given: same-second store mutations bump updatedAt monotonically, so a resume can
+		// stamp lastStartedAt one or two seconds into the future
+		const drifted = Math.trunc(Date.now() / 1000) + 2;
+		const goal = goalFixture({ lastStartedAt: drifted, updatedAt: drifted });
+
+		// then
+		expect(goalTurnsSinceActivation([continuationEntry(), continuationEntry()], goal)).toBe(3);
+	});
 });
 
 describe("update_goal blocked guards", () => {
