@@ -23,9 +23,10 @@
 
 ### What changed
 
-- `packages/coding-agent/src/core/remote-catalog-merge.ts` and
-  `packages/coding-agent/src/core/remote-catalog-provider.ts` are aligned with the repository's
-  enforced Biome formatting and import ordering.
+- `packages/coding-agent/src/core/remote-catalog-merge.ts` is aligned with the repository's
+  enforced Biome formatting.
+- `packages/coding-agent/src/core/remote-catalog-provider.ts` is aligned with the repository's
+  enforced import ordering and formatting.
 
 ### Why
 
