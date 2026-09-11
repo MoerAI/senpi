@@ -1,3 +1,28 @@
+## Devin CLI OAuth login flow (2026-09-11)
+
+### What changed
+
+- `packages/ai/src/auth/oauth/devin.ts`: new Devin (Cognition) OAuth flow. Generates a PKCE S256 challenge plus a uuid state, sends the user to `https://app.devin.ai/auth/cli/continue` with `response_type=code`, the loopback `redirect_uri` and `prompt=select_account`, and races the loopback callback against the manual paste prompt for headless sessions. Exports `devinOAuth` whose `refresh` is a no-op (Devin has no refresh grant) and whose `toAuth` returns the stored token plus the `https://api.devin.ai` base URL.
+- `packages/ai/src/auth/oauth/devin-callback.ts`: one-shot loopback callback server pinned to `127.0.0.1:59653/callback`, the single redirect URI Devin registers for the CLI. Validates the issued state before the authorization code is spent, renders the shared OAuth result pages, and reports exchange failures through both the page and the login promise.
+- `packages/ai/src/auth/oauth/devin-token.ts`: the non-standard CLI token exchange. Posts JSON carrying only `code` and `code_verifier` (no client_id, no grant_type) with `Accept: application/json`, then builds the credential from the single `token` field used as both access and refresh, with expiry decoded from the JWT `exp` and a 31536000000 ms fallback.
+- `packages/ai/src/auth/oauth/load.ts`: adds `devin` to `OAuthFlowLoaders` and exports `loadDevinOAuth`, so the flow resolves through the same lazy-import boundary as every other provider and stays out of browser-reachable static imports.
+- `packages/ai/src/bun-oauth.ts`: registers `devin: () => devinOAuth` in the statically bundled flow set so the standalone Bun binary can run the login without dynamic import.
+
+### Why
+
+- senpi had no Devin authentication at all: no flow module, no loader entry, no bundled registration, so Devin could not be signed into from senpi even though its CLI grant is a plain public-client authorization-code flow.
+- Devin's grant deviates from the OAuth defaults the existing helpers assume (fixed redirect port, no client_id, no grant_type, one token serving as access and refresh, expiry only inside the JWT), so the deviations are pinned in code next to the reasons rather than rediscovered per incident.
+
+### Why an extension could not handle it
+
+- OAuth flows are resolved inside `packages/ai` through `registerBundledOAuthFlowLoaders` and the `OAuthFlowLoaders` type; an extension cannot add a member to that registry, cannot participate in the standalone Bun binary's static bundle, and cannot return an `OAuthAuth` that the credential store and auth resolution treat as first-class.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/auth/oauth/load.ts`: the `OAuthFlowLoaders` member list and the block of `load*OAuth` exports — upstream adding a provider touches the same two spots.
+- `packages/ai/src/bun-oauth.ts`: the import list and the `registerBundledOAuthFlowLoaders` object literal.
+- The three `packages/ai/src/auth/oauth/devin*.ts` files are additions with no upstream counterpart and should not conflict.
+
 ## PR #1304 review fixes: shared auth-miss prefix, login merge, sentinel repair (2026-09-10)
 
 ### What changed
