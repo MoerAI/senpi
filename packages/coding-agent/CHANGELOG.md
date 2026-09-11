@@ -11,6 +11,9 @@
 
 ### Changed
 
+- `update_goal` with status `blocked` is now rejected while a live resumption channel (monitor, background session, detached eval cell, child task, or pending question) can still deliver, and again until the same blocker has survived three goal turns since the goal became active or the user last spoke; the goal continuation prompt states both rules, declares retries unbounded, and requires the completion audit to match verification scope to requirement scope. `create_goal` now carries a decision rule for work that outlives the turn instead of "only when explicitly requested".
+- The GPT-6 Astra preset drops its three-attempt failure cap for an unbounded-retry rule that widens the source on an empty lookup, ends a turn only when a pending handle will wake the session, requires a named next step to be taken in the same turn, and defaults its question tool to the non-blocking mode.
+
 ### Fixed
 
 - The ask-user overlay now uses plain Enter to confirm and advance through question tabs, keeps multi-select choices intact when confirming, provides an explicit Submit tab for optional comments and partial answers, prevents editor focus traps, and reports partial answers without requiring a comment ([#1573](https://github.com/code-yeongyu/senpi/issues/1573))

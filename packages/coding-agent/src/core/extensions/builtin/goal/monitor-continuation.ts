@@ -254,6 +254,11 @@ export class MonitorAwareGoalContinuation {
 		return this.#activeWakeSourceCount() > 0;
 	}
 
+	/** Kinds of the live resumption channels, for the blocked audit the goal tools enforce. */
+	liveWakeSources(): readonly string[] {
+		return this.#liveWakeSources();
+	}
+
 	/**
 	 * Re-arms the monitor-delayed backstop a reload tore down with the retired
 	 * generation, so a later wake-source drain can still deliver the goal
