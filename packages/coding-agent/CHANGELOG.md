@@ -6,6 +6,10 @@
 
 ### Added
 
+- Added the Devin (Cognition) Cascade model transport: after signing in with Devin OAuth you can select a Devin model and stream completions through the native `devin-agent` Connect/protobuf protocol, with text, thinking, tool calls, usage and stop reasons mapped natively, plus credential-scoped model discovery that keeps the bundled seed when discovery is unavailable (fixes #1604).
+
+- Added Devin (Cognition) OAuth login: sign in through Devin's CLI authorization flow (PKCE S256, loopback callback on `127.0.0.1:59653`, state validated before the code is spent) and senpi stores the issued CLI token with its JWT-derived expiry (fixes #1601).
+
 - Branded builds can provide an absolute changelog path and authored version, with source-isolated seen-version tracking and interactive changelog rendering; engine changelog notifications retain their existing link rewriting and install telemetry behavior (fixes #1583).
 
 - Added the `deepseek-v4-1-flash` prompt preset for DeepSeek V4.1 Flash: it resolves every published id shape (`deepseek-flash`, `deepseek-v4.1-flash`, `deepseek/deepseek-v4.1-flash`, `deepseek-ai/DeepSeek-V4.1-Flash`, fireworks' `deepseek-v4p1-flash`, venice's `deepseek-v4-1-flash`) and the official DeepSeek provider's retired `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` aliases, which the DeepSeek API now serves with V4.1 Flash; the same alias on any other provider keeps the V4 Flash preset. The preset carries the shared core and the eval-routing stance only - none of the V4 Flash repair rules, which were written against V4-Flash-0731 transcripts and do not apply to the re-trained model ([#1574](https://github.com/code-yeongyu/senpi/issues/1574))
@@ -19,6 +23,11 @@
 ### Fixed
 
 - Image-heavy `/resume` sessions no longer reparse the complete JSONL once per evicted resident string; one ordered materialization pass performs one authoritative history load while preserving transcript contents and branch state ([#1407](https://github.com/code-yeongyu/senpi/issues/1407))
+
+- Windows RPC host ownership checks no longer treat a temporarily empty process-identity probe
+  for a live PID as evidence that the shared host is dead. Compatible endpoints are reused before
+  ownership probing, preventing concurrent callers from replacing a healthy named-pipe host
+  during a transient Windows CIM observation gap.
 
 - The ask-user overlay now uses plain Enter to confirm and advance through question tabs, keeps multi-select choices intact when confirming, provides an explicit Submit tab for optional comments and partial answers, prevents editor focus traps, and reports partial answers without requiring a comment ([#1573](https://github.com/code-yeongyu/senpi/issues/1573))
 
@@ -42,6 +51,8 @@
 ### Changed
 
 ### Fixed
+
+- Auth and cached provider-settings reload detection now uses file content revisions instead of filesystem mtimes, so rapid same-tick rewrites are observed deterministically.
 
 - A provider-agnostic "Provider is not configured" style refusal no longer ends a goal as a Codex policy rejection. The gate now requires the Codex responses api id, so another provider or gateway emitting the same sentence keeps provider and system recovery instead of blocking the goal; the api id is pinned against the shipped model catalog so renaming it there cannot silently disarm the guard ([#1520](https://github.com/code-yeongyu/senpi/issues/1520))
 

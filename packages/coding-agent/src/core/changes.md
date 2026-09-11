@@ -40,6 +40,29 @@
 
 - LOW: the changelog source resolver and its config imports.
 
+## 2026-09-11 - Keep remote catalog sources clean under the static validation gate
+
+### What changed
+
+- `packages/coding-agent/src/core/remote-catalog-merge.ts` is aligned with the repository's
+  enforced Biome formatting.
+- `packages/coding-agent/src/core/remote-catalog-provider.ts` is aligned with the repository's
+  enforced import ordering and formatting.
+
+### Why
+
+- The repository-wide static gate must validate these shared runtime sources without formatter
+  drift; the change preserves their behavior and removes only pre-existing formatting violations.
+
+### Why an extension could not handle it
+
+- These are core model-catalog runtime modules checked directly by the repository static gate;
+  extensions cannot alter their source formatting or import graph.
+
+### Expected merge conflict zones
+
+- LOW around the remote catalog merge and provider imports.
+
 ## 2026-09-11 - Keep static model capabilities authoritative over remote catalog refreshes (senpi#1527)
 
 ### What changed
@@ -81,6 +104,24 @@
 
 - MEDIUM: `packages/coding-agent/src/core/remote-catalog-provider.ts` refresh publication and provider wrapper.
 - LOW: new `packages/coding-agent/src/core/remote-catalog-merge.ts` and the colocated remote catalog regression tests.
+
+## 2026-09-11 - Detect auth changes by content rather than mtime
+
+### What changed
+
+- `packages/coding-agent/src/core/auth-storage.ts` uses SHA-256 file-content revisions for shared reload detection and coalescing.
+
+### Why
+
+- Rapid rewrites may retain the same filesystem mtime and size, so metadata-only revisions can return stale credentials.
+
+### Why an extension could not handle it
+
+- The shared auth snapshot and reload-coalescing state are owned by core storage before provider extensions read them.
+
+### Expected merge conflict zones
+
+- LOW: `packages/coding-agent/src/core/auth-storage.ts` revision reads around reload and cache adoption.
 
 ## 2026-09-10 - Atomic account display-name metadata with shape-keyed sentinel guard (senpi#1495)
 
