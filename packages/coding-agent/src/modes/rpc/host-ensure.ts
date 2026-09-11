@@ -440,7 +440,6 @@ async function probeProtocolInfo(socketPath: string, timeoutMs: number): Promise
 	}
 	return new Promise((resolveProbe) => {
 		const socket = createConnection(resolveSocketTransportAddress(socketPath, process.platform, secret));
-		if (secret) sendSocketHandshake(socket, secret);
 		let buffer = "";
 		let settled = false;
 		const finish = (value?: ProtocolInfo): void => {
@@ -462,6 +461,11 @@ async function probeProtocolInfo(socketPath: string, timeoutMs: number): Promise
 		});
 		socket.once("error", () => finish());
 		socket.once("close", () => finish());
+		// Register the error listener before sending the Windows named-pipe handshake.
+		// When an idle host has already removed its pipe, the handshake write can
+		// surface ENOENT immediately; without the listener this probe escapes instead
+		// of becoming the expected "no existing host" result for the next ensure.
+		if (secret) sendSocketHandshake(socket, secret);
 	});
 }
 

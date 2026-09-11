@@ -11,11 +11,16 @@
   observation-gap and compatible-endpoint reuse contracts.
 - The regression diagnostics distinguish compatible reuse from ownership probing, and retain the
   original readiness/cleanup evidence instead of replacing it with a termination side effect.
+- The existing-host probe installs its named-pipe error listener before sending the Windows
+  handshake, so a pipe removed during idle exit is observed as an absent endpoint instead of
+  escaping as an unhandled `ENOENT`.
 
 ### Why
 
 - Windows named-pipe startup could misclassify a live shared host after an empty or unavailable
-  process identity observation, then enter replacement startup and terminate the valid host.
+  process identity observation, then enter replacement startup and terminate the valid host. A
+  second ensure after idle exit could also race the pipe removal and fail before it could start
+  a fresh host.
 
 ### Why an extension could not handle it
 
