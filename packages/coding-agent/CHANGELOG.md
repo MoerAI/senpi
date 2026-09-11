@@ -17,7 +17,7 @@
 
 ### Changed
 
-- `update_goal` with status `blocked` is now rejected while a live resumption channel (monitor, background session, detached eval cell, child task, or pending question) can still deliver, and again until the same blocker has survived three goal turns since the goal became active or the user last spoke; the goal continuation prompt states both rules, declares retries unbounded, and requires the completion audit to match verification scope to requirement scope. `create_goal` now carries a decision rule for work that outlives the turn instead of "only when explicitly requested".
+- The goal continuation prompt and the `update_goal` tool description now spell out when a goal may be marked blocked: never while a live resumption channel (monitor, background session, detached eval cell, child task, or pending question) can still deliver, and not until the same blocker has survived three goal turns since the goal became active or the user last spoke. Both surfaces declare retries unbounded and require the completion audit to match verification scope to requirement scope, and `create_goal` now carries a decision rule for work that outlives the turn instead of "only when explicitly requested". The transition itself stays model-controlled: `update_goal` enforces only that a `blocked` call carries a reason, so a model that judges the audit passed is never mechanically refused.
 - The GPT-6 Astra preset drops its three-attempt failure cap for an unbounded-retry rule that widens the source on an empty lookup, ends a turn only when a pending handle will wake the session, requires a named next step to be taken in the same turn, and defaults its question tool to the non-blocking mode.
 
 ### Fixed
@@ -39,6 +39,10 @@
 - A provider-owned login pool is merged onto the stored pool at commit time instead of overwriting it with the pre-browser-flow snapshot, so a sibling account's rotated refresh token and rate-limit block survive another account's interactive login.
 - The Claude SDK lane's session-lock and bare `invalid_request` remint, and its `Provider is not configured:` fallback exclusion, are scoped to that provider: provider-agnostic stream stalls keep consuming the shared same-model retry budget and still escalate to the configured fallback chain, and another provider's auth miss or `invalid_request` still hops the chain.
 - OAuth login no longer paints two live `>` prompts when the browser callback finishes before the paste-code field is submitted, and an interleaved waiting or info step replaces (never duplicates) the live `(to cancel)`/`(to close)` hint row.
+- A Windows RPC reuse probe registers its socket error listener before it writes the named-pipe handshake, so a pipe an idle host removed while the probe was in flight is observed as "no existing host" and the caller starts a fresh one, instead of the `ENOENT` escaping the probe and failing the session start ([#1593](https://github.com/code-yeongyu/senpi/pull/1593)).
+- A terminal provider policy rejection now blocks the active goal instead of queuing automatic recoveries that cannot succeed, and the unstructured Codex diagnostic (`This request was blocked by our safety systems`) is trusted only when the message carries the Codex responses api id, so a provider-agnostic "Provider is not configured" style refusal from another provider or gateway keeps its ordinary provider and system recovery; the api id is pinned against the shipped model catalog so renaming it there cannot silently disarm the guard ([#1520](https://github.com/code-yeongyu/senpi/issues/1520) by [@rlaope](https://github.com/rlaope)).
+- A persisted Claude SDK binding whose prompt or toolset drifted after a stream-start timeout now forks the stored session at its last assistant UUID instead of flattening megabytes of transcript into a fresh request, and the timeout and a bare `invalid_request` remint the same model instead of hard-hopping onto an unauthenticated gateway route ([#1304](https://github.com/code-yeongyu/senpi/pull/1304) by [@eddieparc](https://github.com/eddieparc)).
+- Auth and cached provider-settings reload detection now uses file content revisions instead of filesystem mtimes, so two rewrites inside one filesystem timestamp tick are still observed and the session picks up the newer credentials deterministically.
 
 ### Removed
 
@@ -51,10 +55,6 @@
 ### Changed
 
 ### Fixed
-
-- Auth and cached provider-settings reload detection now uses file content revisions instead of filesystem mtimes, so rapid same-tick rewrites are observed deterministically.
-
-- A provider-agnostic "Provider is not configured" style refusal no longer ends a goal as a Codex policy rejection. The gate now requires the Codex responses api id, so another provider or gateway emitting the same sentence keeps provider and system recovery instead of blocking the goal; the api id is pinned against the shipped model catalog so renaming it there cannot silently disarm the guard ([#1520](https://github.com/code-yeongyu/senpi/issues/1520))
 
 - A bare `.` submitted on a session that already has messages no longer renders as a user message in the TUI. It stays the manual-continue shortcut the session delivers as a hidden continuation, so nothing is painted for it while idle or while steering an active turn; a `.` on an empty session and a `.` carrying image attachments remain ordinary user input ([#1569](https://github.com/code-yeongyu/senpi/issues/1569))
 
