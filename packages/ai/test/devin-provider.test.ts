@@ -86,6 +86,18 @@ describe.sequential("devin provider", () => {
 		});
 	});
 
+	it("authenticates discovery with the prefixed session token", async () => {
+		let seen: string | undefined;
+		const baseUrl = await serve((req, res) => {
+			seen = req.headers.authorization;
+			res.writeHead(200, { "content-type": "application/connect+proto" });
+			res.end(unaryFrame({ clientModelConfigs: [{ modelUid: "swe-2", label: "SWE-2", maxTokens: 128_000 }] }));
+		});
+
+		await fetchDevinModels({ apiKey: "abc", baseUrl });
+		expect(seen).toBe("Bearer devin-session-token$abc");
+	});
+
 	it("keeps the static seed when discovery fails or returns nothing", async () => {
 		const errorUrl = await serve((_req, res) => {
 			res.writeHead(500);

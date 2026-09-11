@@ -10,7 +10,7 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import type { Model } from "../../types.ts";
 import { GetCliModelConfigsRequestSchema, GetCliModelConfigsResponseSchema } from "./gen/cascade_pb.ts";
-import { devinCliMetadata } from "./metadata.ts";
+import { devinCliMetadata, normalizeDevinSessionToken } from "./metadata.ts";
 import { DEVIN_CLI_MODEL_CONFIGS_PATH, DEVIN_DEFAULT_BASE_URL } from "./paths.ts";
 
 const DISCOVERY_TIMEOUT_MS = 5_000;
@@ -39,6 +39,7 @@ export async function fetchDevinModels(options: DevinDiscoveryOptions): Promise<
 			headers: {
 				"content-type": "application/connect+proto",
 				"connect-protocol-version": "1",
+				authorization: `Bearer ${normalizeDevinSessionToken(options.apiKey)}`,
 			},
 			body: payload,
 			signal: controller.signal,
@@ -78,7 +79,7 @@ function toModel(config: {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: DEFAULT_CONTEXT_WINDOW,
 		maxTokens: config.maxTokens > 0 ? config.maxTokens : DEFAULT_MAX_TOKENS,
-	} as unknown as Model<"devin-agent">;
+	};
 }
 
 /** Unary Connect bodies use the same 5-byte prefix, uncompressed. */

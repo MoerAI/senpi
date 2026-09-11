@@ -20,7 +20,7 @@ function devinModel(id: string, name: string, contextWindow: number, maxTokens: 
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow,
 		maxTokens,
-	} as unknown as Model<"devin-agent">;
+	};
 }
 
 export const DEVIN_MODELS: Model<"devin-agent">[] = [
