@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- Remote pi.dev catalog refreshes no longer lower or replace capabilities declared by Senpi's static model catalog; existing rows and `-fast` variants remain authoritative, conflicting provider/model fields are exposed through the remote-catalog diagnostics API, and malformed remote rows are rejected.
+
 - The Windows RPC host supervisor now creates its internal socket directory recursively and provisions a missing public socket secret while reusing an existing valid one, so launching `--internal-rpc-host-supervisor` directly on a fresh profile reaches its listener instead of crashing with `ENOENT ... mkdir '<agentDir>\rpc-host-daemon\internal-<uuid>'` and then `ENOENT ... open '<publicSocket>.secret'` ([#1370](https://github.com/code-yeongyu/senpi/issues/1370))
 
 - A pool slot holding a provider's managed sentinel (`claude-sdk-oauth-managed`) is healed the moment auth.json is read and the repair is written back once, so a second login on an affected build no longer leaves a dead `login-N` entry that hard-errors every request whose affinity picks it; the rotation classifier also treats an unconfigured-slot auth miss as a per-credential failure, so a single bad slot can never dead-end a healthy multi-account pool.
