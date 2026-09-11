@@ -5,6 +5,7 @@
 ### What changed
 
 - `packages/coding-agent/src/core/changelog-source.ts`: resolves the engine or brand changelog path, source identity, authored version, and link rewriting policy used by interactive notifications.
+- `packages/coding-agent/src/core/settings-manager.ts`: stores changelog seen versions in source-keyed settings slots without cross-edition clobbering.
 
 ### Why
 
