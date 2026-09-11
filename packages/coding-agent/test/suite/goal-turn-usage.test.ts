@@ -6,8 +6,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import goalExtension from "../../src/core/extensions/builtin/goal/index.ts";
 import { readGoal } from "../../src/core/extensions/builtin/goal/store.ts";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "../../src/core/extensions/types.ts";
-import { GOAL_CONTINUATION_MESSAGE_TYPE } from "../../src/core/messages.ts";
-import type { SessionEntry } from "../../src/core/session-manager.ts";
 
 type AnyTool = ToolDefinition<any, any, any>;
 type Handler = (event: unknown, ctx: ExtensionContext) => Promise<unknown> | unknown;
@@ -38,7 +36,7 @@ function createGoalHarness(): GoalHarness {
 
 const tempDirs: string[] = [];
 
-async function makeCtx(threadId = "thread-usage", branch: SessionEntry[] = []): Promise<ExtensionContext> {
+async function makeCtx(threadId = "thread-usage"): Promise<ExtensionContext> {
 	const dir = await mkdtemp(join(tmpdir(), "senpi-goal-usage-"));
 	tempDirs.push(dir);
 	return {
@@ -52,22 +50,9 @@ async function makeCtx(threadId = "thread-usage", branch: SessionEntry[] = []): 
 			getSessionFile: () => join(dir, "session.jsonl"),
 			getSessionDir: () => dir,
 			getSessionId: () => threadId,
-			getBranch: () => branch,
+			getBranch: () => [],
 		},
 	} as unknown as ExtensionContext;
-}
-
-function deliveredContinuations(count: number): SessionEntry[] {
-	return Array.from(
-		{ length: count },
-		() =>
-			({
-				type: "custom_message",
-				customType: GOAL_CONTINUATION_MESSAGE_TYPE,
-				content: "Continue working toward the active thread goal.",
-				display: false,
-			}) as unknown as SessionEntry,
-	);
 }
 
 function storeRefFor(ctx: ExtensionContext) {
@@ -146,7 +131,7 @@ describe("goal mid-turn token usage accounting", () => {
 
 	it("update_goal blocked mid-turn reports tokens accumulated from streamed assistant messages", async () => {
 		const harness = createGoalHarness();
-		const ctx = await makeCtx("thread-usage", deliveredContinuations(2));
+		const ctx = await makeCtx();
 		await harness.tools
 			.get("create_goal")
 			?.execute("c1", { objective: "Wait for a decision" }, undefined, undefined, ctx);
