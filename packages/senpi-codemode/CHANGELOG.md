@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- The eval schema now explains that runs require an explicit language, and invalid language values produce a distinct error from an omitted language; `peek` and `stop` remain language-free ([#1395](https://github.com/code-yeongyu/senpi/issues/1395)).
 - Column-capped eval output now preserves a recoverable full-output artifact ([#1597](https://github.com/code-yeongyu/senpi/issues/1597)).
 
 ### Removed
