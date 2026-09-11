@@ -162,11 +162,7 @@ function activateHighlighted(ctx: AskUserKeyHandlerContext, confirm: boolean): v
 	ctx.emitProgress();
 	ctx.updateAll();
 	if (confirm) {
-		if (
-			!state.activeQuestion.multiSelect &&
-			state.request.waitForAnswer &&
-			state.request.questions.length === 1
-		) {
+		if (!state.activeQuestion.multiSelect && state.request.waitForAnswer && state.request.questions.length === 1) {
 			ctx.attemptSubmit();
 		} else {
 			state.advance();

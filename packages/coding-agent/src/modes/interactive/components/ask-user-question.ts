@@ -16,8 +16,8 @@ import {
 	renderOwnAnswerLabel,
 	renderQuestionLine,
 	renderQuestionList,
-	renderSubmitSummary,
 	renderSubmitLine,
+	renderSubmitSummary,
 	renderTabBar,
 	renderTitle,
 } from "./ask-user-question-render.ts";
@@ -199,7 +199,9 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 		);
 
 		this.listContainer.clear();
-		for (const line of this.state.focus === "submit" ? renderSubmitSummary(this.state) : renderQuestionList(this.state)) {
+		for (const line of this.state.focus === "submit"
+			? renderSubmitSummary(this.state)
+			: renderQuestionList(this.state)) {
 			this.listContainer.addChild(new Text(line, 1, 0));
 		}
 

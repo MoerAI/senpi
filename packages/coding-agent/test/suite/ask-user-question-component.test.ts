@@ -215,7 +215,6 @@ describe("AskUserQuestionComponent", () => {
 	});
 
 	it("submits a single-select question with Enter", () => {
-		const h = mount();
 		const request = buildRequest();
 		const single = mount({ ...request, questions: [request.questions[0]!] });
 

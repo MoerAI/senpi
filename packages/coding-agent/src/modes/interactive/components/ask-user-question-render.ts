@@ -22,9 +22,10 @@ export function renderTabBar(state: AskUserQuestionState): string {
 			? theme.fg("accent", theme.bold(`→ ${label}`))
 			: theme.fg("muted", `  ${label}`);
 	});
-	const submit = state.activeTabIndex === state.request.questions.length
-		? theme.fg("accent", theme.bold("→ Submit"))
-		: theme.fg("muted", "  Submit");
+	const submit =
+		state.activeTabIndex === state.request.questions.length
+			? theme.fg("accent", theme.bold("→ Submit"))
+			: theme.fg("muted", "  Submit");
 	return [...tabs, submit].join("  ");
 }
 
@@ -56,7 +57,7 @@ export function renderSubmitSummary(state: AskUserQuestionState): string[] {
 	return state.request.questions.map((question) => {
 		const answer = state.answers()[question.id];
 		if (!answer) return theme.fg("warning", `${question.header}: unanswered`);
-		const value = answer.selected.length > 0 ? answer.selected.join(", ") : answer.text ?? "";
+		const value = answer.selected.length > 0 ? answer.selected.join(", ") : (answer.text ?? "");
 		return `${question.header}: ${value}`;
 	});
 }
@@ -80,8 +81,7 @@ export function renderSubmitLine(state: AskUserQuestionState): string {
 		return theme.fg("accent", theme.bold(`Submit (${answered}/${total} answered)`));
 	}
 	return (
-		theme.fg("accent", theme.bold(`Submit (${answered}/${total} answered)`)) +
-		theme.fg("muted", " — Enter advances")
+		theme.fg("accent", theme.bold(`Submit (${answered}/${total} answered)`)) + theme.fg("muted", " — Enter advances")
 	);
 }
 

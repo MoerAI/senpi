@@ -57,8 +57,7 @@ function answeredLines(response: QuestionResponse, questions: Questions): string
 
 function formatBody(response: QuestionResponse, questions: Questions): string {
 	switch (response.status) {
-		case "answered":
-		{
+		case "answered": {
 			const lines = answeredLines(response, questions);
 			const unanswered = response.unanswered.map((id) => headerFor(id, questions));
 			if (unanswered.length > 0) lines.push(`Unanswered: ${unanswered.join(", ")}`);
