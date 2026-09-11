@@ -57,7 +57,9 @@ describe("prompt surfaces render each stance in exactly one home", () => {
 
 		// then
 		expect(updateGoal.toLowerCase()).toContain("audit");
-		expect(surfacesContaining(surfaces, /automatic wake-ups spent waiting are not attempts/)).toEqual(["continuation"]);
+		expect(surfacesContaining(surfaces, /automatic wake-ups spent waiting are not attempts/)).toEqual([
+			"continuation",
+		]);
 		expect(surfacesContaining(surfaces, /let it wake the goal/)).toEqual(["continuation"]);
 		expect(surfacesContaining(surfaces, /Never block because the work is hard/)).toEqual(["continuation"]);
 		expect(surfacesContaining(surfaces, /resumption channel/)).toEqual(["continuation", "updateGoal"]);
