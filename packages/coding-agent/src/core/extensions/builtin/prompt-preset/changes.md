@@ -10,7 +10,7 @@
 ### Why
 
 - A survey of the same 703 sessions found Astra ending 14.9% of its human-facing turns on a named next step it never took (claude-fable 3.0%, claude-opus 3.7%, kimi 3.1%), and 12.2% of them with open todos and no goal. Three rules produced that: `turn-end-is-wait` was the loudest rule in the file and made ending the turn unconditional; the Reporting sentence let announcing the next step stand in for taking it; and `failure-cap` capped attempts at three and terminated in a question, which for the model the Astra guide already describes as asking more and stopping earlier reads as permission to stop. Codex's own Astra template takes the opposite line ("Do not stop at acknowledging capability, proposing a plan, or offering to continue") and makes `request_user_input` non-blocking outside Plan mode, with Default mode telling the model to prefer reasonable assumptions and continue with best judgment.
-- Token cost (o200k, gpt-tokenizer, same tool set as the 2026-09-10 entry): recorded in the PR; the four edits are replacements, and the rule count is unchanged at 28.
+- Token cost (o200k via gpt-tokenizer; eval, read, bash, monitor, task, todo, request_user_input, ask_user_question selected): gpt-6-astra 3584 -> 3628 (+44). The first draft measured +107; the turn-end rule had re-listed the handles `async-default` already names, and `stay-direct-exceptions` carried its own do-not-trust-absence clause beside the new retry rule, so both were folded into one home. The remaining growth is the same-turn clause in Reporting, the cost-of-stopping sentence in `approval-last`, and the widen-the-source clause in `unbounded-retry`, each of which names a failure the survey measured. Rule count unchanged at 28.
 
 ### Why an extension could not handle it
 
