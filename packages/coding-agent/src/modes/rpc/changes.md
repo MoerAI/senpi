@@ -1,5 +1,36 @@
 # changes
 
+## 2026-09-11 - Preserve shared hosts across transient empty identity probes
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/host-ensure.ts` now reaches the compatible endpoint
+  decision before consulting an ownership identity probe, so concurrent callers can reuse a
+  healthy shared host even when the platform probe is temporarily unavailable.
+- `packages/coding-agent/test/rpc-host-identity-regression.test.ts` records the live-PID
+  observation-gap and compatible-endpoint reuse contracts.
+- The regression diagnostics distinguish compatible reuse from ownership probing, and retain the
+  original readiness/cleanup evidence instead of replacing it with a termination side effect.
+- The existing-host probe installs its named-pipe error listener before sending the Windows
+  handshake, so a pipe removed during idle exit is observed as an absent endpoint instead of
+  escaping as an unhandled `ENOENT`.
+
+### Why
+
+- Windows named-pipe startup could misclassify a live shared host after an empty or unavailable
+  process identity observation, then enter replacement startup and terminate the valid host. A
+  second ensure after idle exit could also race the pipe removal and fail before it could start
+  a fresh host.
+
+### Why an extension could not handle it
+
+- Endpoint ownership, compatibility probing, and host replacement are RPC supervisor operations
+  that execute before extension code is available.
+
+### Expected merge conflict zones
+
+- LOW around `host-ensure.ts` endpoint compatibility and ownership probe ordering.
+
 ## 2026-09-11 - Partial ask-user responses resolve with unanswered ids
 
 ### What changed

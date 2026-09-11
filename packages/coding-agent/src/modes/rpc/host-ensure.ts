@@ -154,13 +154,13 @@ async function ensureHostLocked(
 ): Promise<EnsuredHost> {
 	const pidFile = await readPidFile(paths);
 	const protocol = await probeProtocolInfo(socket, EXISTING_HOST_PROBE_TIMEOUT_MS);
-	const probe = testOptions?.readProcessStartTime ?? readProcessStartTime;
-	const pidMatches = pidFile ? await processMatchesPidFile(pidFile, probe) : false;
 	if (isCompatible(protocol)) {
 		// A compatible socket is attachable even when another client surface
 		// started it. Only hosts we spawned are eligible for lifecycle management.
 		return { pid: pidFile?.pid ?? 0, socket, reused: true };
 	}
+	const probe = testOptions?.readProcessStartTime ?? readProcessStartTime;
+	const pidMatches = pidFile ? await processMatchesPidFile(pidFile, probe) : false;
 	if (protocol && !pidMatches) {
 		throw new Error(`RPC socket ${socket} is owned by an unmanaged host`);
 	}
@@ -440,7 +440,6 @@ async function probeProtocolInfo(socketPath: string, timeoutMs: number): Promise
 	}
 	return new Promise((resolveProbe) => {
 		const socket = createConnection(resolveSocketTransportAddress(socketPath, process.platform, secret));
-		if (secret) sendSocketHandshake(socket, secret);
 		let buffer = "";
 		let settled = false;
 		const finish = (value?: ProtocolInfo): void => {
@@ -462,6 +461,11 @@ async function probeProtocolInfo(socketPath: string, timeoutMs: number): Promise
 		});
 		socket.once("error", () => finish());
 		socket.once("close", () => finish());
+		// Register the error listener before sending the Windows named-pipe handshake.
+		// When an idle host has already removed its pipe, the handshake write can
+		// surface ENOENT immediately; without the listener this probe escapes instead
+		// of becoming the expected "no existing host" result for the next ensure.
+		if (secret) sendSocketHandshake(socket, secret);
 	});
 }
 

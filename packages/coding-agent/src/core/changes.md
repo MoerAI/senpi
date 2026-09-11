@@ -19,6 +19,29 @@
 
 - LOW: the changelog source resolver and its config imports.
 
+## 2026-09-11 - Keep remote catalog sources clean under the static validation gate
+
+### What changed
+
+- `packages/coding-agent/src/core/remote-catalog-merge.ts` is aligned with the repository's
+  enforced Biome formatting.
+- `packages/coding-agent/src/core/remote-catalog-provider.ts` is aligned with the repository's
+  enforced import ordering and formatting.
+
+### Why
+
+- The repository-wide static gate must validate these shared runtime sources without formatter
+  drift; the change preserves their behavior and removes only pre-existing formatting violations.
+
+### Why an extension could not handle it
+
+- These are core model-catalog runtime modules checked directly by the repository static gate;
+  extensions cannot alter their source formatting or import graph.
+
+### Expected merge conflict zones
+
+- LOW around the remote catalog merge and provider imports.
+
 ## 2026-09-11 - Keep static model capabilities authoritative over remote catalog refreshes (senpi#1527)
 
 ### What changed
