@@ -16,6 +16,7 @@ import {
 	renderOwnAnswerLabel,
 	renderQuestionLine,
 	renderQuestionList,
+	renderSubmitSummary,
 	renderSubmitLine,
 	renderTabBar,
 	renderTitle,
@@ -49,8 +50,10 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 	private readonly questionText: Text;
 	private readonly listContainer = new Container();
 	private readonly ownAnswerContainer = new Container();
+	private readonly submitContainer = new Container();
 	private readonly noticeText: Text;
 	private readonly submitText: Text;
+	private readonly hintsText: Text;
 	private readonly keyHandlerContext: AskUserKeyHandlerContext;
 	private countdownLabel = "";
 	private settled = false;
@@ -87,14 +90,13 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 		this.addChild(this.questionText);
 		this.addChild(this.listContainer);
 		this.addChild(this.ownAnswerContainer);
-		this.addChild(new Spacer(1));
-		this.addChild(new Text(renderCommentLabel(), 1, 0));
-		this.addChild(this.commentInput);
+		this.addChild(this.submitContainer);
 		this.noticeText = new Text("", 1, 0);
 		this.addChild(this.noticeText);
 		this.submitText = new Text("", 1, 0);
 		this.addChild(this.submitText);
-		this.addChild(new Text(renderHintsLine(), 1, 0));
+		this.hintsText = new Text("", 1, 0);
+		this.addChild(this.hintsText);
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 
@@ -131,27 +133,26 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 		this.countdown?.dispose();
 	}
 
-	private openOwnAnswer(): void {
+	private openOwnAnswer(initialText?: string): void {
 		this.state.focus = "own-answer";
-		this.ownAnswerInput.setValue(this.state.textFor(this.state.activeQuestion.id) ?? "");
+		this.ownAnswerInput.setValue(initialText ?? this.state.textFor(this.state.activeQuestion.id) ?? "");
 		this.updateAll();
 	}
 
 	private commitOwnAnswer(): void {
 		this.state.setOwnAnswer(this.state.activeQuestion.id, this.ownAnswerInput.getValue());
-		this.state.focus = "options";
 		this.emitProgress();
-		this.updateAll();
 	}
 
 	private attemptSubmit(): void {
 		this.state.comment = this.commentInput.getValue();
-		const outcome = this.state.submitOutcome();
+		const outcome = this.state.submitOutcome(this.state.notice !== undefined);
 		if (!outcome) {
 			this.state.notice = NOT_ANSWERED_NOTICE;
 			this.updateAll();
 			return;
 		}
+		this.state.acceptPartialSubmit();
 		this.finish(outcome);
 	}
 
@@ -179,7 +180,7 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 
 	private applyFocusFlags(): void {
 		this.ownAnswerInput.focused = this._focused && this.state.focus === "own-answer";
-		this.commentInput.focused = this._focused && this.state.focus === "comment";
+		this.commentInput.focused = this._focused && this.state.focus === "submit";
 	}
 
 	private updateTitle(): void {
@@ -190,10 +191,12 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 		this.updateTitle();
 		this.applyFocusFlags();
 		this.tabText.setText(renderTabBar(this.state));
-		this.questionText.setText(renderQuestionLine(this.state.activeQuestion));
+		this.questionText.setText(
+			this.state.focus === "submit" ? "Review your answers" : renderQuestionLine(this.state.activeQuestion),
+		);
 
 		this.listContainer.clear();
-		for (const line of renderQuestionList(this.state)) {
+		for (const line of this.state.focus === "submit" ? renderSubmitSummary(this.state) : renderQuestionList(this.state)) {
 			this.listContainer.addChild(new Text(line, 1, 0));
 		}
 
@@ -203,7 +206,14 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 			this.ownAnswerContainer.addChild(this.ownAnswerInput);
 		}
 
+		this.submitContainer.clear();
+		if (this.state.focus === "submit") {
+			this.submitContainer.addChild(new Spacer(1));
+			this.submitContainer.addChild(new Text(renderCommentLabel(), 1, 0));
+			this.submitContainer.addChild(this.commentInput);
+		}
 		this.noticeText.setText(renderNotice(this.state.notice));
 		this.submitText.setText(renderSubmitLine(this.state));
+		this.hintsText.setText(renderHintsLine(this.state));
 	}
 }

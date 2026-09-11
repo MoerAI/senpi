@@ -11,11 +11,13 @@ import type { QuestionRequest, QuestionResponse } from "../../../core/extensions
 
 export type QuestionAnswers = QuestionResponse["answers"];
 export type QuestionDraft = { answers?: QuestionAnswers; comment?: string };
-export type QuestionFocus = "options" | "own-answer" | "comment";
+export type QuestionFocus = "options" | "own-answer" | "submit";
 
-export const COMMENT_LABEL = "Comment (sent as your reply; other questions stay unanswered)";
+export const COMMENT_LABEL = "Comment (optional; unanswered questions are reported)";
 export const OWN_ANSWER_LABEL = "Type your own answer...";
 export const NOT_ANSWERED_NOTICE = "You have not answered all questions";
+export const DISMISS_NOTICE = "Press Esc again to dismiss (answers will be discarded)";
+export const PARTIAL_SUBMIT_NOTICE = "Press Enter again to submit with unanswered questions";
 
 /** Countdown chip label: minutes above five minutes, mm:ss at or below. */
 export function formatCountdownLabel(remainingMs: number): string {
@@ -33,6 +35,7 @@ export class AskUserQuestionState {
 	focus: QuestionFocus = "options";
 	notice: string | undefined;
 	comment: string | undefined;
+	private dismissPending = false;
 	private readonly selected = new Map<string, string[]>();
 	private readonly texts = new Map<string, string>();
 
@@ -53,12 +56,67 @@ export class AskUserQuestionState {
 		return this.ownAnswerRowIndex + 1;
 	}
 
+	get activeTabIndex(): number {
+		return this.focus === "submit" ? this.request.questions.length : this.activeIndex;
+	}
+
 	switchQuestion(delta: number): void {
-		const count = this.request.questions.length;
-		if (count <= 1) return;
-		this.activeIndex = (this.activeIndex + delta + count) % count;
+		this.switchTab(delta);
+	}
+
+	switchTab(delta: number): void {
+		const count = this.request.questions.length + 1;
+		const next = (this.activeTabIndex + delta + count) % count;
+		if (next === this.request.questions.length) {
+			this.focus = "submit";
+		} else {
+			this.focus = "options";
+			this.activeIndex = next;
+			this.highlightIndex = 0;
+		}
+		this.dismissPending = false;
+		this.notice = undefined;
+	}
+
+	advance(): void {
+		if (this.activeIndex + 1 < this.request.questions.length) {
+			this.activeIndex += 1;
+			this.highlightIndex = 0;
+			this.notice = undefined;
+			this.dismissPending = false;
+			return;
+		}
+		this.focus = "submit";
 		this.highlightIndex = 0;
 		this.notice = undefined;
+		this.dismissPending = false;
+	}
+
+	returnToOptions(): void {
+		this.focus = "options";
+		this.highlightIndex = 0;
+		this.notice = undefined;
+		this.dismissPending = false;
+	}
+
+	requestDismiss(): "confirm" | "cancel" {
+		if (!this.hasDraft()) return "cancel";
+		if (!this.dismissPending) {
+			this.dismissPending = true;
+			this.notice = DISMISS_NOTICE;
+			return "confirm";
+		}
+		return "cancel";
+	}
+
+	acceptPartialSubmit(): void {
+		this.dismissPending = false;
+		this.notice = undefined;
+	}
+
+	private hasDraft(): boolean {
+		if ((this.comment ?? "").trim() !== "") return true;
+		return this.request.questions.some((question) => this.isAnswered(question.id));
 	}
 
 	selectedFor(questionId: string): string[] {
@@ -122,10 +180,11 @@ export class AskUserQuestionState {
 		return this.request.questions.filter((question) => !this.isAnswered(question.id)).map((q) => q.id);
 	}
 
-	/** Submit outcome: comment wins, then completeness; undefined means stay open. */
-	submitOutcome(): "answered" | "comment-submitted" | undefined {
+	/** Submit outcome: comment wins, then answers; undefined means stay open. */
+	submitOutcome(forcePartial = false): "answered" | "comment-submitted" | undefined {
 		if ((this.comment ?? "").trim() !== "") return "comment-submitted";
 		if (this.unanswered().length === 0) return "answered";
+		if (forcePartial) return "answered";
 		return undefined;
 	}
 

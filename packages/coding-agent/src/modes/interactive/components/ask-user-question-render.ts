@@ -7,7 +7,7 @@
 import type { QuestionRequest } from "../../../core/extensions/types.ts";
 import { theme } from "../theme/theme.ts";
 import { type AskUserQuestionState, COMMENT_LABEL, OWN_ANSWER_LABEL } from "./ask-user-question-state.ts";
-import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
+import { rawKeyHint } from "./keybinding-hints.ts";
 
 export function renderTitle(countdownLabel: string): string {
 	const suffix = countdownLabel === "" ? "" : theme.fg("muted", ` · ${countdownLabel}`);
@@ -18,11 +18,14 @@ export function renderTabBar(state: AskUserQuestionState): string {
 	const tabs = state.request.questions.map((question, index) => {
 		const answered = state.isAnswered(question.id) ? theme.fg("success", " ✓") : "";
 		const label = `${question.header}${answered}`;
-		return index === state.activeIndex
+		return index === state.activeTabIndex
 			? theme.fg("accent", theme.bold(`→ ${label}`))
 			: theme.fg("muted", `  ${label}`);
 	});
-	return tabs.join("  ");
+	const submit = state.activeTabIndex === state.request.questions.length
+		? theme.fg("accent", theme.bold("→ Submit"))
+		: theme.fg("muted", "  Submit");
+	return [...tabs, submit].join("  ");
 }
 
 export function renderQuestionLine(question: QuestionRequest["questions"][number]): string {
@@ -49,6 +52,15 @@ export function renderQuestionList(state: AskUserQuestionState): string[] {
 	return lines;
 }
 
+export function renderSubmitSummary(state: AskUserQuestionState): string[] {
+	return state.request.questions.map((question) => {
+		const answer = state.answers()[question.id];
+		if (!answer) return theme.fg("warning", `${question.header}: unanswered`);
+		const value = answer.selected.length > 0 ? answer.selected.join(", ") : answer.text ?? "";
+		return `${question.header}: ${value}`;
+	});
+}
+
 export function renderOwnAnswerLabel(): string {
 	return theme.fg("muted", "Your answer (enter to save, esc to discard)");
 }
@@ -64,26 +76,49 @@ export function renderNotice(notice: string | undefined): string {
 export function renderSubmitLine(state: AskUserQuestionState): string {
 	const answered = state.answeredCount();
 	const total = state.request.questions.length;
+	if (state.focus === "submit") {
+		return theme.fg("accent", theme.bold(`Submit (${answered}/${total} answered)`));
+	}
 	return (
 		theme.fg("accent", theme.bold(`Submit (${answered}/${total} answered)`)) +
-		theme.fg("muted", " — ctrl+enter or enter in comment")
+		theme.fg("muted", " — Enter advances")
 	);
 }
 
-export function renderHintsLine(): string {
+export function renderHintsLine(state: AskUserQuestionState): string {
+	if (state.focus === "submit") {
+		return (
+			rawKeyHint("enter", "submit") +
+			"  " +
+			rawKeyHint("←/shift+tab", "back") +
+			"  " +
+			rawKeyHint("tab", "next question") +
+			"  " +
+			rawKeyHint("esc", "back")
+		);
+	}
+	if (state.focus === "own-answer") {
+		return (
+			rawKeyHint("enter", "save and next") +
+			"  " +
+			rawKeyHint("esc", "discard") +
+			"  " +
+			rawKeyHint("shift+enter", "new line")
+		);
+	}
 	return (
 		rawKeyHint("↑↓", "move") +
 		"  " +
 		rawKeyHint("1-9", "select") +
 		"  " +
-		rawKeyHint("space", "toggle") +
+		rawKeyHint("space", state.activeQuestion.multiSelect ? "toggle" : "select") +
 		"  " +
-		keyHint("tui.select.confirm", "select") +
+		rawKeyHint("enter", "next") +
 		"  " +
 		rawKeyHint("tab", "next question") +
 		"  " +
 		rawKeyHint("c", "comment") +
 		"  " +
-		keyHint("tui.select.cancel", "cancel")
+		rawKeyHint("esc", "cancel")
 	);
 }
