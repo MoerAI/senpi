@@ -1,5 +1,23 @@
 # changes
 
+## 2026-09-11 - Resolve branded changelog sources (senpi#1583)
+
+### What changed
+
+- `packages/coding-agent/src/core/changelog-source.ts`: resolves the engine or brand changelog path, source identity, authored version, and link rewriting policy used by interactive notifications.
+
+### Why
+
+- Branded installations need an independent changelog source and seen-version namespace while the unbranded engine retains its existing release behavior.
+
+### Why an extension could not handle it
+
+- Source selection is required by the interactive host before extension UI can render update notices.
+
+### Expected merge conflict zones
+
+- LOW: the changelog source resolver and its config imports.
+
 ## 2026-09-11 - Keep static model capabilities authoritative over remote catalog refreshes (senpi#1527)
 
 ### What changed
