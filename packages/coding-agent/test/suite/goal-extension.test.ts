@@ -9,7 +9,6 @@ import goalExtension from "../../src/core/extensions/builtin/goal/index.ts";
 import { goalFilePath, readGoal } from "../../src/core/extensions/builtin/goal/store.ts";
 import { didTerminalProviderErrorEndTurn } from "../../src/core/extensions/builtin/goal/terminal-provider-error.ts";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "../../src/core/extensions/types.ts";
-import { GOAL_CONTINUATION_MESSAGE_TYPE } from "../../src/core/messages.ts";
 import type { SessionEntry } from "../../src/core/session-manager.ts";
 
 type AnyTool = ToolDefinition<any, any, any>;
@@ -71,24 +70,6 @@ async function makeCtx(threadId = "thread-test", branchEntries: SessionEntry[] =
 			getBranch: () => branchEntries,
 		},
 	} as unknown as ExtensionContext;
-}
-
-/**
- * Two delivered continuations make the calling turn the third goal turn, which
- * is the floor `update_goal(blocked)` enforces before a model-declared block.
- */
-function earnedBlockBranch(): SessionEntry[] {
-	const timestamp = new Date().toISOString();
-	return [0, 1].map(
-		() =>
-			({
-				type: "custom_message",
-				customType: GOAL_CONTINUATION_MESSAGE_TYPE,
-				content: "Continue working toward the active thread goal.",
-				display: false,
-				timestamp,
-			}) as unknown as SessionEntry,
-	);
 }
 
 function todoStateEntry(
@@ -248,7 +229,7 @@ describe("goal extension contract (budget-free)", () => {
 
 	it("requires a reason to block and suppresses continuation while blocked", async () => {
 		const { tools, handlers, sent } = createGoalHarness();
-		const ctx = await makeCtx("thread-test", earnedBlockBranch());
+		const ctx = await makeCtx();
 		await tools.get("create_goal")?.execute("c1", { objective: "Wait for a decision" }, undefined, undefined, ctx);
 		await expect(
 			tools.get("update_goal")?.execute("u1", { status: "blocked" }, undefined, undefined, ctx),
@@ -441,7 +422,7 @@ describe("goal extension contract (budget-free)", () => {
 
 	it("keeps persisted provider-error blocks resumable", async () => {
 		const { tools, handlers } = createGoalHarness();
-		const ctx = await makeCtx("thread-provider-error-resume", earnedBlockBranch());
+		const ctx = await makeCtx("thread-provider-error-resume");
 		await tools
 			.get("create_goal")
 			?.execute("c1", { objective: "Survive a provider outage" }, undefined, undefined, ctx);
@@ -648,7 +629,6 @@ describe("goal extension contract (budget-free)", () => {
 	it("still allows update_goal blocked while todo tasks remain open", async () => {
 		const { tools } = createGoalHarness();
 		const ctx = await makeCtx("thread-todo-blocked", [
-			...earnedBlockBranch(),
 			todoStateEntry([{ name: "Build", tasks: [{ content: "ship the fix", status: "pending" }] }]),
 		]);
 		await tools.get("create_goal")?.execute("c1", { objective: "Blockable" }, undefined, undefined, ctx);
@@ -717,7 +697,7 @@ function textOf(result: { content?: Array<{ type: string; text?: string }> } | u
 describe("goal extension reload does not auto-start a stopped agent", () => {
 	it("does not queue a continuation on session_start reason 'reload' for a blocked goal", async () => {
 		const { tools, handlers, sent } = createGoalHarness();
-		const ctx = await makeCtx("thread-reload-noop", earnedBlockBranch());
+		const ctx = await makeCtx("thread-reload-noop");
 		await tools.get("create_goal")?.execute("c1", { objective: "Keep going" }, undefined, undefined, ctx);
 		await tools
 			.get("update_goal")
@@ -757,9 +737,8 @@ describe("goal extension resume-on-restart prompt (codex parity)", () => {
 		prompts: string[],
 		choice: (options: string[]) => string | undefined,
 		threadId: string,
-		branchEntries: SessionEntry[] = [],
 	): Promise<ExtensionContext> {
-		const base = await makeCtx(threadId, branchEntries);
+		const base = await makeCtx(threadId);
 		return {
 			...base,
 			hasUI: true,
@@ -777,12 +756,7 @@ describe("goal extension resume-on-restart prompt (codex parity)", () => {
 	it("prompts to resume a blocked goal on session_start reason 'resume'", async () => {
 		const { tools, handlers, sent } = createGoalHarness();
 		const prompts: string[] = [];
-		const ctx = await makeSelectingCtx(
-			prompts,
-			(options) => options[0],
-			"thread-blocked-resume",
-			earnedBlockBranch(),
-		);
+		const ctx = await makeSelectingCtx(prompts, (options) => options[0], "thread-blocked-resume");
 		await tools.get("create_goal")?.execute("c1", { objective: "Finish the migration" }, undefined, undefined, ctx);
 		await tools
 			.get("update_goal")
@@ -799,12 +773,7 @@ describe("goal extension resume-on-restart prompt (codex parity)", () => {
 	it("leaves a blocked goal stopped when the user declines the resume prompt", async () => {
 		const { tools, handlers, sent } = createGoalHarness();
 		const prompts: string[] = [];
-		const ctx = await makeSelectingCtx(
-			prompts,
-			(options) => options[1],
-			"thread-blocked-declined",
-			earnedBlockBranch(),
-		);
+		const ctx = await makeSelectingCtx(prompts, (options) => options[1], "thread-blocked-declined");
 		await tools.get("create_goal")?.execute("c1", { objective: "Finish the migration" }, undefined, undefined, ctx);
 		await tools
 			.get("update_goal")
@@ -820,12 +789,7 @@ describe("goal extension resume-on-restart prompt (codex parity)", () => {
 	it("does not block an RPC session switch on the stopped-goal resume prompt", async () => {
 		const { tools, handlers, sent } = createGoalHarness();
 		const prompts: string[] = [];
-		const selectingCtx = await makeSelectingCtx(
-			prompts,
-			(options) => options[0],
-			"thread-blocked-rpc-resume",
-			earnedBlockBranch(),
-		);
+		const selectingCtx = await makeSelectingCtx(prompts, (options) => options[0], "thread-blocked-rpc-resume");
 		const ctx = { ...selectingCtx, mode: "rpc" } as ExtensionContext;
 		await tools.get("create_goal")?.execute("c1", { objective: "Finish the migration" }, undefined, undefined, ctx);
 		await tools
@@ -1120,7 +1084,7 @@ describe("goal extension session_abort blocks an active goal outside an agent ru
 
 	it("does not block a goal that is already blocked or complete on session_abort", async () => {
 		const { tools, handlers } = createGoalHarness();
-		const ctx = await makeCtx("thread-session-abort-already-blocked", earnedBlockBranch());
+		const ctx = await makeCtx("thread-session-abort-already-blocked");
 		await tools.get("create_goal")?.execute("c1", { objective: "Done waiting" }, undefined, undefined, ctx);
 		await tools
 			.get("update_goal")
