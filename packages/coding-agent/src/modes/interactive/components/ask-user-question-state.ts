@@ -184,6 +184,7 @@ export class AskUserQuestionState {
 	submitOutcome(forcePartial = false): "answered" | "comment-submitted" | undefined {
 		if ((this.comment ?? "").trim() !== "") return "comment-submitted";
 		if (this.unanswered().length === 0) return "answered";
+		if (this.answeredCount() > 0) return "answered";
 		if (forcePartial) return "answered";
 		return undefined;
 	}

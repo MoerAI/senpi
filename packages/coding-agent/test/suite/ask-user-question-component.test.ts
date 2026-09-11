@@ -240,6 +240,18 @@ describe("AskUserQuestionComponent", () => {
 		expect(response?.answers.extras).toEqual({ selected: ["Verbose logging"] });
 	});
 
+	it("submits partial answers without requiring a comment", () => {
+		const h = mount();
+
+		h.component.handleInput("1");
+		h.component.handleInput("c");
+		h.component.handleInput(ENTER);
+
+		expect(h.doneCalls).toHaveLength(1);
+		expect(h.doneCalls[0]?.status).toBe("answered");
+		expect(h.doneCalls[0]?.unanswered).toEqual(["extras"]);
+	});
+
 	it("shows the not-answered notice and stays open on an empty partial submit", () => {
 		const h = mount();
 
