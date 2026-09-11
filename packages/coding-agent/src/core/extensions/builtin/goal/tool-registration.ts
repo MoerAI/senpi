@@ -1,11 +1,5 @@
 import { Type } from "typebox";
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "../../types.ts";
-import {
-	GOAL_BLOCKED_MIN_GOAL_TURNS,
-	goalTurnFloorBlockError,
-	goalTurnsSinceActivation,
-	liveResumptionChannelBlockError,
-} from "./blocked-audit.ts";
 import { formatGoalToolResponse, type GoalToolRenderDetails, goalToolRenderDetails } from "./format.ts";
 import { renderGoalToolCall, renderGoalToolResult } from "./renderers.ts";
 import { createGoal, objectiveFullTextFileName, readGoal, updateGoal } from "./store.ts";
@@ -18,7 +12,6 @@ type GoalToolResult = AgentToolResult<GoalToolRenderDetails>;
 
 export type GoalToolRegistrationDeps = {
 	readonly goalStoreRef: (ctx: ExtensionContext) => GoalStoreRef;
-	readonly liveWakeSources: () => readonly string[];
 	readonly accountCurrentAgentTurn: (ctx: ExtensionContext, mode: GoalAccountingMode) => Promise<Goal | null>;
 	readonly beginAgentGoalAccounting: (goal: Goal) => void;
 	readonly markGoalBlockedThisTurn: (goal: Goal) => void;
@@ -93,7 +86,6 @@ export function registerGoalTools(pi: ExtensionAPI, deps: GoalToolRegistrationDe
 				const openTasks = openTodoTaskContents(ctx.sessionManager.getBranch());
 				if (openTasks.length > 0) throw new Error(openTodoCompletionError(openTasks));
 			}
-			if (params.status === "blocked") await assertBlockedAuditIsEarned(deps, ctx);
 			await deps.accountCurrentAgentTurn(ctx, "active");
 			const goal = await updateGoal(
 				deps.goalStoreRef(ctx),
@@ -122,21 +114,6 @@ export function registerGoalTools(pi: ExtensionAPI, deps: GoalToolRegistrationDe
 		renderCall: (args, theme) => renderGoalToolCall("get_goal", args, theme),
 		renderResult: (result, options, theme) => renderGoalToolResult(result, options, theme),
 	});
-}
-
-/**
- * The two blocked-audit conditions the harness can verify for itself. The model
- * asserted both in prose before, and the sessions that followed blocked goals a
- * live child task was about to resume, and blocked others on the second goal
- * turn against evidence one namespace away.
- */
-async function assertBlockedAuditIsEarned(deps: GoalToolRegistrationDeps, ctx: ExtensionContext): Promise<void> {
-	const goal = await readGoal(deps.goalStoreRef(ctx));
-	if (goal === null || goal.status !== "active") return;
-	const liveSources = deps.liveWakeSources();
-	if (liveSources.length > 0) throw new Error(liveResumptionChannelBlockError(liveSources));
-	const goalTurns = goalTurnsSinceActivation(ctx.sessionManager.getBranch(), goal);
-	if (goalTurns < GOAL_BLOCKED_MIN_GOAL_TURNS) throw new Error(goalTurnFloorBlockError(goalTurns));
 }
 
 function toolText(text: string, details: GoalToolRenderDetails): GoalToolResult {

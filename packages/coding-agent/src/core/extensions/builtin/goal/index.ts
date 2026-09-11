@@ -70,7 +70,6 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	pi.registerEntryRenderer(GOAL_CACHE_WARMUP_ENTRY_TYPE, renderGoalCacheWarmupEntry);
 	registerGoalTools(pi, {
 		goalStoreRef: (ctx) => buildGoalStoreRef(ctx.sessionManager, ctx.cwd),
-		liveWakeSources: () => monitorContinuation.liveWakeSources(),
 		accountCurrentAgentTurn,
 		beginAgentGoalAccounting: (goal) => {
 			monitorContinuation.noteContinuationStarted();
