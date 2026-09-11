@@ -99,7 +99,16 @@ async function run(
 		// "length" means the turn was truncated, and a truncated tool call must not be
 		// advertised as a complete one.
 		if (output.stopReason === "stop" && output.content.some(isToolCall)) output.stopReason = "toolUse";
-		events.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
+		// Cascade reports a server error or a content filter as a stop reason on an
+		// otherwise well-formed stream. senpi's protocol has no "done because it
+		// failed", so that turn terminates as an error event, not a done event.
+		if (output.stopReason === "error") {
+			output.errorMessage ??= "Devin ended the turn with a server error or a content filter";
+			events.push({ type: "error", reason: "error", error: output });
+			events.end();
+			return;
+		}
+		events.push({ type: "done", reason: doneReasonOf(output.stopReason), message: output });
 		events.end();
 	} catch (error) {
 		finalizeBlocks(output, events, state);
@@ -108,6 +117,18 @@ async function run(
 		output.errorMessage = aborted ? "Request was aborted" : messageOf(error);
 		events.push({ type: "error", reason: output.stopReason, error: output });
 		events.end();
+	}
+}
+
+/** Narrows a settled stop reason to the three senpi accepts on a done event. */
+function doneReasonOf(stopReason: AssistantMessage["stopReason"]): "stop" | "length" | "toolUse" {
+	switch (stopReason) {
+		case "length":
+			return "length";
+		case "toolUse":
+			return "toolUse";
+		default:
+			return "stop";
 	}
 }
 

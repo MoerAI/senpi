@@ -173,6 +173,23 @@ describe.sequential("devin-agent stream", () => {
 		expect(done.reason).toBe("length");
 	});
 
+	it("terminates a Cascade server-error stop as an error event, not a done event", async () => {
+		const baseUrl = await serve((_req, res) => {
+			res.writeHead(200, { "content-type": "application/connect+proto" });
+			res.write(frame({ messageId: "m5", deltaText: "partial" }));
+			res.write(frame({ messageId: "m5", stopReason: StopReason.ERROR }));
+			res.write(trailer());
+			res.end();
+		});
+
+		const events = await collect(devinStream({ ...MODEL, baseUrl }, CONTEXT, { apiKey: "session-abc" } as never));
+		const terminal = events.at(-1);
+		expect(terminal?.type).toBe("error");
+		if (terminal?.type !== "error") throw new Error("expected error");
+		expect(terminal.reason).toBe("error");
+		expect(terminal.error.errorMessage).toBeTruthy();
+	});
+
 	it("reports an HTTP failure as a typed error message instead of throwing", async () => {
 		const baseUrl = await serve((_req, res) => {
 			res.writeHead(403, { "content-type": "application/json" });
