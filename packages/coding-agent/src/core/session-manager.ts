@@ -19,6 +19,7 @@ import { StringDecoder } from "string_decoder";
 import { APP_NAME, getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { listSessionInfos, listSessionsFromDir, type SessionListProgress } from "./session-discovery.ts";
+import { materializeSessionEntries } from "./session-entry-materializer.ts";
 import { type ResidentStoreStats, ResidentStringStore } from "./session-resident-store.ts";
 import { reserveSessionWrite } from "./session-write-reservation.ts";
 
@@ -129,6 +130,36 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	originalModelId?: string;
 }
 
+/**
+ * A model switch the session refused. Recorded because the refusal happens
+ * before any `model_change` is appended, which left an attempted-and-rejected
+ * switch indistinguishable from one the user never made (#1526).
+ *
+ * Durability follows the shared session-file contract, it is not special-cased:
+ * `_persist` buffers every entry until the branch holds an assistant message,
+ * so a refusal recorded before the session's first assistant reply reaches the
+ * JSONL only when that reply flushes the buffer. A session that never gets one
+ * keeps the record in memory for its lifetime and never writes a file.
+ */
+export interface ModelChangeRejectedEntry extends SessionEntryBase {
+	type: "model_change_rejected";
+	provider: string;
+	modelId: string;
+	reason: "context-budget" | "auth";
+	/**
+	 * The guard's own explanation, including its remedy. Named `detail` rather
+	 * than `message` so this entry stays structurally distinct from
+	 * `SessionMessageEntry`, whose `message` is an object.
+	 */
+	detail: string;
+	/** Budget numbers; present only for the context-budget reason. */
+	contextWindow?: number;
+	liveContextTokens?: number;
+	requiredTokens?: number;
+	shortfallTokens?: number;
+	safetyMarginProfile?: string;
+}
+
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
@@ -209,6 +240,7 @@ export type SessionEntry =
 	| ThinkingLevelChangeEntry
 	| ConfigurationUpdateEntry
 	| ModelChangeEntry
+	| ModelChangeRejectedEntry
 	| CompactionEntry
 	| BranchSummaryEntry
 	| CustomEntry
@@ -1242,6 +1274,24 @@ export class SessionManager {
 		return entry.id;
 	}
 
+	/**
+	 * Append a refused model switch (#1526). The refusal happens before any
+	 * `model_change` is written, so without this the attempt leaves no trace.
+	 */
+	appendModelChangeRejected(
+		details: Omit<ModelChangeRejectedEntry, "type" | "id" | "parentId" | "timestamp">,
+	): string {
+		const entry: ModelChangeRejectedEntry = {
+			type: "model_change_rejected",
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			...details,
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
 	/** Append a model change as child of current leaf, then advance leaf. Returns entry id. */
 	appendModelChange(
 		provider: string,
@@ -1474,19 +1524,20 @@ export class SessionManager {
 		if (fromId !== undefined && !entriesById.has(fromId) && this.mirrorTrimmed && this.sessionFile) {
 			entriesById = new Map(
 				this._loadFullHistoryEntries()
-					.filter((entry) => entry.type !== "session")
-					.map((entry) => [entry.id, this.residentStore.materialize(entry) as SessionEntry]),
+					.filter((entry): entry is SessionEntry => entry.type !== "session")
+					.map((entry) => [entry.id, this.residentStore.materialize(entry)]),
 			);
 		}
 		let current = startId ? entriesById.get(startId) : undefined;
 		while (current) {
-			path.unshift(this._materializeEntry(current));
+			path.unshift(current);
 			current = current.parentId ? entriesById.get(current.parentId) : undefined;
 		}
+		const materializedPath = this._materializeEntries(path);
 		if (fromId === undefined) {
-			this.branchCache = { leafId: this.leafId, mutation: this.mutationCount, entries: path };
+			this.branchCache = { leafId: this.leafId, mutation: this.mutationCount, entries: materializedPath };
 		}
-		return path;
+		return materializedPath;
 	}
 
 	/**
@@ -1564,10 +1615,27 @@ export class SessionManager {
 			return this.entriesCache.entries;
 		}
 		const entries = this.fileEntries
-			.filter((e): e is SessionEntry => e.type !== "session")
-			.map((entry) => this._materializeEntry(entry));
-		this.entriesCache = { mutation: this.mutationCount, entries };
-		return entries;
+			.filter((e): e is SessionEntry => e.type !== "session");
+		const materializedEntries = this._materializeEntries(entries);
+		this.entriesCache = { mutation: this.mutationCount, entries: materializedEntries };
+		return materializedEntries;
+	}
+
+	private _materializeEntries(entries: readonly SessionEntry[]): SessionEntry[] {
+		return materializeSessionEntries(
+			entries,
+			{
+				residentStore: this.residentStore,
+				loadHistoryEntries: () => this._loadFullHistoryEntries(),
+				onMaterialized: (entry) => {
+					if (entry.type !== "message") return;
+					const order = this.entryOrdersById.get(entry.id);
+					if (order !== undefined) {
+						this.messageEntryPositions.set(entry.message, { entryId: entry.id, order });
+					}
+				},
+			},
+		);
 	}
 
 	private _getCompactEntries(): SessionEntry[] {

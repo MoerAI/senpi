@@ -4,6 +4,32 @@
 
 ### Breaking Changes
 
+### Added
+
+### Changed
+
+### Fixed
+
+- Column-capped eval output now preserves a recoverable full-output artifact ([#1597](https://github.com/code-yeongyu/senpi/issues/1597)).
+
+### Removed
+
+## [2026.9.10-2] - 2026-09-10
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.10] - 2026-09-10
+
+### Breaking Changes
+
 - The eval `timeout` argument is now the cell's run budget (a kill deadline for the cell's own execution time) instead of the interactive detach budget; interactive calls detach at `cellTimeoutSeconds` capped by `foregroundWindowSeconds` regardless of `timeout`, and print/json calls are bounded by the run budget instead of a `cellTimeoutSeconds` idle kill.
 
 ### Added

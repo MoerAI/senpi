@@ -54,10 +54,12 @@ it("broadcasts, replays once after message end, and forgets resolved questions",
 	const id = bridge.pendingQuestions()[0].id;
 	expect(
 		bridge.respond({ type: "extension_ui_response", id, answers: { q1: { selected: ["A"] } }, comment: "" }),
-	).toBe("question_incomplete");
-	expect(bridge.pendingQuestions()).toHaveLength(1);
-	expect(bridge.respond({ type: "extension_ui_response", id, answers: {}, comment: "do it" })).toBe(true);
-	expect(await answer).toMatchObject({ status: "comment-submitted", unanswered: ["q1", "q2"] });
+	).toBe(true);
+	expect(await answer).toMatchObject({
+		status: "answered",
+		answers: { q1: { selected: ["A"] } },
+		unanswered: ["q2"],
+	});
 	await writer.flush();
 	for (const peer of ["a", "b", "c"])
 		expect(records.get(peer)?.filter((line) => line.includes('"question_resolved"'))).toHaveLength(1);
@@ -65,6 +67,16 @@ it("broadcasts, replays once after message end, and forgets resolved questions",
 	attach("d");
 	await writer.flush();
 	expect(records.get("d")).toHaveLength(0);
+});
+it("keeps an empty response pending", async () => {
+	const bridge = new ConnectionQuestionBridge(() => {});
+	const controller = new AbortController();
+	const answer = bridge.ask(request, { signal: controller.signal });
+	const id = bridge.pendingQuestions()[0].id;
+	expect(bridge.respond({ type: "extension_ui_response", id, answers: {}, comment: "" })).toBe("question_incomplete");
+	expect(bridge.pendingQuestions()).toHaveLength(1);
+	controller.abort();
+	expect(await answer).toMatchObject({ status: "cancelled" });
 });
 it("progress rearms idle timeout and timeout retains the draft", async () => {
 	vi.useFakeTimers();
@@ -82,6 +94,20 @@ it("progress rearms idle timeout and timeout retains the draft", async () => {
 	await vi.advanceTimersByTimeAsync(1);
 	expect(await answer).toMatchObject({ status: "timed_out", answers: { q1: { selected: ["A"] } } });
 	expect(output.at(-1)).toMatchObject({ type: "question_resolved", outcome: "timed_out" });
+});
+it("broadcasts the timeout the extension resolved instead of a bare cancel", async () => {
+	const output: object[] = [];
+	const bridge = new ConnectionQuestionBridge((record) => output.push(record));
+	const controller = new AbortController();
+	const answer = bridge.ask(request, { signal: controller.signal });
+	// The ask-user extension owns the authoritative idle timer: it resolves the
+	// pending question `timed_out` and aborts the dialog carrying that status.
+	controller.abort("timed_out");
+	expect(await answer).toMatchObject({ status: "timed_out", unanswered: ["q1", "q2"] });
+	const resolved = output.filter((record) => "type" in record && record.type === "question_resolved");
+	expect(resolved).toHaveLength(1);
+	expect(resolved[0]).toMatchObject({ outcome: "timed_out", unanswered: ["q1", "q2"] });
+	expect(bridge.pendingQuestions()).toHaveLength(0);
 });
 it("cancels once on close and abort", async () => {
 	const output: object[] = [];

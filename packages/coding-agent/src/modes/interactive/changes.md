@@ -1,4 +1,125 @@
+## 2026-09-11 - Ask-user overlay uses an explicit question and submit flow
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-question-state.ts`,
+  `ask-user-question-keys.ts`, `ask-user-question-render.ts`, and `ask-user-question.ts` now model
+  question tabs, an on-demand own-answer editor, and a dedicated Submit tab. Enter confirms and
+  advances, Space toggles multi-select, plain Enter works on every terminal, and the comment editor
+  no longer occupies the bottom of every question or traps navigation.
+
+### Why
+
+- The previous overlay required a terminal-specific ctrl+Enter path for submission, toggled
+  multi-select choices when Enter was used, and routed navigation keys into the always-visible
+  comment input after moving down past the options.
+
+### Why an extension could not handle it
+
+- `AskUserQuestionComponent` owns the interactive-mode focus and key dispatch for the builtin
+  question extension; no extension hook can replace its component-level state machine.
+
+### Expected merge conflict zones
+
+- LOW in the ask-user component siblings and their focused suite; preserve the async widget's
+  `alt+a` expansion and the existing `QuestionResponse` wire shape.
+
+## 2026-09-10 - Safe account labels in footer and English help (senpi#1495)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/footer.ts`: displays `@displayName (name)` for named accounts while pin matching and HRW winner selection still use only immutable `name`; legacy name-only output is unchanged. The right-side colouring no longer re-parses the rendered segment with `^\(([^)]+)\) (.*)$` / `^(.+):([^:]+)$`: `colorRightSide` now receives the provider, fast-mode, model and thinking runs that produced the string and clips each run to what the layout kept, so a label containing `)` or `:` cannot mute the wrong span or turn the model id into a thinking level. The account label is truncated with an ellipsis at 24 columns, so a wide label narrows the provider segment instead of pushing the layout onto `right.minimal`, which dropped the account indicator entirely.
+- `packages/coding-agent/src/modes/interactive/help-content.ts`: documents account rename/clear commands, the normalization/column/uniqueness rules, immutable IDs, environment restrictions and optional post-login naming cancellation.
+
+### Why
+
+- `packages/coding-agent/src/modes/interactive/components/footer.ts` needs readable labels without selecting a different account and without letting a legal label corrupt footer colouring; `packages/coding-agent/src/modes/interactive/help-content.ts` makes the display/identity distinction and new commands discoverable.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/components/footer.ts` owns the host footer's account segment and `packages/coding-agent/src/modes/interactive/help-content.ts` owns the shared English help body; extensions provide the commands, not these presentation surfaces.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/coding-agent/src/modes/interactive/components/footer.ts` account suffix helper and the `colorRightSide` signature (upstream still colours by regex over the rendered string); LOW: `packages/coding-agent/src/modes/interactive/help-content.ts` final help section assembly.
+
+## 2026-09-10 - The "." manual-continue shortcut paints no user echo
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: submissions go through `beginUserEcho()`, which skips the optimistic echo for a bare `.` on a session that already has messages (via the shared `isManualContinueSubmission`); `OptimisticUserEchoController.promptOptions/reject/remove` and `InteractiveUserInput.pendingEchoId` accept `undefined` as "nothing was painted".
+
+### Why
+
+- The session routes that `.` as a hidden continuation, so the echo painted at submit time showed a user bubble the transcript never receives.
+
+### Why this lives in the fork
+
+- The `.` manual-continue shortcut and the optimistic user echo are both fork behavior in `AgentSession.prompt()` and interactive mode.
+
+### Expected merge conflict zones
+
+- LOW: `OptimisticUserEchoController`, `InteractiveUserInput`, and the echo call sites in `setupEditorSubmitHandler` / `handleFollowUp`.
+
+## /tree renders a refused model switch (2026-09-10)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/tree-selector.ts`: `model_change_rejected` gains a render case (`[model rejected: <id> (<reason>)]`, warning colour), search text (`model rejected <id> <reason>`), and membership in the settings/bookkeeping set hidden from the default view.
+
+### Why
+
+- Without the cases the entry fell to `default: result = ""`, so a refused switch (#1526) appeared in `/tree`'s default view as a blank, unsearchable row - the one entry browser the product ships could not reconstruct the incident the record exists for.
+
+### Why an extension could not handle it
+
+- The tree selector owns entry rendering, filtering and search text; extensions cannot contribute renderers for core entry types.
+
+### Expected merge conflict zones
+
+- LOW: the `isSettingsEntry` predicate, `entrySearchText`, and the entry render switch.
+
 ## 2026-09-10 - /tree edits carry the leaf token and reach shared hosts
+# changes
+
+## 2026-09-11 - Show the active brand changelog without cross-source updates (senpi#1583)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: uses the resolved brand or engine changelog source, persists acknowledgements by source, caps entries at the active version, and avoids engine link rewriting and install telemetry for branded sources.
+
+### Why
+
+- A branded product's release notes and version history must remain separate from the engine's release channel and telemetry.
+
+### Why an extension could not handle it
+
+- Interactive startup notices and the `/changelog` command are host-owned rendering paths that execute outside extension control.
+
+### Expected merge conflict zones
+
+- LOW: changelog startup handling and the `/changelog` command in `interactive-mode.ts`.
+
+## 2026-09-02 - Do not paint two live login inputs
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/login-dialog.ts`: `showManualInput` and `showPrompt` remount the single Input widget instead of adding it twice, so a browser-callback login no longer shows two stacked `>` prompts. Every `(to cancel)` / `(to close)` hint row is routed through one tracked live hint (`setLiveHint`), so `showWaiting` and `showInfo(showCloseHint)` REPLACE a previous hint instead of painting beside it, and every content-clearing path resets the tracked hint.
+- `packages/coding-agent/test/suite/regressions/5433-extension-oauth-prompt-input.test.ts`: covers an unsubmitted paste-code prompt followed by the account-name prompt - asserting exactly one live `>` row - plus an interleaved waiting step that must leave exactly one live hint row.
+
+### Why
+
+- Anthropic OAuth completes via localhost callback while the paste-code input is still mounted. The name prompt then added the same Input child again, and the TUI painted two live `>` rows.
+
+### Why an extension could not handle it
+
+- Login chrome is the interactive LoginDialogComponent, not an extension surface.
+
+### Expected merge conflict zones
+
+- LOW: `showManualInput` / `showPrompt` in `login-dialog.ts`.
+
+## 2026-09-01 - Never swallow an interactive quit request
 
 ### What changed
 

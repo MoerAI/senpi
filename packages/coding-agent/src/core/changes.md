@@ -1,3 +1,268 @@
+# changes
+
+## 2026-09-11 - Batch persisted entry hydration after resident-string eviction (senpi#1407)
+
+### What changed
+
+- `packages/coding-agent/src/core/session-entry-materializer.ts` batches missing resident-string recovery for an ordered materialization pass and performs one authoritative JSONL load.
+- `packages/coding-agent/src/core/session-manager.ts` uses the batch helper for `getEntries()` and `getBranch()` while preserving cache identity, branch order, and message-entry position tracking.
+- `packages/coding-agent/test/session-manager/session-mirror-budget.test.ts` proves that an evicted multi-entry read restores all payloads after one full-history parse.
+
+### Why
+
+- Image-heavy resumed sessions could parse the complete JSONL once per evicted large string, turning a bounded resident cache miss into repeated full-history I/O and JSON parsing.
+
+### Why an extension could not handle it
+
+- Resident-string materialization and session branch/cache views are owned by `SessionManager` below the extension boundary.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/coding-agent/src/core/session-manager.ts` materialization and branch/read caches.
+- LOW: new `packages/coding-agent/src/core/session-entry-materializer.ts` and the resident-mirror regression test.
+
+## 2026-09-11 - Resolve branded changelog sources (senpi#1583)
+
+### What changed
+
+- `packages/coding-agent/src/core/changelog-source.ts`: resolves the engine or brand changelog path, source identity, authored version, and link rewriting policy used by interactive notifications.
+- `packages/coding-agent/src/core/settings-manager.ts`: stores changelog seen versions in source-keyed settings slots without cross-edition clobbering.
+
+### Why
+
+- Branded installations need an independent changelog source and seen-version namespace while the unbranded engine retains its existing release behavior.
+
+### Why an extension could not handle it
+
+- Source selection is required by the interactive host before extension UI can render update notices.
+
+### Expected merge conflict zones
+
+- LOW: the changelog source resolver and its config imports.
+
+## 2026-09-11 - Keep remote catalog sources clean under the static validation gate
+
+### What changed
+
+- `packages/coding-agent/src/core/remote-catalog-merge.ts` is aligned with the repository's
+  enforced Biome formatting.
+- `packages/coding-agent/src/core/remote-catalog-provider.ts` is aligned with the repository's
+  enforced import ordering and formatting.
+
+### Why
+
+- The repository-wide static gate must validate these shared runtime sources without formatter
+  drift; the change preserves their behavior and removes only pre-existing formatting violations.
+
+### Why an extension could not handle it
+
+- These are core model-catalog runtime modules checked directly by the repository static gate;
+  extensions cannot alter their source formatting or import graph.
+
+### Expected merge conflict zones
+
+- LOW around the remote catalog merge and provider imports.
+
+## 2026-09-11 - Keep static model capabilities authoritative over remote catalog refreshes (senpi#1527)
+
+### What changed
+
+- `packages/coding-agent/src/core/remote-catalog-merge.ts` validates remote model rows at the ingest boundary, preserves all static capability fields for an existing model ID, refreshes only the remote display name and pricing metadata, preserves static rows omitted by the overlay, and returns named provider/model capability conflicts.
+- `packages/coding-agent/src/core/remote-catalog-provider.ts` records merge conflicts for each wrapped provider through `getRemoteCatalogConflicts()` while retaining the existing persisted catalog and refresh lifecycle.
+- `packages/coding-agent/test/remote-catalog-authority.test.ts` covers lower context-window protection, omitted `-fast` row preservation, capability conflict reporting, malformed-row rejection, and price metadata refresh.
+
+### Why
+
+- A newer pi.dev catalog could replace a fork-declared model wholesale, silently lowering deliberate tier windows such as Sol 650,000 and Astra 600,000 to 272,000. The same replacement also made stale remote capability metadata authoritative when the static fork catalog carried required rows or compatibility fields.
+
+### Why an extension could not handle it
+
+- Remote catalog ingestion and model merging occur inside `ModelRuntime` before extension code can observe or alter the provider registry; an extension-local repair would leave CLI, SDK, and extension-free sessions vulnerable to the same replacement.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/coding-agent/src/core/remote-catalog-provider.ts` refresh publication and provider wrapper.
+- LOW: new `packages/coding-agent/src/core/remote-catalog-merge.ts` and the colocated remote catalog regression tests.
+
+## 2026-09-11 - Keep static model capabilities authoritative over remote catalog refreshes (senpi#1527)
+
+### What changed
+
+- `packages/coding-agent/src/core/remote-catalog-merge.ts` (new): validates remote model rows at the ingest boundary, preserves all static capability fields for an existing model ID, refreshes only the remote display name and pricing metadata, preserves static rows omitted by the overlay, and returns named provider/model capability conflicts.
+- `packages/coding-agent/src/core/remote-catalog-provider.ts`: records the merge conflicts for each wrapped provider through `getRemoteCatalogConflicts()` while retaining the existing persisted catalog and refresh lifecycle.
+- `packages/coding-agent/test/remote-catalog-provider.test.ts`: covers lower context-window protection, omitted `-fast` row preservation, capability conflict reporting, malformed-row rejection, and price metadata refresh.
+
+### Why
+
+- A newer pi.dev catalog could replace a fork-declared model wholesale, silently lowering deliberate tier windows such as Sol 650,000 and Astra 600,000 to 272,000. The same replacement also made stale remote capability metadata authoritative even when the static fork catalog carried required rows or compatibility fields.
+
+### Why an extension could not handle it
+
+- Remote catalog ingestion and model merging occur inside `ModelRuntime` before extension code can observe or alter the provider registry; an extension-local repair would leave CLI, SDK, and extension-free sessions vulnerable to the same replacement.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/coding-agent/src/core/remote-catalog-provider.ts` refresh publication and provider wrapper.
+- LOW: new `packages/coding-agent/src/core/remote-catalog-merge.ts` and the colocated remote catalog regression tests.
+
+## 2026-09-11 - Detect auth changes by content rather than mtime
+
+### What changed
+
+- `packages/coding-agent/src/core/auth-storage.ts` uses SHA-256 file-content revisions for shared reload detection and coalescing.
+
+### Why
+
+- Rapid rewrites may retain the same filesystem mtime and size, so metadata-only revisions can return stale credentials.
+
+### Why an extension could not handle it
+
+- The shared auth snapshot and reload-coalescing state are owned by core storage before provider extensions read them.
+
+### Expected merge conflict zones
+
+- LOW: `packages/coding-agent/src/core/auth-storage.ts` revision reads around reload and cache adoption.
+
+## 2026-09-10 - Atomic account display-name metadata with shape-keyed sentinel guard (senpi#1495)
+
+### What changed
+
+- `packages/coding-agent/src/core/credential-accounts.ts`: adds `renameCredentialAccount` with a serialized latest-credential update, optional safe `displayName` in descriptors, and unchanged name-based health/pin reads. Rejected input writes nothing and emits no event; successful rename/clear emits the existing accounts-changed event. The guard that refuses to read a provider-managed sentinel as a legacy flat account is keyed on the credential shape (an OAuth credential with no `accounts` array whose identical `access`/`refresh` are a `*-managed` sentinel), not on the literal provider id `claude-sdk-oauth`, so every managed lane with that envelope is covered. Environment slots are never materialized as saved accounts.
+
+### Why
+
+- `packages/coding-agent/src/core/credential-accounts.ts`: shared CLI/status/RPC/app-server descriptors need human-readable labels without exposing tokens or changing operational IDs; duplicate claims must be validated under the storage lock; and `cursor-cli-oauth` defines the identical sentinel envelope, so a provider-id-keyed guard would let a cosmetic rename fabricate a `default` login slot whose tokens are the literal sentinel strings.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/credential-accounts.ts` is the shared storage and descriptor seam used by commands and transports; an extension-local mutation would bypass its concurrency and non-secret projection contracts.
+
+### Expected merge conflict zones
+
+- LOW: `packages/coding-agent/src/core/credential-accounts.ts` summary projection and the rename operation beside pin/remove.
+
+## 2026-09-10 - Review fixes for PR #1304: scoped remint/auth-miss, pool merge, sentinel repair
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: `_isClaudeSdkSameModelRemintError` matches ONLY the Claude SDK lane's session-lock and bare `invalid_request` quirks (`this.model?.provider === CLAUDE_SDK_OAUTH_PROVIDER_ID`); the provider-agnostic stream-stall watchdog class is no longer swallowed, so a stall for ANY provider consumes the ordinary shared same-model budget and escalates to the fallback chain exactly as before. The auth-miss exclusion is `_isClaudeSdkAuthMissError`, an exact-message, Claude-lane-scoped check built on the shared `providerNotConfiguredMessage()` helper, so another provider's auth miss still hops the configured fallback chain. Supersedes the 2026-09-02 "Keep Claude SDK stalls and invalid_request on the same model" entry above.
+- `packages/ai/src/auth/resolve.ts` + `packages/ai/src/models.ts`: `PROVIDER_NOT_CONFIGURED_PREFIX` / `providerNotConfiguredMessage()` export the exact auth-miss wording; `packages/coding-agent/src/core/model-runtime.ts` throws through the helper instead of its own literal, so the session-layer guard can never drift from the throw sites (the `TURN_RETRY_SUPPRESSION_PREFIX` pattern).
+- `packages/coding-agent/src/core/auth-storage.ts`: every auth.json parse drops pool slots whose `access`/`refresh` equal the provider's `<providerId>-managed` sentinel and clears a pin naming one; the mutable store writes the repair back once inside its existing lock. `packages/coding-agent/src/core/credential-pool/classify.ts` classifies that auth miss as `failover`/`auth_error` so one bad slot can never dead-end a pool. `packages/coding-agent/src/core/extensions/builtin/claude-sdk-oauth/accounts.ts` never lists a sentinel-material slot as an account.
+- `packages/ai/src/auth/pool/slots.ts`: `appendLoginSlot` MERGES a provider-owned pool onto the value read under the credential lock (stored slots and their block state win; only genuinely new names are appended) instead of whole-writing a snapshot read before the browser round trip; `managedSentinelMaterial` / `isManagedSentinelSlot` / `repairManagedSentinelSlots` implement the repair algebra. A flat `current` keeps the whole-write shape because the provider's accounts already carry this login.
+- `packages/coding-agent/src/modes/interactive/components/login-dialog.ts`: every `(to cancel)` / `(to close)` hint row routes through one tracked live hint, so `showWaiting` / `showInfo` replace a previous hint instead of painting beside it, and content-clearing paths reset the tracked hint.
+- Tests: `test/suite/retry-fallback-hard-error.test.ts` (Claude-lane tests run under a `claude-sdk-oauth` faux provider, plus new guards proving a non-Claude `invalid_request` and a non-Claude auth miss still hop the chain), `test/auth-storage.test.ts`, `test/credential-error-taxonomy.test.ts`, `test/model-runtime-credential-rotation.test.ts`, `test/claude-sdk-oauth-accounts.test.ts`, `packages/ai/test/credential-pool-mutations.test.ts`, `test/suite/regressions/5433-extension-oauth-prompt-input.test.ts` (the bare-`>` line was a tautology; it now asserts exactly one live `>` row and one live hint row).
+
+### Why
+
+- PR #1304 review (pullrequestreview-5167950734): the remint predicate ORed the provider-agnostic stall class in, so stalls never reached the fallback chain and the exhaustion event's attempt counter drifted by one - three suites that pass at the merge base failed at the branch head. The `Provider is not configured:` exclusion and the `invalid_request` remint were global, reclassifying every provider's failures. `appendLoginSlot`'s early return turned login into a blind overwrite with the pre-browser-flow snapshot, rolling a sibling account's rotated refresh token back to the consumed value and erasing its rate-limit block. Nothing repaired the sentinel `login-N` entries the already-shipped bug wrote, so those pools dead-ended deterministically. `forkBindingOrFlatten` was dropped during the rebase onto main in favor of main's `crossAccountResumeSupported` wiring, which already flattens account drift on the config-dir lane (`cross_root_unsupported`) exactly as `verifyRestoredTranscript` declares.
+
+### Why an extension could not handle it
+
+- Hard-error vs same-model retry eligibility, the auth.json parse/repair, the rotation classification, and the shared credential-pool write path all live below every extension hook.
+
+### Expected merge conflict zones
+
+- LOW: `_isClaudeSdkSameModelRemintError` / `_isClaudeSdkAuthMissError` / `_isHardErrorFallbackEligible` in `agent-session.ts`; `repairPoisonedPoolSlots` and `parseStorageContent` in `auth-storage.ts`; `appendLoginSlot` and the sentinel helpers in `packages/ai/src/auth/pool/slots.ts`; the prefix helpers in `auth/resolve.ts`; the prefix branch in `credential-pool/classify.ts`; `storedSlots` filtering in `accounts.ts`; `setLiveHint` in `login-dialog.ts`.
+
+## 2026-09-02 - Keep Claude SDK stalls and invalid_request on the same model
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: `Provider stream start timed out after Nms` and a bare `invalid_request` remint the same model. They are not hard-error provider hops.
+- `packages/coding-agent/test/suite/retry-fallback-hard-error.test.ts`: both recover on faux-1 and never apply a fallback chain.
+
+### Why
+
+- After a 1.7MB flatten the SDK timed out, then returned `invalid_request`. Hard-error fallback switched onto `opengateway/anthropic/claude-opus-4-8` which has no key and 401-looped until the goal continuation cap fired.
+
+### Why an extension could not handle it
+
+- Hard-error vs same-model retry is decided in `AgentSession` before extension failover runs.
+
+### Expected merge conflict zones
+
+- LOW: `_isHardErrorFallbackEligible` and the `agent_end` remint branch in `agent-session.ts`.
+
+## 2026-09-02 - Retry Claude SDK session locks on the same model
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: `Lock file is already being held` is same-model remint, not hard-error provider fallback.
+- `packages/coding-agent/test/suite/retry-fallback-hard-error.test.ts`: lock recovers on the original model and never hops after budget exhaustion.
+
+### Why
+
+- A held Claude Agent SDK session lock cannot be released by switching to OpenGateway or another provider. Immediate hard-error fallback produced 401 storms and `resume_initialization_aborted` resends.
+
+### Why an extension could not handle it
+
+- Hard-error vs same-model retry is decided in `AgentSession` before extension failover runs.
+
+### Expected merge conflict zones
+
+- LOW: `_isHardErrorFallbackEligible` and the `agent_end` retry branch in `agent-session.ts`.
+
+## Shared manual-continue submission predicate (2026-09-10)
+
+### What changed
+
+- `packages/coding-agent/src/core/manual-continue.ts`: adds `MANUAL_CONTINUE_SHORTCUT` and `isManualContinueSubmission({ text, hasMessages, hasImages })`.
+- `packages/coding-agent/src/core/agent-session.ts`: `prompt()` classifies the bare `.` through that predicate instead of an inline condition.
+
+### Why
+
+- Interactive mode must reach the same verdict before it paints a user echo, and one predicate keeps the empty-session and image-attachment carve-outs from drifting between the two call sites.
+
+### Why this lives in the fork
+
+- The `.` manual-continue shortcut is fork behavior in `AgentSession.prompt()`.
+
+### Expected merge conflict zones
+
+- LOW: the manual-continue interception at the top of `prompt()`.
+
+## Record model switches the session refuses (2026-09-09)
+
+## Record model switches the session refuses (2026-09-10)
+
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts` records every refused model switch before rethrowing. `_assertModelUsableForSwitch()` is the single guard seam: the `_setModel` pre-flight, the post-`model_select` revalidation in `_switchActiveModel`, and both `_cycleFavoriteModel` guards (the sole-alternative case and the pre/post-`model_select` pair) now funnel through it, so each appends a `model_change_rejected` session entry, emits the matching event with the budget projection numbers, and rethrows the original error unchanged. The `_setModel` auth refusal records the same entry with `reason: "auth"`. `_modelSwitchAdmission()` derives the admission from the branch (`hasContextMessages()`) instead of hardcoding `"switch"`, so a refusal only promises the compaction remedy when there is context to compact. `_cycleFavoriteModel` no longer appends its `model_change`, writes the global default, or emits `model_changed`/`service_tier_changed` before the post-`model_select` guard accepts, and its catch restores the previous service tier.
+- `packages/coding-agent/src/core/session-manager.ts` adds the `ModelChangeRejectedEntry` type (documenting that it follows the shared pre-assistant `_persist` buffering contract) and `appendModelChangeRejected()`.
+
+### Why
+
+- Every guard rejects before `_switchActiveModel` appends its `model_change`, so a refused switch left no entry, no event, and no log line; an attempted-and-rejected switch was indistinguishable from one the user never made (#1526). Recording it on one guard only would have left sibling calls of the same public API silent, and a refused *cycle* was strictly worse than silent: it appended a real `model_change` and wrote the global default before its post-`model_select` guard ran, so the session resumed - and every new session started - on a model that was refused and never answered. The `admission` default only infers `"switch"` when `liveContextTokens > 0`, so the message told the user the model "cannot start" and omitted the compaction remedy; hardcoding `"switch"` instead promised that remedy on the `session_start` caller (`recommended-models`), where there is nothing to compact.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/agent-session.ts` owns the switch guards, the session-entry append, and the settings write; an extension observes model changes only after they are applied and never sees the rejected path.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/agent-session.ts`: the `AgentSessionEvent` union, the `_setModel` guard block, and the `_cycleFavoriteModel` commit block.
+- `packages/coding-agent/src/core/session-manager.ts`: the `SessionEntry` union and the append helpers near `appendModelChange`.
+
+## 2026-09-02 - Do not hard-fallback a provider-not-configured auth miss
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: `_isHardErrorFallbackEligible` no longer treats `Provider is not configured:` as a model hard-error that ejects onto another provider.
+- `packages/coding-agent/test/suite/retry-fallback-hard-error.test.ts`: a configured fallback chain stays unused when the current model fails with that auth miss.
+
+### Why
+
+- Auth wiring failures were classified as hard-error and immediately switched `claude-sdk-oauth/claude-opus-5` onto a different provider (for example `opengateway/anthropic/claude-opus-5`) instead of staying on Claude SDK OAuth or its sibling accounts.
+
+### Why an extension could not handle it
+
+- Hard-error fallback eligibility is decided in `AgentSession` before extension failover runs.
+
+### Expected merge conflict zones
+
+- LOW: `_isHardErrorFallbackEligible` in `agent-session.ts`.
+
 ## Leaf token and typed errors for assistant edits (2026-09-10)
 
 ### What changed

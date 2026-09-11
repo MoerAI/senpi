@@ -1,3 +1,155 @@
+## Devin Cascade model transport (2026-09-12)
+
+### What changed
+
+- `packages/ai/proto/devin/cascade.proto` plus `packages/ai/src/api/devin-agent/gen/cascade_pb.ts`: a vendored SUBSET of Codeium/Windsurf's Cascade schema, generated with protoc-gen-es v2.13.0 and run through `scripts/transform-cursor-agent-proto.mjs` like the Cursor schema. Only the messages the transport reads or writes are declared; every field number matches upstream, so unknown upstream fields round-trip as unknown fields.
+- `packages/ai/src/api/devin-agent.ts`: the `devin-agent` API. One server-streaming `GetChatMessage` Connect call per turn, request sent as a single gzipped frame, response frames mapped onto senpi's assistant event protocol, terminal `done`/`error` with abort handling.
+- `packages/ai/src/api/devin-agent/frames.ts`: Connect framing - 5-byte prefix, gzip flag 0x01, end-of-stream trailer flag 0x02, and a 64 MiB payload cap so a corrupted length prefix cannot become a 4 GiB allocation.
+- `packages/ai/src/api/devin-agent/request.ts`: request building. Cascade has no system role, so the system prompt travels in the top-level `prompt` field and history becomes flat `ChatMessagePrompt` entries whose `source` carries the role; message ids are derived from the conversation id and index so a retried turn does not fork the server-side transcript.
+- `packages/ai/src/api/devin-agent/stream-state.ts`: delta bookkeeping. Cascade blocks are implicit and one frame may carry thinking, text and a tool call at once, so this module opens and closes senpi's blocks and maps Cascade stop reasons onto senpi's vocabulary.
+- `packages/ai/src/api/devin-agent/metadata.ts` and `paths.ts`: the CLI identity envelope, the `devin-session-token$` scheme prefix, and the RPC paths.
+- `packages/ai/src/api/devin-agent/discovery.ts`: credential-scoped `GetCliModelConfigs` discovery that returns undefined on failure or an empty roster.
+- `packages/ai/src/api/devin-agent.lazy.ts`, `packages/ai/src/compat.ts`, `packages/ai/src/types.ts`: the Node-only lazy boundary, the builtin api-registry entry, and the `devin-agent` api id with its options type.
+- `packages/ai/src/providers/devin.ts` and `packages/ai/src/providers/devin.models.ts`: the provider bound to the merged Devin OAuth flow, its public SWE seed, and a `refreshModels` that publishes the account's real lanes but never an empty catalog.
+- `packages/ai/src/providers/all.ts`: registers the provider among the builtins.
+
+- `packages/ai/src/api/devin-agent.ts` only upgrades the default `stop` to `toolUse` when a tool call block is present: a server-reported `length` means the turn was truncated, and a truncated tool call must not be advertised as a complete one.
+
+- `packages/ai/src/api/devin-agent.ts` terminates a Cascade `ERROR` or `CONTENT_FILTER` stop as an `error` event rather than a `done` event: senpi's protocol has no "done because it failed", and a done event carrying a failed turn would be consumed as a successful assistant message.
+
+- `packages/ai/src/api/devin-agent/discovery.ts` authenticates with the same `Bearer devin-session-token$…` header as the chat call, not only the protobuf `Metadata.api_key`: Cascade rejects an unauthenticated discovery request, which would have silently degraded every account to the static seed.
+
+### Why
+
+- The merged Devin OAuth flow could mint a credential that nothing could spend: senpi had no Cascade transport, so a signed-in user still had no Devin model to select.
+- Cascade deviates from every OpenAI-shaped adapter senpi already had (Connect framing, gzip per frame, protobuf payloads, no system role, implicit blocks, credential-scoped catalog), so the deviations are pinned in code next to the reasons.
+
+### Why an extension could not handle it
+
+- An api id must exist in `KnownApi`, in the per-api options map and in the builtin api-registry inside `packages/ai`; an extension cannot add one, cannot participate in the Bun binary's static bundle, and cannot return a `ProviderStreams` implementation that the model runtime treats as first-class.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/types.ts`: the `KnownApi` union and the api options map - upstream adding an api touches both.
+- `packages/ai/src/compat.ts`: the lazy re-export block and the builtin api registration list.
+- `packages/ai/src/providers/all.ts`: the provider import list and the builtin provider array.
+- Everything under `packages/ai/src/api/devin-agent/` and the two `providers/devin*` files are additions with no upstream counterpart.
+
+## Devin CLI OAuth login flow (2026-09-11)
+
+### What changed
+
+- `packages/ai/src/auth/oauth/devin.ts`: new Devin (Cognition) OAuth flow. Generates a PKCE S256 challenge plus a uuid state, sends the user to `https://app.devin.ai/auth/cli/continue` with `response_type=code`, the loopback `redirect_uri` and `prompt=select_account`, and races the loopback callback against the manual paste prompt for headless sessions. Exports `devinOAuth` whose `refresh` is a no-op (Devin has no refresh grant) and whose `toAuth` returns the stored token plus the `https://api.devin.ai` base URL.
+- `packages/ai/src/auth/oauth/devin-callback.ts`: one-shot loopback callback server pinned to `127.0.0.1:59653/callback`, the single redirect URI Devin registers for the CLI. Validates the issued state before the authorization code is spent, renders the shared OAuth result pages, and reports exchange failures through both the page and the login promise.
+- `packages/ai/src/auth/oauth/devin-token.ts`: the non-standard CLI token exchange. Posts JSON carrying only `code` and `code_verifier` (no client_id, no grant_type) with `Accept: application/json`, then builds the credential from the single `token` field used as both access and refresh, with expiry decoded from the JWT `exp` and a 31536000000 ms fallback.
+- `packages/ai/src/auth/oauth/load.ts`: adds `devin` to `OAuthFlowLoaders` and exports `loadDevinOAuth`, so the flow resolves through the same lazy-import boundary as every other provider and stays out of browser-reachable static imports.
+- `packages/ai/src/bun-oauth.ts`: registers `devin: () => devinOAuth` in the statically bundled flow set so the standalone Bun binary can run the login without dynamic import.
+
+### Why
+
+- senpi had no Devin authentication at all: no flow module, no loader entry, no bundled registration, so Devin could not be signed into from senpi even though its CLI grant is a plain public-client authorization-code flow.
+- Devin's grant deviates from the OAuth defaults the existing helpers assume (fixed redirect port, no client_id, no grant_type, one token serving as access and refresh, expiry only inside the JWT), so the deviations are pinned in code next to the reasons rather than rediscovered per incident.
+
+### Why an extension could not handle it
+
+- OAuth flows are resolved inside `packages/ai` through `registerBundledOAuthFlowLoaders` and the `OAuthFlowLoaders` type; an extension cannot add a member to that registry, cannot participate in the standalone Bun binary's static bundle, and cannot return an `OAuthAuth` that the credential store and auth resolution treat as first-class.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/auth/oauth/load.ts`: the `OAuthFlowLoaders` member list and the block of `load*OAuth` exports — upstream adding a provider touches the same two spots.
+- `packages/ai/src/bun-oauth.ts`: the import list and the `registerBundledOAuthFlowLoaders` object literal.
+- The three `packages/ai/src/auth/oauth/devin*.ts` files are additions with no upstream counterpart and should not conflict.
+
+## PR #1304 review fixes: shared auth-miss prefix, login merge, sentinel repair (2026-09-10)
+
+### What changed
+
+- `packages/ai/src/auth/resolve.ts`: `PROVIDER_NOT_CONFIGURED_PREFIX` / `providerNotConfiguredMessage()` export the exact auth-miss wording every resolution site throws; `packages/ai/src/models.ts` re-exports both and throws through the helper. Consumers keying recovery decisions off that message (the coding-agent session layer and the credential-pool classifier) can never drift from the throw sites.
+- `packages/ai/src/auth/pool/slots.ts`: `appendLoginSlot` MERGES a provider-owned pool onto the value read under the credential lock - stored slots and their block state win for names that already exist, only genuinely new names are appended - instead of whole-writing a snapshot the provider built before the interactive browser round trip. `managedSentinelMaterial` / `isManagedSentinelSlot` / `repairManagedSentinelSlots` recognize and drop pool slots whose `access` and `refresh` both equal the provider's `<providerId>-managed` marker (clearing a pin that pointed at one), reporting whether a repair happened so callers rewrite storage only when bytes change.
+- `packages/ai/test/credential-pool-mutations.test.ts`: a pre-login snapshot never rewinds a sibling that rotated or earned a block; a provider-owned pool onto a flat current keeps the whole-write shape; sentinel slots are recognized, dropped, un-pinned, and a clean pool is a no-op.
+
+### Why
+
+- The provider builds its returned pool from a snapshot read BEFORE the browser flow, tens of seconds before the commit under the lock: writing it verbatim rolled a sibling's rotated refresh token back to the consumed value (a forced re-login, since Anthropic rotates refresh tokens on use) and erased its rate-limit block. Separately, a shipped build stored the provider pool's flat sentinel as a generated `login-N` slot; such a slot can never authenticate and dead-ends every request whose affinity picks it, so the coding-agent store now heals those entries on load.
+
+### Why an extension could not handle it
+
+- Both the merge and the repair algebra run inside the shared credential-pool read/write path the runtime owns; providers cannot intercept what the runtime stores after login returns or what every reader parses from auth.json.
+
+### Expected merge conflict zones
+
+- LOW: `appendLoginSlot` and the sentinel helpers in `auth/pool/slots.ts`; the prefix helpers in `auth/resolve.ts` and their re-export in `models.ts`.
+
+## Classify Claude SDK session lock contention as retryable (2026-09-02)
+
+### What changed
+
+- `packages/ai/src/utils/retry.ts`: `RETRYABLE_PROVIDER_ERROR_PATTERN` matches `Lock file is already being held`.
+- `packages/ai/test/retry.test.ts`: pins that wording as a retryable assistant error.
+
+### Why
+
+- Claude Agent SDK session resume/stream hits proper-lockfile while a previous subprocess still holds `session.json`. The failure is local and transient; treating it as unknown/terminal made the coding-agent hard-error fallback hop providers.
+
+### Why an extension could not handle it
+
+- Retry classification lives in the shared `pi-ai` regexes used by every caller of `isRetryableAssistantError`.
+
+### Expected merge conflict zones
+
+- LOW: `RETRYABLE_PROVIDER_ERROR_PATTERN` in `retry.ts`.
+
+## Preserve provider-owned credential pools during login (2026-09-02)
+## 2026-09-10 - Kimi Code client identity headers on the subscription path (#1504)
+
+### What changed
+
+- `packages/ai/src/auth/oauth/kimi-identity.ts` (new): `kimiCodeIdentityHeaders()` returns `User-Agent: KimiCLI/<version>` plus `X-Msh-Platform`, `X-Msh-Version`, `X-Msh-Device-Name`, `X-Msh-Device-Model`, `X-Msh-Os-Version`, and `X-Msh-Device-Id`. Every value is printable-ASCII sanitized. The device id is read from (or minted into) `<agent dir>/kimi-device-id` (`SENPI_CODING_AGENT_DIR` / `CODING_AGENT_DIR`, else `~/.senpi/agent`), memoized per process, and degrades to an ephemeral id when that directory cannot be written; `resetKimiDeviceIdForTests()` clears the memo.
+- `packages/ai/src/auth/oauth/kimi-coding.ts`: sends that header set on device authorization, device-code token polling, and token refresh, and returns it from `toAuth` so `resolveProviderAuth` merges it into every chat request the model runtime issues for the provider. The api-key auth path is untouched and stays header-free.
+
+### Why
+
+- `api.kimi.com/coding` recognizes its clients by a product `User-Agent` plus the six-header `X-Msh-*` device set; the official Kimi Code client attaches it to every OAuth and managed-API call. `X-Msh` existed nowhere in this package, so a Kimi For Coding subscription session presented itself as an anonymous Anthropic-protocol client holding a Kimi bearer token (#1504).
+- It is the only divergence from the reference clients that fits the timeline: the kimi-coding request shape had not changed when the endpoint began rejecting fresh sessions, so a server-side tightening around client identification explains it where a payload regression does not.
+- ASCII sanitization and best-effort device-id persistence are ported deliberately: raw non-ASCII header bytes draw a CDN 520 on this host, and an `ENOENT` on a fresh install must not break header construction for every request.
+
+### Why an extension could not handle it
+
+- The headers must ride the provider's own OAuth requests (device authorization, polling, refresh) inside `kimi-coding.ts` and the credential-derived request auth that `resolveProviderAuth` produces from `toAuth`. Both run below any extension hook, and an extension cannot see the device-code exchange at all.
+
+### Expected merge conflict zones
+
+- LOW: new file `packages/ai/src/auth/oauth/kimi-identity.ts`.
+- LOW: the three `fetch` call sites and `toAuth` in `packages/ai/src/auth/oauth/kimi-coding.ts`.
+
+## 2026-09-10 - Map ask_user_question to Claude Code's AskUserQuestion wire name
+
+## 2026-09-08 - Immutable account IDs with optional display metadata (senpi#1495)
+
+## 2026-09-10 - Immutable account IDs with column-bounded, render-unique display metadata (senpi#1495)
+
+
+
+### What changed
+
+- `packages/ai/src/auth/pool/slots.ts`: adds optional `displayName`, safe single-line labels, and pure rename/clear validation. A label is stored NFC-normalized with internal whitespace runs collapsed, must contain at least one visibly advancing character, may not begin with a combining mark, and is bounded at 32 terminal columns measured per grapheme cluster (`displayNameColumns`) rather than in UTF-16 code units. Provider-local uniqueness compares a fold of case, Unicode compatibility forms (NFKC), invisible code points and Cyrillic lookalikes, so two labels that render identically cannot coexist. Slot IDs and credential material remain unchanged. Login allocation reports the allocated ID together with its origin (`generated` for an ID Senpi chose, `provider` for one a provider envelope carried); provider-owned envelopes still require exactly one new ID compared with the locked current pool, never token matching or array ordering.
+- `packages/ai/src/auth/types.ts`: adds secret-free `AccountLoginReceipt` with `providerId`, `name` and `origin`, plus optional `AuthInteraction.onAccountCommitted`; the callback is excluded from provider interactions.
+- `packages/ai/src/models.ts`: captures the allocated ID and its origin inside the serialized login write and emits the receipt only after persistence succeeds. Ambiguous provider envelopes do not produce a receipt. Existing credential return values remain compatible.
+
+### Why
+
+- `packages/ai/src/auth/pool/slots.ts`: account labels must not remap pins, refresh, health, failover, or HRW affinity, and a documented "unique per provider" / bounded-length guarantee must hold for real Unicode input: `trim`/`toLowerCase`/`String.length` accepted double-spaced, NFC/NFD and homoglyph duplicates and let a 170-column label through while rejecting 41 emoji.
+- `packages/ai/src/auth/types.ts`: callers need a supported, secret-free committed-slot identity, including whether the ID was machine-generated, to avoid prompting for a name a provider flow already asked for.
+- `packages/ai/src/models.ts`: only the login write knows which ID was actually committed and who chose it; callers must not infer it from credentials or list order.
+
+### Why an extension could not handle it
+
+- `packages/ai/src/auth/pool/slots.ts`, `packages/ai/src/auth/types.ts` and `packages/ai/src/models.ts` own shared credential metadata and the locked login boundary below the extension API. The user-facing commands remain extensions.
+
+### Expected merge conflict zones
+
+- LOW: `packages/ai/src/auth/pool/slots.ts` slot type, display-name validation block and append function; `packages/ai/src/auth/types.ts` interaction types; `packages/ai/src/models.ts` login mutation and return boundary.
+
 ## 2026-09-10 - Map ask_user_question to Claude Code's AskUserQuestion wire name
 
 ### What changed

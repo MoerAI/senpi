@@ -1,5 +1,51 @@
 # prompt-preset Extension Changes
 
+## GPT-6 Astra: unbounded retries, a turn that ends only on a handle (2026-09-11)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/prompt-preset/gpt-6-astra.ts`: `failure-cap` is deleted and replaced by `unbounded-retry` (same `failure-recovery` concern, same `Scope and Recovery` home): no attempt limit, a material change per attempt, an empty or thin lookup widens to another source before absence is a fact, files are restored to the last known-good state before a fresh approach, and the user is brought in only for a decision that is theirs. `turn-end-is-wait` keeps its emphasis but now states the condition: the turn ends when a pending handle will wake the session, and with nothing pending and work still open it keeps going. `approval-last` asks only for an answer the session cannot supply, carries the cost of stopping, and defaults `wait_for_answer` to false (true only for an irreversible next step). The Reporting sentence requires the named next step to be taken in the same turn and rejects a plan, hypothesis, status report, or offer to continue as a substitute for the work.
+- Tests: `packages/coding-agent/test/suite/prompt-presets-gpt-6-astra.test.ts` renames the rule id in both pinned tables and adds a contract case for the unbounded-retry and turn-end rules. The Reporting change is prose with no rule seam, so it ships with QA-by-read on the rendered prompt instead of a pinned sentence.
+
+### Why
+
+- A survey of the same 703 sessions found Astra ending 14.9% of its human-facing turns on a named next step it never took (claude-fable 3.0%, claude-opus 3.7%, kimi 3.1%), and 12.2% of them with open todos and no goal. Three rules produced that: `turn-end-is-wait` was the loudest rule in the file and made ending the turn unconditional; the Reporting sentence let announcing the next step stand in for taking it; and `failure-cap` capped attempts at three and terminated in a question, which for the model the Astra guide already describes as asking more and stopping earlier reads as permission to stop. Codex's own Astra template takes the opposite line ("Do not stop at acknowledging capability, proposing a plan, or offering to continue") and makes `request_user_input` non-blocking outside Plan mode, with Default mode telling the model to prefer reasonable assumptions and continue with best judgment.
+- Token cost (o200k via gpt-tokenizer; eval, read, bash, monitor, task, todo, request_user_input, ask_user_question selected): gpt-6-astra 3584 -> 3628 (+44). The first draft measured +107; the turn-end rule had re-listed the handles `async-default` already names, and `stay-direct-exceptions` carried its own do-not-trust-absence clause beside the new retry rule, so both were folded into one home. The remaining growth is the same-turn clause in Reporting, the cost-of-stopping sentence in `approval-last`, and the widen-the-source clause in `unbounded-retry`, each of which names a failure the survey measured. Rule count unchanged at 28.
+
+### Why an extension could not handle it
+
+- Content-only change inside a builtin preset's rule data; the behavior it corrects is the preset's own wording.
+
+### Expected merge conflict zones
+
+- MEDIUM: `gpt-6-astra.ts` TURN_END_IS_WAIT / APPROVAL_LAST / the failure-recovery rule and the Reporting paragraph are edited often; the rule id rename touches both pinned tables in the preset suite.
+
+## DeepSeek V4.1 Flash preset (2026-09-11)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/prompt-preset/deepseek-v4-1-flash.ts`: new `deepseek-v4-1-flash` preset over the shared core - `buildExecutionToolingSection` in the claude dialect plus the claude workstation dialect, no tuning prose, and none of the `DEEPSEEK_V4_RULES`.
+- `packages/coding-agent/src/core/extensions/builtin/prompt-preset/presets.ts`: `hasDeepseekV41FlashSignal` matches `deepseek-flash` (the official API name, also opencode-go), `deepseek-v4.1-flash` / `deepseek/deepseek-v4.1-flash[:thinking]`, `deepseek-ai/DeepSeek-V4.1-Flash`, fireworks' `deepseek-v4p1-flash`, venice's `deepseek-v4-1-flash`, and the display name; `isRetiredOfficialDeepseekV4FlashAlias` routes `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` on the `deepseek` provider to the V4.1 preset, and only there - the same names on every other provider keep the V4 preset. Resolves after the dated 0731 snapshot and before the generic flash alias.
+- `packages/coding-agent/src/core/extensions/builtin/prompt-preset/settings.ts`: `deepseek-v4-1-flash` joins `PromptPresetName`.
+- Tests: `packages/coding-agent/test/suite/prompt-presets-deepseek-v4-1-flash.test.ts` (id-shape table, retired-alias routing per provider, non-matching ids, settings forcing, zero-miss catalog sweep, no V4 rule in the prompt, execution-tooling rendered only with `eval`, claude workstation dialect); `prompt-presets-deepseek-v4.test.ts` excludes the official provider's flash alias from its catalog expectation and adds the V4.1 prompt to its no-leak list.
+- Docs: `AGENTS.md` (this directory and `builtin/`), `docs/settings.md`.
+
+### Why
+
+- V4.1 Flash shipped 2026-09-10 (DeepSeek API changelog; `deepseek-flash` is the new name, V4 Flash and V4 Flash Vision Exp are retired and their names "temporarily routed to V4.1 Flash"). Every V4.1 id fell through `resolvePresetName` to the fallback prompt, and the official alias received the V4 Flash tuning for a model it no longer serves.
+- Prompt content per the prompt-engineering skill: the four V4 rules are category-C repairs for failures observed on V4-Flash-0731 transcripts. V4.1 Flash is a new pre-train (552B Causal Encoder-Decoder MoE, 45T tokens from scratch, RL across Claude Code / OpenCode / Pi / mini-SWE / DeepSeek Harness), so carrying those rules over would be a patch without a diagnosis. DeepSeek's own scaffold comparison (tech report Table 4, same checkpoint, max effort) puts the thinnest harness first: DSH Minimal - complete system prompt `You are a helpful software engineer assistant.` plus one bash tool - scores 90.6 on Terminal-Bench 2.1 vs 85.8 for DSH Standard, and mini-SWE / DSH Minimal lead DeepSWE v1.1 (74.2 / 72.6) over Claude Code 69.8, Pi 66.2, OpenCode 65.5; Appendix B.1: "We add no experimental system prompt." The preset therefore adds nothing the model already carries and keeps only senpi's own contract (routing line, stop condition, hard limits) and the eval-routing decision the tool description cannot make.
+- Token cost (o200k via gpt-tokenizer; read, edit, write, bash, eval, todo, grep, glob, task, ask_user_question selected; empty snippets): fallback 1566, deepseek-v4-flash 1909, deepseek-v4-1-flash 1835 with `eval` (the execution-tooling block) and 1557 without. The official-provider alias drops 74 tokens of V4 repair prose it no longer needs.
+- A V4.1-specific rule is added only against a V4.1 trace, by listing the preset in that rule's `presets`; the new test pins that no V4 rule leaks in by default.
+
+### Why extension system couldn't handle this differently
+
+- Preset matching is builtin extension data; a user can still force any preset through `promptPreset` in settings.
+
+### Expected merge conflict zones on next upstream sync
+
+- LOW: `presets.ts` matcher block and `resolvePresetName` order; `settings.ts` union.
+
+||||||| parent of 4002847aa (fix(goal): earn the blocked status, and let Astra retry without a cap)
 ## Route user questions through the question tool (2026-09-10)
 
 ### What changed

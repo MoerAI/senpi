@@ -1,5 +1,69 @@
 # changes
 
+## 2026-09-11 - Support brand-owned changelog sources (senpi#1583)
+
+### What changed
+
+- `packages/coding-agent/src/core/brand.ts`: accepts an optional absolute `changelog.path` and authored `changelog.version` in the brand profile.
+- `packages/coding-agent/src/core/settings-manager.ts`: stores changelog-seen versions per source while preserving the legacy engine version fallback.
+- `packages/coding-agent/src/core/extensions/builtin/config-reload/routine-settings.ts`: treats `changelogSeen` as routine settings during reload filtering.
+
+### Why
+
+- Branded distributions need to show and acknowledge their own changelog without confusing their release history with the engine's changelog.
+
+### Why an extension could not handle it
+
+- Brand profile parsing, persistent settings, and reload bookkeeping are core startup and configuration contracts that run before extensions can provide equivalent behavior.
+
+### Expected merge conflict zones
+
+- LOW: brand profile parsing, changelog settings accessors, and the config-reload routine settings key list.
+
+## 2026-09-11 - Make file reload detection independent of mtime granularity
+
+### What changed
+
+- `src/core/auth-storage.ts` now compares SHA-256 file-content revisions when deciding whether a shared auth snapshot is current.
+- `src/utils/paths.ts` owns the shared SHA-256 file-content revision helper used by the reload and settings caches.
+- Cursor CLI OAuth and Claude SDK OAuth settings caches use the same content revision helper instead of `mtimeMs:size`.
+
+### Why
+
+- Linux can retain one mtime for rapid rewrites, so mtime-based cache keys returned stale credentials or provider settings.
+
+### Why an extension could not handle it
+
+- Auth reload state is core-owned; provider settings cache invalidation is owned by the provider loaders.
+
+### Expected merge conflict zones
+
+- LOW: `core/auth-storage.ts`, `utils/paths.ts`, and provider `settings.ts` cache keys.
+
+## 2026-09-10 - Restrict GPT-6 Astra high-reasoning warning to max
+
+### What changed
+
+- `packages/coding-agent/src/core/high-reasoning-warning.ts`: GPT-6 Astra now emits
+  the high-reasoning warning only at `max`; GPT-5.6 Sol retains its `xhigh`/`max`
+  warning behavior.
+- `packages/coding-agent/test/high-reasoning-warning.test.ts`: added coverage for
+  Astra variants at both reasoning levels.
+
+### Why
+
+- Astra's warning policy is specific to its highest reasoning level, so showing it
+  at `xhigh` was overly broad.
+
+### Why an extension could not handle it
+
+- The warning predicate is core session policy evaluated before warning events are
+  emitted.
+
+### Expected merge conflict zones
+
+- LOW: the high-reasoning warning predicate and its focused test.
+
 ## 2026-09-10 - Print mode binds editAssistantMessage for extensions
 
 ### What changed

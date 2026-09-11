@@ -1,5 +1,43 @@
 # TUI delta rendering fork changes
 
+## 2026-09-11 - Keep dollar skill hints active across multiline drafts
+
+### What changed
+
+- `packages/tui/src/dollar-invocation-autocomplete.ts`: dollar skill lookup no longer rejects nonzero logical editor lines, so multiline drafts and queued message composition can request the same filtered skill suggestions.
+- `packages/tui/test/autocomplete-dollar.test.ts` and `packages/tui/test/editor-dollar-autocomplete.test.ts`: cover later-line provider lookup and paste/follow-up typing through the real Editor surface.
+
+### Why
+
+- The editor remains active while a response is streaming and while follow-up text is queued. A pasted or multiline draft can place the cursor on a later logical line, and the previous line-zero-only guard silently suppressed the skill picker there.
+
+### Why an extension could not handle it
+
+- Logical cursor routing and autocomplete request admission are owned by the standalone TUI Editor/provider path below the interactive extension API.
+
+### Expected merge conflict zones
+
+- LOW: `packages/tui/src/dollar-invocation-autocomplete.ts` context gate and the focused dollar/editor tests.
+
+## 2026-09-11 - Offer skill hints for valid dollar tokens in prompt text
+
+### What changed
+
+- `packages/tui/src/dollar-invocation-autocomplete.ts`: dollar invocation lookup now resolves the token at the cursor after ordinary prompt text, while rejecting common shell variables and positional parameters before consulting the skill catalog. Existing leading skill chaining and trailing-space insertion remain unchanged.
+- `packages/tui/test/autocomplete.test.ts`: adds provider coverage for the mid-line skill hint and canonical `$skill` insertion.
+
+### Why
+
+- The Codex-style skill picker should appear when a user types `$` in a valid prompt token, not only when the line consists entirely of a leading dollar invocation. Shell-like forms such as `$HOME` and `$1` must remain literal.
+
+### Why an extension could not handle it
+
+- Dollar token extraction and completion arbitration run inside the standalone TUI autocomplete provider before interactive-mode extensions receive the editor event.
+
+### Expected merge conflict zones
+
+- LOW: `packages/tui/src/dollar-invocation-autocomplete.ts` around token extraction and shell-variable classification.
+
 ## 2026-09-10 - Use native TypeScript builds for omob performance
 
 ### What changed

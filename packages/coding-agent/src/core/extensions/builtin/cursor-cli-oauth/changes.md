@@ -1,5 +1,42 @@
 # cursor-cli-oauth extension changes
 
+## 2026-09-10 - `/cursor-account` renders the display names the generic rename can write (senpi#1495)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/cursor-cli-oauth/accounts.ts`: `CursorCliAccountSlot` carries optional `displayName`; immutable `name` stays the operational identity and the sentinel invariant is unchanged.
+- `packages/coding-agent/src/core/extensions/builtin/cursor-cli-oauth/account-command.ts`: the listing, the "Pinned account" line and the "Affinity pick" line render `accountLabel(...)` (`displayName (name)`) instead of the bare ID, matching the Claude lane. Pinning, removal, import, affinity and status output still address accounts by ID only.
+
+### Why
+
+- `/account <provider> rename ...` accepts any provider, so a cursor account can already hold a label; without these two paths the label was write-only for this lane — visible in `/account cursor-cli-oauth list` and nowhere in `/cursor-account`.
+
+### Why an extension could not handle it
+
+- Both paths are this provider extension's own slot type and command surface; the shared locked rename lives in core below them.
+
+### Expected merge conflict zones
+
+- LOW: slot shape in `accounts.ts`; the three rendering sites in `showAccounts` in `account-command.ts`.
+
+## 2026-09-11 - Detect same-tick settings rewrites
+
+### What changed
+
+- `settings.ts`: the cached provider-settings loader now keys its manager cache on a SHA-256 content revision rather than `mtimeMs:size`, so a rewrite made within one filesystem mtime tick is observed.
+
+### Why
+
+- Linux filesystems can preserve the same mtime for two rapid writes, leaving the loader with stale provider settings despite its re-read contract.
+
+### Why an extension could not handle it
+
+- The cache and its invalidation key are owned by this provider extension's settings loader.
+
+### Expected merge conflict zones
+
+- LOW: `settings.ts` around `settingsFingerprint`.
+
 ## 2026-08-24 - Keep provider tool protocol out of assistant text
 
 ### What changed

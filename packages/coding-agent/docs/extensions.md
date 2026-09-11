@@ -2340,17 +2340,33 @@ pi.registerTool({
 
 **Usage accounting:** If a tool makes nested LLM calls, return their combined `Usage` as `usage`. Senpi persists it on the tool result and includes it in footer, `/session`, and RPC session totals. `tool_result` handlers can inspect or replace this value.
 
-**Signaling errors:** To mark a tool execution as failed (sets `isError: true` on the result and reports it to the LLM), throw an error from `execute`. Returning a value never sets the error flag regardless of what properties you include in the return object.
+**Signaling errors:** There are two ways to mark a tool execution as failed (sets `isError: true` on the result, the `tool_execution_end` event, and the `toolResult` message the LLM sees):
+
+- Throw an error from `execute`. The thrown message becomes the result text and `details` is empty.
+- Return a normal result with `isError: true`. `content` and `details` are delivered unchanged, so the LLM can still branch on your typed `details` while every error surface (TUI row background, RPC `isError`, `tool_result` handlers) treats the call as a failure. Omitting `isError` or setting it to `false` is a success.
 
 **Early termination:** Return `terminate: true` from `execute()` to hint that the automatic follow-up LLM call should be skipped after the current tool batch. This only takes effect when every finalized tool result in that batch is terminating. See [examples/extensions/structured-output.ts](../examples/extensions/structured-output.ts) for a minimal example where the agent ends on a final structured-output tool call.
 
 ```typescript
-// Correct: throw to signal an error
+// Throw when there is nothing structured to report
 async execute(toolCallId, params) {
   if (!isValid(params.input)) {
     throw new Error(`Invalid input: ${params.input}`);
   }
   return { content: [{ type: "text", text: "OK" }], details: {} };
+}
+
+// Return isError: true when the LLM should still see typed details
+async execute(toolCallId, params) {
+  const outcome = await createTeam(params);
+  if (outcome.kind === "member_start_rejected") {
+    return {
+      content: [{ type: "text", text: outcome.reason }],
+      details: { kind: "runtime_error", code: outcome.kind },
+      isError: true,
+    };
+  }
+  return { content: [{ type: "text", text: "Created" }], details: { kind: "created" } };
 }
 ```
 
@@ -3270,7 +3286,7 @@ const highlighted = highlightCode(code, lang, theme);
 
 - Extension errors are logged, agent continues
 - `tool_call` errors block the tool (fail-safe)
-- Tool `execute` errors must be signaled by throwing; the thrown error is caught, reported to the LLM with `isError: true`, and execution continues
+- Tool `execute` errors are signaled by throwing or by returning a result with `isError: true`; either way the result reaches the LLM with `isError: true` and execution continues (a returned result keeps its `content` and `details`)
 
 ## Mode Behavior
 

@@ -1,5 +1,49 @@
 # goal Extension Changes
 
+## Blocked is earned, not asserted: live-channel and goal-turn guards (2026-09-11)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/goal/blocked-audit.ts` (new): `GOAL_BLOCKED_MIN_GOAL_TURNS = 3`, `goalTurnsSinceActivation(entries, goal)` (the calling turn plus every goal-continuation entry delivered since `lastStartedAt`, restarting at the last real user message), and the two rejection messages the model reads.
+- `packages/coding-agent/src/core/extensions/builtin/goal/tool-registration.ts`: `update_goal` with status `blocked` now runs `assertBlockedAuditIsEarned` before the transition. It throws while any live resumption channel can still deliver (naming the channels) and while the goal has spent fewer than three goal turns on the blocker. `complete` is untouched. The `update_goal` description states both rejections and that retries themselves are unbounded; the `create_goal` description replaces "only when explicitly requested ... do not infer goals from ordinary tasks" with the decision rule the harness already nudges through `staleGoalTodoReminder` (register a goal for work that outlives the turn: it waits on external state, or the requested outcome needs more than one verify-and-fix round).
+- `packages/coding-agent/src/core/extensions/builtin/goal/monitor-continuation.ts`: `liveWakeSources()` exposes the live channel kinds the private snapshot already tracked; `packages/coding-agent/src/core/extensions/builtin/goal/index.ts` passes it to `registerGoalTools`.
+- `packages/coding-agent/src/core/extensions/builtin/goal/prompt.ts`: the blocked audit is restructured as codex's no-progress check plus a three-condition audit. New: progress is defined against status restatements, plans, hypotheses, and untaken next steps; retries are declared unbounded with a widen-the-source rule; the pre-threshold ending is stated positively (say the blocker once, take the next available action, leave the goal active). The recurrence bullet now names the goal-turn floor the tool enforces instead of self-counted "materially different attempts". The completion audit gains the scope-match rule ("a narrow check never supports a broad claim") and "the audit has to prove completion; failing to find remaining work is not proof", each replacing the weaker line in place.
+- `packages/coding-agent/src/core/extensions/builtin/goal/todo-gate.ts`: the open-todo rejection no longer says "finish each task and mark it done"; it asks for the remaining work or an honest drop and names closing an unfinished task as a false completion.
+- Tests: `packages/coding-agent/test/suite/goal-blocked-guards.test.ts` (new: turn counting, both rejections, the accepted block, the user-message restart, and completion staying ungated), `goal-prompt-question-routing.test.ts` and `prompt-single-home.test.ts` updated. RED captured on the test-only commit `47e808925` (3 failed / 5 passed, each failure "promise resolved instead of rejecting"); GREEN after the guards.
+
+### Why
+
+- Blocked was the only stop the model could declare unilaterally, and it was certified in prose. Across 703 sessions since 2026-09-04 (16,688 turns) GPT-6 Astra called `update_goal(blocked)` 24 times against 3 for claude-fable and 5 for claude-opus. In one session both blocked calls landed on the second goal turn of a run, each claiming three exhausted paths, while the data called missing sat in a KV namespace the model had not read; the same session had already reported a completion verified by one probe of a different model than the user's. The two conditions a harness can check - a channel that can still deliver, and turns actually spent on this blocker - move that judgment out of prose. Codex states the same three-turn rule in `ext/goal/templates/goals/continuation.md` and its `update_goal` schema but enforces neither; senpi can, because continuations are session entries.
+- The floor is a floor, never a cap: nothing here limits attempts, and both messages say so. This matches the owner's standing instruction that a goal is not to be terminated as blocked while any executable path remains.
+
+### Why an extension could not handle it
+
+- The builtin owns the goal tools, the wake-source registry, and the continuation prompt. Only it can reject its own status transition or count the continuations it delivered.
+
+### Expected merge conflict zones
+
+- MEDIUM: `prompt.ts` audits and `tool-registration.ts` descriptions are edited often; `index.ts` `registerGoalTools` dependency object gains one field.
+
+## 2026-09-09 - Stop automatic goal recovery after terminal policy rejection (#1520)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/goal/terminal-provider-error.ts`: distinguish terminal classifier refusals/sensitive stops and the Codex safety-block error diagnostic from infrastructure failures, only after the explicit retry owner reports `willRetry: false`. The unstructured Codex diagnostic carries no policy code, so it is trusted only on `api === "openai-codex-responses"`; another provider or gateway emitting the same sentence keeps the existing provider/system recovery path. Structured classifier refusals stay provider-independent because they carry their own policy details.
+- `packages/coding-agent/src/core/extensions/builtin/goal/agent-end-continuation.ts`: persist the active goal as blocked before recovery routing and synchronize the monitor to clear staged recoveries and armed timers. The goal identity/objective survive; no continuation is delivered or counted. This is not a mechanical block that unrelated input automatically resumes.
+- `packages/coding-agent/test/suite/goal-policy-rejection.test.ts`: the identity gate is a literal copy of an id owned by `packages/ai`, so the suite drives the same lifecycle once per api id in the shipped Codex catalog (`OPENAI_CODEX_MODELS`). Renaming that api fails the suite instead of silently disarming the guard while the hardcoded cases stay green.
+
+### Why
+
+- `db6069f83` intentionally kept goals active after infrastructure retry exhaustion. Policy rejection was missing from that distinction, so settlement queued up to eight hidden follow-ups to an already rejected request. Non-policy provider/system recovery and explicit retry ownership remain unchanged.
+
+### Why an extension could not handle it
+
+- The builtin owns goal recovery routing, persistence, timers, and settlement admission. An external extension cannot veto its queued continuation.
+
+### Expected merge conflict zones
+
+- LOW: `agent-end-continuation.ts` routing/imports and `terminal-provider-error.ts` predicates.
+
 ## 2026-09-10 - Route user-only blockers through the question tool
 
 ### What changed
@@ -1155,7 +1199,6 @@ surface; no core extension API change is required.
 
 - LOW in `prompt.ts` if the standalone goal continuation wording changes.
 
-
 ## Overview
 Persistent per-thread goal tracking as an in-tree builtin. Ports the standalone
 `pi-goal` extension into senpi with no dependency on it, file-based persistence,
@@ -1429,7 +1472,6 @@ codex-aligned tool naming, and budget-driven behavior removed. An optional
   recovery while upstream owns the lifecycle persistence semantics.
 - MEDIUM: `index.ts`, `tool-registration.ts`, and `ui.ts` retain senpi's split
   registration, elapsed ticker, and core abort-event integration.
-
 
 ## Reload no longer auto-starts a stopped goal; gap-abort blocks active goal (2026-07-27)
 

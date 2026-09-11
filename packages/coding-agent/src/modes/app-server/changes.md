@@ -1,5 +1,69 @@
 # changes
 
+## 2026-09-11 - Treat live processes with temporarily absent identity as observable gaps
+
+### What changed
+
+- `packages/coding-agent/src/modes/app-server/daemon/process.ts`: `processMatchesPidFile`
+  now checks process liveness when a platform identity probe returns no identity. A live PID
+  remains an observation failure within the bounded probe budget instead of being treated as a
+  dead or replaced process.
+
+### Why
+
+- Windows CIM queries can transiently return an empty result for a process that is still alive.
+  Treating that result as a PID mismatch lets concurrent RPC host startup reclaim a healthy host.
+
+### Why an extension could not handle it
+
+- The process identity reader is the ownership boundary used by daemon and RPC lifecycle code;
+  extensions cannot safely alter its result after a host has been classified.
+
+### Expected merge conflict zones
+
+- LOW around `daemon/process.ts` process identity probe classification.
+
+## 2026-09-11 - Partial ask-user responses resolve with unanswered ids
+
+### What changed
+
+- `packages/coding-agent/src/modes/app-server/server/user-input-bridge.ts` now receives the shared
+  pending-question partial-submit behavior, resolving a non-empty answer map as `answered` while
+  preserving unanswered ids.
+
+### Why
+
+- App-server already accepted partial responses, but the shared pending state machine previously
+  disagreed with RPC. This tracker records the cross-surface contract that must remain aligned.
+
+### Why an extension could not handle it
+
+- The app-server bridge owns protocol response correlation and consumes the shared pending state
+  machine before extension code can alter the result.
+
+### Expected merge conflict zones
+
+- LOW around `UserInputBridge.resolveResponse`; preserve the existing request ordering and
+  `serverRequest/resolved` lifecycle.
+
+## 2026-09-10 - Optional display-name account descriptor (senpi#1495)
+
+### What changed
+
+- `packages/coding-agent/src/modes/app-server/protocol/account.ts`: `ProviderAccount` gains optional `displayName`, matching the shared secret-free account read response. `name` remains the immutable selector ID. Generated protocol evidence is untouched.
+
+### Why
+
+- `packages/coding-agent/src/modes/app-server/protocol/account.ts`: clients can render `displayName (name)` without changing pin/remove behavior or legacy unnamed account payloads.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/app-server/protocol/account.ts` is the host-owned facade for account responses and must describe the actual shared projection.
+
+### Expected merge conflict zones
+
+- LOW: `packages/coding-agent/src/modes/app-server/protocol/account.ts` provider account descriptor.
+
 ## Ask-user question transport (2026-09-10)
 
 ### What changed

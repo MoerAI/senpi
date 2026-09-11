@@ -7,6 +7,7 @@ import { buildClaudeOpus46Prompt } from "./claude-opus-4-6.ts";
 import { buildClaudeOpus47Prompt } from "./claude-opus-4-7.ts";
 import { buildClaudeOpus48Prompt } from "./claude-opus-4-8.ts";
 import { buildClaudeOpus5Prompt } from "./claude-opus-5.ts";
+import { buildDeepseekV41FlashPrompt } from "./deepseek-v4-1-flash.ts";
 import { buildDeepseekV4FlashPrompt } from "./deepseek-v4-flash.ts";
 import { buildDeepseekV4Flash0731Prompt } from "./deepseek-v4-flash-0731.ts";
 import { buildDeepseekV4ProPrompt } from "./deepseek-v4-pro.ts";
@@ -124,6 +125,37 @@ function hasDeepseekV4FlashSignal(value: string): boolean {
 
 function isDeepseekV4FlashModel(model: ModelWithPromptPresetMetadata): boolean {
 	return hasDeepseekV4FlashSignal(model.id) || (model.name !== undefined && hasDeepseekV4FlashSignal(model.name));
+}
+
+// DeepSeek V4.1 Flash id shapes verified against models.dev and the provider
+// catalogs (2026-09-11): deepseek-flash (the official API name, also opencode-go),
+// deepseek-v4.1-flash and deepseek/deepseek-v4.1-flash[:thinking] (OpenRouter,
+// Vercel, requesty, kilo, ...), deepseek-ai/DeepSeek-V4.1-Flash (Hugging Face,
+// DeepInfra), accounts/fireworks/models/deepseek-v4p1-flash, venice's
+// deepseek-v4-1-flash, and the display name "DeepSeek V4.1 Flash".
+function hasDeepseekV41FlashSignal(value: string): boolean {
+	const normalized = normalizeModelId(value);
+	return (
+		/(?:^|[/@:._-])deepseek[._-]v4(?:[._-]1|p1)[._-]flash(?:$|[/@:._-])/.test(normalized) ||
+		/(?:^|[/@:._-])deepseek[._-]flash(?:$|[/@:._-])/.test(normalized)
+	);
+}
+
+const DEEPSEEK_OFFICIAL_PROVIDER = "deepseek";
+
+// DeepSeek retired V4 Flash on 2026-09-10: on the official API, deepseek-v4-flash
+// and deepseek-v4-flash-vision-exp are served by V4.1 Flash. Every other
+// provider still hosts the V4 weights under those names.
+function isRetiredOfficialDeepseekV4FlashAlias(model: ModelWithPromptPresetMetadata): boolean {
+	return model.provider === DEEPSEEK_OFFICIAL_PROVIDER && hasDeepseekV4FlashSignal(model.id);
+}
+
+function isDeepseekV41FlashModel(model: ModelWithPromptPresetMetadata): boolean {
+	return (
+		hasDeepseekV41FlashSignal(model.id) ||
+		(model.name !== undefined && hasDeepseekV41FlashSignal(model.name)) ||
+		isRetiredOfficialDeepseekV4FlashAlias(model)
+	);
 }
 
 function hasDeepseekV4ProSignal(value: string): boolean {
@@ -261,6 +293,9 @@ export function resolvePresetName(
 	if (isDeepseekV4Flash0731Model(model)) {
 		return "deepseek-v4-flash-0731";
 	}
+	if (isDeepseekV41FlashModel(model)) {
+		return "deepseek-v4-1-flash";
+	}
 	if (isDeepseekV4FlashModel(model)) {
 		return "deepseek-v4-flash";
 	}
@@ -300,6 +335,8 @@ function buildPreset(name: ResolvedPresetName, options: BuildDynamicSystemPrompt
 			return { name, prompt: buildDeepseekV4FlashPrompt(options) };
 		case "deepseek-v4-flash-0731":
 			return { name, prompt: buildDeepseekV4Flash0731Prompt(options) };
+		case "deepseek-v4-1-flash":
+			return { name, prompt: buildDeepseekV41FlashPrompt(options) };
 		case "deepseek-v4-pro":
 			return { name, prompt: buildDeepseekV4ProPrompt(options) };
 		case "grok-4.6":
