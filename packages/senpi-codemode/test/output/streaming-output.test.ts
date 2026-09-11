@@ -146,6 +146,28 @@ describe("OutputSink", () => {
 		expect(await readFile(artifactPath, "utf8")).toBe(input);
 	});
 
+	it("mirrors a narrow column-cap loss below the ellipsis size", async () => {
+		// Given
+		const dir = await createTempDir();
+		const artifactPath = join(dir, "column-cap-narrow-gap.log");
+		const input = `${"x".repeat(770)}\n`;
+		const sink = new OutputSink({
+			artifactPath,
+			spillThreshold: 50 * 1024,
+			maxColumns: 768,
+		});
+
+		// When
+		sink.push(input);
+		const summary = await sink.dump();
+
+		// Then
+		expect(summary.truncated).toBe(true);
+		expect(summary.columnDroppedBytes).toBe(2);
+		expect(summary.artifactId).toBe(artifactPath);
+		expect(await readFile(artifactPath, "utf8")).toBe(input);
+	});
+
 	it("flushes throttled chunks without dropping preview data", async () => {
 		// Given
 		vi.spyOn(Date, "now").mockReturnValue(100_000);

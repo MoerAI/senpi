@@ -89,9 +89,9 @@ export class OutputSink {
 		this.#totalBytes += rawBytes;
 		this.#totalNewlines += countNewlines(chunk);
 		this.#sawData = true;
+		const droppedBefore = this.#columnDroppedBytes;
 		const retained = this.#maxColumns > 0 ? this.#clampColumns(chunk) : chunk;
-		const columnCapDropped = Buffer.byteLength(retained, "utf8") < rawBytes;
-		this.#mirrorRaw(chunk, columnCapDropped);
+		this.#mirrorRaw(chunk, this.#columnDroppedBytes > droppedBefore);
 		this.#retain(retained);
 	}
 
