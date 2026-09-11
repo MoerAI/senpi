@@ -82,6 +82,24 @@
 ## 2026-09-10 - /tree edits carry the leaf token and reach shared hosts
 # changes
 
+## 2026-09-11 - Show the active brand changelog without cross-source updates (senpi#1583)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: uses the resolved brand or engine changelog source, persists acknowledgements by source, caps entries at the active version, and avoids engine link rewriting and install telemetry for branded sources.
+
+### Why
+
+- A branded product's release notes and version history must remain separate from the engine's release channel and telemetry.
+
+### Why an extension could not handle it
+
+- Interactive startup notices and the `/changelog` command are host-owned rendering paths that execute outside extension control.
+
+### Expected merge conflict zones
+
+- LOW: changelog startup handling and the `/changelog` command in `interactive-mode.ts`.
+
 ## 2026-09-02 - Do not paint two live login inputs
 
 ### What changed
