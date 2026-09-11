@@ -1,6 +1,6 @@
 # builtin/prompt-preset
 
-Builtin extension #7. On `before_agent_start` and `model_select`, picks a system prompt preset by **model family** (gpt-5.x through gpt-5.6, gpt-6-astra, claude-fable-5, claude-fable-5-1, claude-opus-5, claude-opus-4-{5,6,7,8}, glm-5.2, glm-5.3, deepseek-v4-{flash,flash-0731,pro}, kimi-k2-{6,7}, kimi-k3) and falls back to the senpi dynamic prompt when nothing matches. Renders the active preset name in the startup header. After 2026-04-30, presets are thin wrappers around `buildDynamicSystemPrompt()` carrying only model-specific tuning.
+Builtin extension #7. On `before_agent_start` and `model_select`, picks a system prompt preset by **model family** (gpt-5.x through gpt-5.6, gpt-6-astra, claude-fable-5, claude-fable-5-1, claude-opus-5, claude-opus-4-{5,6,7,8}, glm-5.2, glm-5.3, deepseek-v4-{flash,flash-0731,pro}, deepseek-v4-1-flash, kimi-k2-{6,7}, kimi-k3) and falls back to the senpi dynamic prompt when nothing matches. Renders the active preset name in the startup header. After 2026-04-30, presets are thin wrappers around `buildDynamicSystemPrompt()` carrying only model-specific tuning.
 
 ## FILES
 
@@ -28,6 +28,7 @@ prompt-preset/
 ├── deepseek-v4.ts       # Shared DeepSeek V4 rule data (`DEEPSEEK_V4_RULES`) + tuning builders (directive authority, todo discipline, missing-info, settled-reading, reasoning-aim)
 ├── deepseek-v4-flash.ts # DeepSeek V4 Flash preset (thin tuningSection over the shared core)
 ├── deepseek-v4-flash-0731.ts # DeepSeek V4 Flash 0731 snapshot preset — dated snapshot resolves before the generic flash alias
+├── deepseek-v4-1-flash.ts # DeepSeek V4.1 Flash preset — execution-tooling stance + claude dialect only, none of the V4 rules (new pre-train; DeepSeek's own scaffold table favours the thinnest harness); resolves every V4.1 id shape (deepseek-flash, v4.1/v4p1/v4-1-flash) and the official provider's retired deepseek-v4-flash / -vision-exp aliases, which the DeepSeek API serves with V4.1 since 2026-09-10
 ├── deepseek-v4-pro.ts   # DeepSeek V4 Pro preset (deep-reasoner calibration)
 ├── kimi-k2-{6,7}.ts     # Kimi K2.6 / K2.7 presets (kimi-k2-6.ts, kimi-k2-7.ts)
 ├── kimi-k3.ts           # Kimi K3 preset — full-core rewrite via `corePrompt` on the Fable 5.1 skeleton, tuned for Moonshot's documented K3 "excessive proactiveness" (Scope section: request = deliverable, pre-existing problems are follow-ups, test scope; reflect-then-ask ambiguity gate; bounded failure cap; delegation with propagated stop condition) + binding stop contract (declared stop condition in the routing line)
@@ -45,6 +46,7 @@ prompt-preset/
 | Tune the eval-default stance for Claude, GLM, and Kimi presets | `execution-tooling.ts` + `test/suite/prompt-presets-execution-tooling.test.ts` |
 | Tune the wait-as-subscription (`tool.monitor`) stance | `senpi-codemode/src/prompt/eval-prompt.ts` (eval tool description), not this directory |
 | Tune GLM 5.x behavior | `glm-5.ts` `GLM5_TUNING` (both 5.2 and 5.3 render it) |
+| Add a V4.1 Flash rule against an observed trace | `deepseek-v4.ts` `DEEPSEEK_V4_RULES` — list `deepseek-v4-1-flash` in that rule's `presets` and render it from `deepseek-v4-1-flash.ts`; `prompt-presets-deepseek-v4-1-flash.test.ts` pins that no V4 rule leaks in by default |
 | Adjust model-id → preset matching | `presets.ts` `resolvePresetName()` |
 | User override via settings | `settings.ts` `PromptPresetName` |
 
