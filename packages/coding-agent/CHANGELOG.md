@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- The ask-user overlay now uses plain Enter to confirm and advance through question tabs, keeps multi-select choices intact when confirming, provides an explicit Submit tab for optional comments and partial answers, prevents editor focus traps, and reports partial answers without requiring a comment ([#1573](https://github.com/code-yeongyu/senpi/issues/1573))
+
 - Remote pi.dev catalog refreshes no longer lower or replace capabilities declared by Senpi's static model catalog; existing rows and `-fast` variants remain authoritative, conflicting provider/model fields are exposed through the remote-catalog diagnostics API, and malformed remote rows are rejected.
 
 - The Windows RPC host supervisor now creates its internal socket directory recursively and provisions a missing public socket secret while reusing an existing valid one, so launching `--internal-rpc-host-supervisor` directly on a fresh profile reaches its listener instead of crashing with `ENOENT ... mkdir '<agentDir>\rpc-host-daemon\internal-<uuid>'` and then `ENOENT ... open '<publicSocket>.secret'` ([#1370](https://github.com/code-yeongyu/senpi/issues/1370))

@@ -1,5 +1,28 @@
 # changes
 
+## 2026-09-11 - Partial ask-user responses resolve with unanswered ids
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/connection-question-bridge.ts` now resolves a response
+  containing at least one answer as `answered` even when other question ids remain unanswered.
+  An empty answer map with no comment remains `question_incomplete`.
+
+### Why
+
+- The TUI and desktop can intentionally submit a partial decision. RPC must preserve that action
+  instead of leaving the question pending or requiring an unrelated comment.
+
+### Why an extension could not handle it
+
+- The RPC bridge owns response correlation and terminal resolution before the extension receives
+  the result.
+
+### Expected merge conflict zones
+
+- LOW around `ConnectionQuestionBridge` response validation and the existing question resolution
+  event; preserve the one-resolution guarantee.
+
 ## 2026-09-10 - Optional display-name account descriptor (senpi#1495)
 
 ### What changed

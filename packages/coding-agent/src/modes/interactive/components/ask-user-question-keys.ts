@@ -14,7 +14,7 @@ export interface AskUserKeyHandlerContext {
 	commentInput: Input;
 	finish(status: QuestionResponse["status"], autoResolvedAfterMs?: number): void;
 	attemptSubmit(): void;
-	openOwnAnswer(): void;
+	openOwnAnswer(initialText?: string): void;
 	commitOwnAnswer(): void;
 	emitProgress(): void;
 	updateAll(): void;
@@ -22,12 +22,16 @@ export interface AskUserKeyHandlerContext {
 
 export function handleAskUserKeyInput(ctx: AskUserKeyHandlerContext, data: string): void {
 	const kb = getKeybindings();
+	if (matchesKey(data, "ctrl+c")) {
+		ctx.finish("cancelled");
+		return;
+	}
 	if (ctx.state.focus === "own-answer") {
 		handleOwnAnswerKey(ctx, data, kb);
 		return;
 	}
-	if (ctx.state.focus === "comment") {
-		handleCommentKey(ctx, data, kb);
+	if (ctx.state.focus === "submit") {
+		handleSubmitKey(ctx, data, kb);
 		return;
 	}
 	handleOptionsKey(ctx, data, kb);
@@ -41,10 +45,13 @@ function handleOwnAnswerKey(ctx: AskUserKeyHandlerContext, data: string, kb: Ret
 	}
 	if (kb.matches(data, "tui.select.confirm") || data === "\n") {
 		ctx.commitOwnAnswer();
+		ctx.state.advance();
+		ctx.updateAll();
 		return;
 	}
 	if (kb.matches(data, "tui.select.cancel")) {
-		ctx.state.focus = "options";
+		if (ctx.state.request.waitForAnswer) ctx.state.returnToOptions();
+		else ctx.finish("cancelled");
 		ctx.updateAll();
 		return;
 	}
@@ -52,13 +59,24 @@ function handleOwnAnswerKey(ctx: AskUserKeyHandlerContext, data: string, kb: Ret
 	ctx.emitProgress();
 }
 
-function handleCommentKey(ctx: AskUserKeyHandlerContext, data: string, kb: ReturnType<typeof getKeybindings>): void {
+function handleSubmitKey(ctx: AskUserKeyHandlerContext, data: string, kb: ReturnType<typeof getKeybindings>): void {
 	if (matchesKey(data, "ctrl+enter") || kb.matches(data, "tui.input.submit") || data === "\n") {
 		ctx.attemptSubmit();
 		return;
 	}
 	if (kb.matches(data, "tui.select.cancel")) {
-		ctx.state.focus = "options";
+		if (ctx.state.request.waitForAnswer) ctx.state.returnToOptions();
+		else ctx.finish("cancelled");
+		ctx.updateAll();
+		return;
+	}
+	if (matchesKey(data, "shift+tab") || matchesKey(data, "left")) {
+		ctx.state.switchTab(-1);
+		ctx.updateAll();
+		return;
+	}
+	if (matchesKey(data, "tab") || matchesKey(data, "right")) {
+		ctx.state.switchTab(1);
 		ctx.updateAll();
 		return;
 	}
@@ -74,16 +92,17 @@ function handleOptionsKey(ctx: AskUserKeyHandlerContext, data: string, kb: Retur
 		return;
 	}
 	if (kb.matches(data, "tui.select.cancel")) {
-		ctx.finish("cancelled");
+		if (!state.request.waitForAnswer || state.requestDismiss() === "cancel") ctx.finish("cancelled");
+		else ctx.updateAll();
 		return;
 	}
 	if (matchesKey(data, "tab") || matchesKey(data, "right")) {
-		state.switchQuestion(1);
+		state.switchTab(1);
 		ctx.updateAll();
 		return;
 	}
 	if (matchesKey(data, "shift+tab") || matchesKey(data, "left")) {
-		state.switchQuestion(-1);
+		state.switchTab(-1);
 		ctx.updateAll();
 		return;
 	}
@@ -93,8 +112,7 @@ function handleOptionsKey(ctx: AskUserKeyHandlerContext, data: string, kb: Retur
 		return;
 	}
 	if (kb.matches(data, "tui.select.down") || data === "j") {
-		if (state.highlightIndex >= state.ownAnswerRowIndex) state.focus = "comment";
-		else state.highlightIndex += 1;
+		state.highlightIndex = Math.min(state.ownAnswerRowIndex, state.highlightIndex + 1);
 		ctx.updateAll();
 		return;
 	}
@@ -103,21 +121,34 @@ function handleOptionsKey(ctx: AskUserKeyHandlerContext, data: string, kb: Retur
 		if (option) {
 			state.activateOption(state.activeQuestion.id, option.label);
 			ctx.emitProgress();
+			if (!state.activeQuestion.multiSelect) {
+				if (state.request.waitForAnswer && state.request.questions.length === 1) ctx.attemptSubmit();
+				else state.advance();
+			}
 			ctx.updateAll();
 		}
 		return;
 	}
-	if (matchesKey(data, "space") || kb.matches(data, "tui.select.confirm") || data === "\n") {
-		activateHighlighted(ctx);
+	if (matchesKey(data, "space")) {
+		activateHighlighted(ctx, false);
+		return;
+	}
+	if (kb.matches(data, "tui.select.confirm") || data === "\n") {
+		activateHighlighted(ctx, true);
 		return;
 	}
 	if (data === "c") {
-		state.focus = "comment";
+		state.focus = "submit";
+		ctx.updateAll();
+		return;
+	}
+	if (data.length === 1 && data >= " " && data !== "c") {
+		ctx.openOwnAnswer(data);
 		ctx.updateAll();
 	}
 }
 
-function activateHighlighted(ctx: AskUserKeyHandlerContext): void {
+function activateHighlighted(ctx: AskUserKeyHandlerContext, confirm: boolean): void {
 	const state = ctx.state;
 	if (state.highlightIndex === state.ownAnswerRowIndex) {
 		ctx.openOwnAnswer();
@@ -125,7 +156,17 @@ function activateHighlighted(ctx: AskUserKeyHandlerContext): void {
 	}
 	const option = state.activeQuestion.options[state.highlightIndex];
 	if (!option) return;
-	state.activateOption(state.activeQuestion.id, option.label);
+	if (!confirm || !state.activeQuestion.multiSelect) {
+		state.activateOption(state.activeQuestion.id, option.label);
+	}
 	ctx.emitProgress();
 	ctx.updateAll();
+	if (confirm) {
+		if (!state.activeQuestion.multiSelect && state.request.waitForAnswer && state.request.questions.length === 1) {
+			ctx.attemptSubmit();
+		} else {
+			state.advance();
+			ctx.updateAll();
+		}
+	}
 }

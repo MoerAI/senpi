@@ -1,5 +1,28 @@
 # Builtin extensions changes
 
+## 2026-09-11 - Partial ask-user answers resolve consistently
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/ask-user/pending.ts` accepts a non-empty
+  partial answer map as `answered` and preserves the unanswered question ids.
+- `packages/coding-agent/src/core/extensions/builtin/ask-user/format.ts` renders unanswered
+  question headers for `answered` responses as well as comment-submitted responses.
+
+### Why
+
+- RPC previously kept a partial selection pending while app-server and desktop already allowed it,
+  so the same user action had different outcomes depending on the connected surface.
+
+### Why an extension could not handle it
+
+- The pending state machine and result formatter are the builtin's shared contract used by every
+  transport; an external extension cannot change their terminal resolution semantics.
+
+### Expected merge conflict zones
+
+- LOW in `ask-user/pending.ts` submit resolution and `ask-user/format.ts` status formatting.
+
 ## 2026-09-10 - Account display-name commands and generated-ID-only post-login naming (senpi#1495)
 
 ### What changed

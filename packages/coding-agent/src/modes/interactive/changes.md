@@ -1,3 +1,29 @@
+## 2026-09-11 - Ask-user overlay uses an explicit question and submit flow
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-question-state.ts`,
+  `ask-user-question-keys.ts`, `ask-user-question-render.ts`, and `ask-user-question.ts` now model
+  question tabs, an on-demand own-answer editor, and a dedicated Submit tab. Enter confirms and
+  advances, Space toggles multi-select, plain Enter works on every terminal, and the comment editor
+  no longer occupies the bottom of every question or traps navigation.
+
+### Why
+
+- The previous overlay required a terminal-specific ctrl+Enter path for submission, toggled
+  multi-select choices when Enter was used, and routed navigation keys into the always-visible
+  comment input after moving down past the options.
+
+### Why an extension could not handle it
+
+- `AskUserQuestionComponent` owns the interactive-mode focus and key dispatch for the builtin
+  question extension; no extension hook can replace its component-level state machine.
+
+### Expected merge conflict zones
+
+- LOW in the ask-user component siblings and their focused suite; preserve the async widget's
+  `alt+a` expansion and the existing `QuestionResponse` wire shape.
+
 ## 2026-09-10 - Safe account labels in footer and English help (senpi#1495)
 
 ### What changed
