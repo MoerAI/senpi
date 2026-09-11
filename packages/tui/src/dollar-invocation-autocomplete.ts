@@ -47,7 +47,11 @@ function leadingKnownSkillRun(text: string, knownSkills: ReadonlySet<string>): b
 		tokens.length > 0 &&
 		tokens.every((token) => {
 			const match = DOLLAR_QUERY_PATTERN.exec(token);
-			return match !== null && match[1] !== "" && knownSkills.has(match[1]);
+			if (match === null || match[1] === "") return false;
+			const name = match[1].startsWith(SKILL_COMMAND_PREFIX)
+				? match[1].slice(SKILL_COMMAND_PREFIX.length)
+				: match[1];
+			return name !== "" && knownSkills.has(name);
 		})
 	);
 }

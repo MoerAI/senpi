@@ -73,6 +73,23 @@ describe("CombinedAutocompleteProvider dollar invocation suggestions", () => {
 		});
 	});
 
+	it("preserves explicit skill namespace chaining", async () => {
+		const provider = new CombinedAutocompleteProvider(commands, "/tmp");
+		const line = "$skill:debugging $front";
+		const result = await getSuggestions(provider, line);
+
+		assert.deepStrictEqual(
+			result?.items.map((item) => item.value),
+			["$frontend"],
+		);
+		assert.strictEqual(result?.prefix, "$front");
+		assert.deepStrictEqual(provider.applyCompletion([line], 0, line.length, result!.items[0]!, result!.prefix), {
+			lines: ["$skill:debugging $frontend "],
+			cursorLine: 0,
+			cursorCol: "$skill:debugging $frontend ".length,
+		});
+	});
+
 	it("offers partial skills after ordinary prompt text", async () => {
 		const provider = new CombinedAutocompleteProvider(commands, "/tmp");
 
