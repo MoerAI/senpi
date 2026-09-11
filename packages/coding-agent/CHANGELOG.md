@@ -6,6 +6,7 @@
 
 ### Added
 
+- Added the `deepseek-v4-1-flash` prompt preset for DeepSeek V4.1 Flash: it resolves every published id shape (`deepseek-flash`, `deepseek-v4.1-flash`, `deepseek/deepseek-v4.1-flash`, `deepseek-ai/DeepSeek-V4.1-Flash`, fireworks' `deepseek-v4p1-flash`, venice's `deepseek-v4-1-flash`) and the official DeepSeek provider's retired `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` aliases, which the DeepSeek API now serves with V4.1 Flash; the same alias on any other provider keeps the V4 Flash preset. The preset carries the shared core and the eval-routing stance only - none of the V4 Flash repair rules, which were written against V4-Flash-0731 transcripts and do not apply to the re-trained model ([#1574](https://github.com/code-yeongyu/senpi/issues/1574))
 - Saved OpenAI Codex and Claude SDK OAuth accounts can receive optional display names during login or through account rename commands; account IDs remain unchanged and safe account status surfaces render `displayName (id)`.
 
 ### Changed
@@ -13,6 +14,8 @@
 ### Fixed
 
 - The ask-user overlay now uses plain Enter to confirm and advance through question tabs, keeps multi-select choices intact when confirming, provides an explicit Submit tab for optional comments and partial answers, prevents editor focus traps, and reports partial answers without requiring a comment ([#1573](https://github.com/code-yeongyu/senpi/issues/1573))
+
+- Remote pi.dev catalog refreshes no longer lower or replace capabilities declared by Senpi's static model catalog; existing rows and `-fast` variants remain authoritative, conflicting provider/model fields are exposed through the remote-catalog diagnostics API, and malformed remote rows are rejected.
 
 - The Windows RPC host supervisor now creates its internal socket directory recursively and provisions a missing public socket secret while reusing an existing valid one, so launching `--internal-rpc-host-supervisor` directly on a fresh profile reaches its listener instead of crashing with `ENOENT ... mkdir '<agentDir>\rpc-host-daemon\internal-<uuid>'` and then `ENOENT ... open '<publicSocket>.secret'` ([#1370](https://github.com/code-yeongyu/senpi/issues/1370))
 

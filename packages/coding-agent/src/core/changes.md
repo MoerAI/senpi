@@ -1,5 +1,47 @@
 # changes
 
+## 2026-09-11 - Keep static model capabilities authoritative over remote catalog refreshes (senpi#1527)
+
+### What changed
+
+- `packages/coding-agent/src/core/remote-catalog-merge.ts` validates remote model rows at the ingest boundary, preserves all static capability fields for an existing model ID, refreshes only the remote display name and pricing metadata, preserves static rows omitted by the overlay, and returns named provider/model capability conflicts.
+- `packages/coding-agent/src/core/remote-catalog-provider.ts` records merge conflicts for each wrapped provider through `getRemoteCatalogConflicts()` while retaining the existing persisted catalog and refresh lifecycle.
+- `packages/coding-agent/test/remote-catalog-authority.test.ts` covers lower context-window protection, omitted `-fast` row preservation, capability conflict reporting, malformed-row rejection, and price metadata refresh.
+
+### Why
+
+- A newer pi.dev catalog could replace a fork-declared model wholesale, silently lowering deliberate tier windows such as Sol 650,000 and Astra 600,000 to 272,000. The same replacement also made stale remote capability metadata authoritative when the static fork catalog carried required rows or compatibility fields.
+
+### Why an extension could not handle it
+
+- Remote catalog ingestion and model merging occur inside `ModelRuntime` before extension code can observe or alter the provider registry; an extension-local repair would leave CLI, SDK, and extension-free sessions vulnerable to the same replacement.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/coding-agent/src/core/remote-catalog-provider.ts` refresh publication and provider wrapper.
+- LOW: new `packages/coding-agent/src/core/remote-catalog-merge.ts` and the colocated remote catalog regression tests.
+
+## 2026-09-11 - Keep static model capabilities authoritative over remote catalog refreshes (senpi#1527)
+
+### What changed
+
+- `packages/coding-agent/src/core/remote-catalog-merge.ts` (new): validates remote model rows at the ingest boundary, preserves all static capability fields for an existing model ID, refreshes only the remote display name and pricing metadata, preserves static rows omitted by the overlay, and returns named provider/model capability conflicts.
+- `packages/coding-agent/src/core/remote-catalog-provider.ts`: records the merge conflicts for each wrapped provider through `getRemoteCatalogConflicts()` while retaining the existing persisted catalog and refresh lifecycle.
+- `packages/coding-agent/test/remote-catalog-provider.test.ts`: covers lower context-window protection, omitted `-fast` row preservation, capability conflict reporting, malformed-row rejection, and price metadata refresh.
+
+### Why
+
+- A newer pi.dev catalog could replace a fork-declared model wholesale, silently lowering deliberate tier windows such as Sol 650,000 and Astra 600,000 to 272,000. The same replacement also made stale remote capability metadata authoritative even when the static fork catalog carried required rows or compatibility fields.
+
+### Why an extension could not handle it
+
+- Remote catalog ingestion and model merging occur inside `ModelRuntime` before extension code can observe or alter the provider registry; an extension-local repair would leave CLI, SDK, and extension-free sessions vulnerable to the same replacement.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/coding-agent/src/core/remote-catalog-provider.ts` refresh publication and provider wrapper.
+- LOW: new `packages/coding-agent/src/core/remote-catalog-merge.ts` and the colocated remote catalog regression tests.
+
 ## 2026-09-10 - Atomic account display-name metadata with shape-keyed sentinel guard (senpi#1495)
 
 ### What changed
