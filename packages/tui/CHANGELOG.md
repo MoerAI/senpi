@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- Complete skill hints for `$` tokens at valid prompt boundaries while preserving literal shell variables such as `$HOME` and `$1` ([#1575](https://github.com/code-yeongyu/senpi/issues/1575)).
+
 ### Removed
 
 ## [2026.9.10-2] - 2026-09-10
