@@ -1,5 +1,11 @@
 import { Type } from "typebox";
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "../../types.ts";
+import {
+	GOAL_BLOCKED_MIN_GOAL_TURNS,
+	goalTurnFloorBlockError,
+	goalTurnsSinceActivation,
+	liveResumptionChannelBlockError,
+} from "./blocked-audit.ts";
 import { formatGoalToolResponse, type GoalToolRenderDetails, goalToolRenderDetails } from "./format.ts";
 import { renderGoalToolCall, renderGoalToolResult } from "./renderers.ts";
 import { createGoal, objectiveFullTextFileName, readGoal, updateGoal } from "./store.ts";
@@ -12,6 +18,7 @@ type GoalToolResult = AgentToolResult<GoalToolRenderDetails>;
 
 export type GoalToolRegistrationDeps = {
 	readonly goalStoreRef: (ctx: ExtensionContext) => GoalStoreRef;
+	readonly liveWakeSources: () => readonly string[];
 	readonly accountCurrentAgentTurn: (ctx: ExtensionContext, mode: GoalAccountingMode) => Promise<Goal | null>;
 	readonly beginAgentGoalAccounting: (goal: Goal) => void;
 	readonly markGoalBlockedThisTurn: (goal: Goal) => void;
@@ -24,7 +31,7 @@ export function registerGoalTools(pi: ExtensionAPI, deps: GoalToolRegistrationDe
 		name: "create_goal",
 		label: "Create Goal",
 		description:
-			"Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nObjectives are limited to 4,000 characters. For longer instructions, put the full objective in a file and refer to that file.\nReplaces the current goal when it is complete and archives it; fails if an unfinished goal exists.",
+			"Register a goal for work that outlives this turn: it waits on external state, or the user's requested outcome needs more than one verify-and-fix round before it is true. A single answer, lookup, or one-shot edit needs no goal.\nObjectives are limited to 4,000 characters. For longer instructions, put the full objective in a file and refer to that file.\nReplaces the current goal when it is complete and archives it; fails if an unfinished goal exists.",
 		parameters: Type.Object(
 			{
 				objective: Type.String({
@@ -59,7 +66,7 @@ export function registerGoalTools(pi: ExtensionAPI, deps: GoalToolRegistrationDe
 		name: "update_goal",
 		label: "Update Goal",
 		description:
-			"Set the existing goal's status to `complete` or `blocked`; the completion audit and blocked audit in the goal continuation prompt decide which, and only a passing audit permits the call.\n`complete` is rejected while todo tasks are open, and stopping work is never by itself a reason to complete; after it succeeds, report the final elapsed time and token usage from the result to the user.\n`blocked` requires a non-empty `reason` (omit `reason` for `complete`); a user resume starts a fresh blocked audit.\nA missing user decision is a question for the question tool, not a blocked status, until the user fails to answer it.\nPausing and resuming are user or system actions, not this tool.",
+			"Set the existing goal's status to `complete` or `blocked`; the completion audit and blocked audit in the goal continuation prompt decide which, and only a passing audit permits the call.\n`complete` is rejected while todo tasks are open, and stopping work is never by itself a reason to complete; after it succeeds, report the final elapsed time and token usage from the result to the user.\n`blocked` requires a non-empty `reason` (omit `reason` for `complete`), and is rejected while any resumption channel can still deliver, and again until the same blocker has survived three goal turns since the goal became active or the user last spoke; a user resume starts a fresh blocked audit.\nA missing user decision is a question for the question tool, not a blocked status, until the user fails to answer it. Retries themselves are unbounded.\nPausing and resuming are user or system actions, not this tool.",
 		parameters: Type.Object(
 			{
 				status: Type.Union(
@@ -86,6 +93,7 @@ export function registerGoalTools(pi: ExtensionAPI, deps: GoalToolRegistrationDe
 				const openTasks = openTodoTaskContents(ctx.sessionManager.getBranch());
 				if (openTasks.length > 0) throw new Error(openTodoCompletionError(openTasks));
 			}
+			if (params.status === "blocked") await assertBlockedAuditIsEarned(deps, ctx);
 			await deps.accountCurrentAgentTurn(ctx, "active");
 			const goal = await updateGoal(
 				deps.goalStoreRef(ctx),
@@ -114,6 +122,21 @@ export function registerGoalTools(pi: ExtensionAPI, deps: GoalToolRegistrationDe
 		renderCall: (args, theme) => renderGoalToolCall("get_goal", args, theme),
 		renderResult: (result, options, theme) => renderGoalToolResult(result, options, theme),
 	});
+}
+
+/**
+ * The two blocked-audit conditions the harness can verify for itself. The model
+ * asserted both in prose before, and the sessions that followed blocked goals a
+ * live child task was about to resume, and blocked others on the second goal
+ * turn against evidence one namespace away.
+ */
+async function assertBlockedAuditIsEarned(deps: GoalToolRegistrationDeps, ctx: ExtensionContext): Promise<void> {
+	const goal = await readGoal(deps.goalStoreRef(ctx));
+	if (goal === null || goal.status !== "active") return;
+	const liveSources = deps.liveWakeSources();
+	if (liveSources.length > 0) throw new Error(liveResumptionChannelBlockError(liveSources));
+	const goalTurns = goalTurnsSinceActivation(ctx.sessionManager.getBranch(), goal);
+	if (goalTurns < GOAL_BLOCKED_MIN_GOAL_TURNS) throw new Error(goalTurnFloorBlockError(goalTurns));
 }
 
 function toolText(text: string, details: GoalToolRenderDetails): GoalToolResult {

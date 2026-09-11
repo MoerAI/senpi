@@ -7,17 +7,14 @@ import type { Goal } from "./types.ts";
  * an impasse rather than one failed approach. Mirrors codex `ext/goal`
  * (`templates/goals/continuation.md`): "at least three consecutive goal turns,
  * counting the original/user-triggered turn and any automatic continuations".
- * The model self-certified that recurrence before; this is the count the harness
- * can verify.
  */
 export const GOAL_BLOCKED_MIN_GOAL_TURNS = 3;
 
 /**
  * Goal turns spent on the current blocker: the turn calling `update_goal` plus
- * every automatic continuation delivered since the goal last became active.
- * A real user message resets it, because the user's own push restarts the audit
- * the same way a resume does. Counting delivered continuation entries keeps the
- * number derived from the session branch, so no model narration can inflate it.
+ * every continuation delivered since the goal last became active. A real user
+ * message restarts it the way a resume does. Counting delivered continuation
+ * entries keeps the number derived from the branch, never from model narration.
  */
 export function goalTurnsSinceActivation(entries: readonly SessionEntry[], goal: Goal): number {
 	const activatedAtMs = (goal.lastStartedAt ?? goal.createdAt) * 1000;
