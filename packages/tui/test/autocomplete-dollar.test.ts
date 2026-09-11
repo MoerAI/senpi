@@ -73,11 +73,21 @@ describe("CombinedAutocompleteProvider dollar invocation suggestions", () => {
 		});
 	});
 
-	it("does not offer dollar invocations outside a valid prompt-leading run", async () => {
+	it("offers partial skills after ordinary prompt text", async () => {
 		const provider = new CombinedAutocompleteProvider(commands, "/tmp");
 
-		assert.strictEqual(await getSuggestions(provider, "explain $deb"), null);
+		assert.deepStrictEqual(
+			(await getSuggestions(provider, "explain $deb"))?.items.map((item) => item.value),
+			["$debugging"],
+		);
 		assert.strictEqual(await getSuggestions(provider, "$missing $deb"), null);
 		assert.strictEqual(await getSuggestions(provider, "$deb", 1), null);
+	});
+
+	it("leaves shell variables and positional parameters literal", async () => {
+		const provider = new CombinedAutocompleteProvider(commands, "/tmp");
+
+		assert.strictEqual(await getSuggestions(provider, "echo $HOME"), null);
+		assert.strictEqual(await getSuggestions(provider, "echo $1"), null);
 	});
 });
