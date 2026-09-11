@@ -83,7 +83,7 @@ async function run(
 			body: encodeDevinRequestFrame(GetChatMessageRequestSchema, request),
 			signal,
 		});
-		await options?.onResponse?.({ status: response.status, headers: {} }, model);
+		await options?.onResponse?.({ status: response.status, headers: headersOf(response) }, model);
 
 		if (!response.ok || !response.body) {
 			throw new Error(`Devin request failed (HTTP ${response.status})${await detail(response)}`);
@@ -94,7 +94,11 @@ async function run(
 		}
 
 		finalizeBlocks(output, events, state);
-		output.stopReason = state.toolCalls.size > 0 || output.content.some(isToolCall) ? "toolUse" : output.stopReason;
+		// Cascade can close a turn that carries a tool call without ever sending an
+		// explicit stop reason. Only the default "stop" is upgraded: a server-reported
+		// "length" means the turn was truncated, and a truncated tool call must not be
+		// advertised as a complete one.
+		if (output.stopReason === "stop" && output.content.some(isToolCall)) output.stopReason = "toolUse";
 		events.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
 		events.end();
 	} catch (error) {
@@ -105,6 +109,14 @@ async function run(
 		events.push({ type: "error", reason: output.stopReason, error: output });
 		events.end();
 	}
+}
+
+function headersOf(response: Response): Record<string, string> {
+	const headers: Record<string, string> = {};
+	response.headers.forEach((value, key) => {
+		headers[key] = value;
+	});
+	return headers;
 }
 
 function isToolCall(content: AssistantMessage["content"][number]): content is ToolCall {

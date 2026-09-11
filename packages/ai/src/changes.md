@@ -13,6 +13,8 @@
 - `packages/ai/src/providers/devin.ts` and `packages/ai/src/providers/devin.models.ts`: the provider bound to the merged Devin OAuth flow, its public SWE seed, and a `refreshModels` that publishes the account's real lanes but never an empty catalog.
 - `packages/ai/src/providers/all.ts`: registers the provider among the builtins.
 
+- `packages/ai/src/api/devin-agent.ts` only upgrades the default `stop` to `toolUse` when a tool call block is present: a server-reported `length` means the turn was truncated, and a truncated tool call must not be advertised as a complete one.
+
 ### Why
 
 - The merged Devin OAuth flow could mint a credential that nothing could spend: senpi had no Cascade transport, so a signed-in user still had no Devin model to select.

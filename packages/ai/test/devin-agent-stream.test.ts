@@ -152,6 +152,27 @@ describe.sequential("devin-agent stream", () => {
 		expect(done.reason).toBe("toolUse");
 	});
 
+	it("keeps a truncated turn as length even when a tool call block arrived", async () => {
+		const baseUrl = await serve((_req, res) => {
+			res.writeHead(200, { "content-type": "application/connect+proto" });
+			res.write(
+				frame({
+					messageId: "m4",
+					deltaToolCalls: [{ id: "tc-9", name: "read", argumentsJson: '{"path":"a.ts"' }],
+					stopReason: StopReason.MAX_TOKENS,
+				}),
+			);
+			res.write(trailer());
+			res.end();
+		});
+
+		const events = await collect(devinStream({ ...MODEL, baseUrl }, CONTEXT, { apiKey: "session-abc" } as never));
+		const done = events.at(-1);
+		expect(done?.type).toBe("done");
+		if (done?.type !== "done") throw new Error("expected done");
+		expect(done.reason).toBe("length");
+	});
+
 	it("reports an HTTP failure as a typed error message instead of throwing", async () => {
 		const baseUrl = await serve((_req, res) => {
 			res.writeHead(403, { "content-type": "application/json" });
