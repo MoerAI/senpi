@@ -61,6 +61,24 @@
 - MEDIUM: `packages/coding-agent/src/core/remote-catalog-provider.ts` refresh publication and provider wrapper.
 - LOW: new `packages/coding-agent/src/core/remote-catalog-merge.ts` and the colocated remote catalog regression tests.
 
+## 2026-09-11 - Detect auth changes by content rather than mtime
+
+### What changed
+
+- `packages/coding-agent/src/core/auth-storage.ts` uses SHA-256 file-content revisions for shared reload detection and coalescing.
+
+### Why
+
+- Rapid rewrites may retain the same filesystem mtime and size, so metadata-only revisions can return stale credentials.
+
+### Why an extension could not handle it
+
+- The shared auth snapshot and reload-coalescing state are owned by core storage before provider extensions read them.
+
+### Expected merge conflict zones
+
+- LOW: `packages/coding-agent/src/core/auth-storage.ts` revision reads around reload and cache adoption.
+
 ## 2026-09-10 - Atomic account display-name metadata with shape-keyed sentinel guard (senpi#1495)
 
 ### What changed
