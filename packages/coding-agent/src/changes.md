@@ -24,7 +24,8 @@
 
 ### What changed
 
-- `core/auth-storage.ts` now compares SHA-256 file-content revisions when deciding whether a shared auth snapshot is current.
+- `src/core/auth-storage.ts` now compares SHA-256 file-content revisions when deciding whether a shared auth snapshot is current.
+- `src/utils/paths.ts` owns the shared SHA-256 file-content revision helper used by the reload and settings caches.
 - Cursor CLI OAuth and Claude SDK OAuth settings caches use the same content revision helper instead of `mtimeMs:size`.
 
 ### Why
