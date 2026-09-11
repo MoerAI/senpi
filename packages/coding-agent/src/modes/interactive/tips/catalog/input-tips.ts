@@ -89,6 +89,6 @@ export const INPUT_TIPS = [
 		id: "answer-agent-question",
 		bindings: [],
 		render: () =>
-			"When the agent asks you a question, pick options with digits or arrows, type a comment at any time, and press Enter to send what you have; anything unanswered is reported back as unanswered.",
+			"When the agent asks you a question, pick options with digits or arrows, press Enter to advance, and use the final Submit tab for a comment or partial answers; anything unanswered is reported back as unanswered.",
 	},
 ] satisfies readonly TipDefinition[];

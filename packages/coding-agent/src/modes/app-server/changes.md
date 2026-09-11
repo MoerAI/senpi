@@ -1,5 +1,28 @@
 # changes
 
+## 2026-09-11 - Partial ask-user responses resolve with unanswered ids
+
+### What changed
+
+- `packages/coding-agent/src/modes/app-server/server/user-input-bridge.ts` now receives the shared
+  pending-question partial-submit behavior, resolving a non-empty answer map as `answered` while
+  preserving unanswered ids.
+
+### Why
+
+- App-server already accepted partial responses, but the shared pending state machine previously
+  disagreed with RPC. This tracker records the cross-surface contract that must remain aligned.
+
+### Why an extension could not handle it
+
+- The app-server bridge owns protocol response correlation and consumes the shared pending state
+  machine before extension code can alter the result.
+
+### Expected merge conflict zones
+
+- LOW around `UserInputBridge.resolveResponse`; preserve the existing request ordering and
+  `serverRequest/resolved` lifecycle.
+
 ## 2026-09-10 - Optional display-name account descriptor (senpi#1495)
 
 ### What changed

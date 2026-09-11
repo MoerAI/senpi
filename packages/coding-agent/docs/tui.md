@@ -178,7 +178,7 @@ Use `handle.unfocus()` when a visible overlay should stop owning input and let T
 
 ### Question Overlay and Async Widget
 
-When the agent asks a blocking question (`waitForAnswer: true`), a full-screen overlay appears with a tab bar for each question, numbered options (digits or arrows to select, Space to toggle multi-select), and a comment editor at the bottom. Press Enter to submit what you have. Unanswered questions are reported back as unanswered. Esc cancels.
+When the agent asks a blocking question (`waitForAnswer: true`), a full-screen overlay appears with a tab for each question and a final Submit tab. Use digits or arrows to choose options, Space to toggle multi-select choices, and Enter to confirm and advance. The Submit tab contains the optional comment editor and accepts partial answers after confirmation; unanswered questions are reported back as unanswered. Esc backs out of an editor or asks for confirmation before discarding a draft.
 
 For async questions (`waitForAnswer: false`), a one-line widget appears above the editor showing the question count and a countdown. The agent keeps working while you decide. Type your reply in the editor at any time and press Enter to send it as a comment, or open the full overlay with the shortcut shown in the widget.
 

@@ -58,7 +58,12 @@ function answeredLines(response: QuestionResponse, questions: Questions): string
 function formatBody(response: QuestionResponse, questions: Questions): string {
 	switch (response.status) {
 		case "answered":
-			return answeredLines(response, questions).join("\n");
+		{
+			const lines = answeredLines(response, questions);
+			const unanswered = response.unanswered.map((id) => headerFor(id, questions));
+			if (unanswered.length > 0) lines.push(`Unanswered: ${unanswered.join(", ")}`);
+			return lines.join("\n");
+		}
 		case "comment-submitted": {
 			const lines = [`The user responded: ${response.comment?.trim() ?? ""}`, ...answeredLines(response, questions)];
 			const unanswered = response.unanswered.map((id) => headerFor(id, questions));
