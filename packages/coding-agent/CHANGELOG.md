@@ -6,6 +6,8 @@
 
 ### Added
 
+- Added Devin (Cognition) OAuth login: sign in through Devin's CLI authorization flow (PKCE S256, loopback callback on `127.0.0.1:59653`, state validated before the code is spent) and senpi stores the issued CLI token with its JWT-derived expiry (fixes #1601).
+
 - Branded builds can provide an absolute changelog path and authored version, with source-isolated seen-version tracking and interactive changelog rendering; engine changelog notifications retain their existing link rewriting and install telemetry behavior (fixes #1583).
 
 - Added the `deepseek-v4-1-flash` prompt preset for DeepSeek V4.1 Flash: it resolves every published id shape (`deepseek-flash`, `deepseek-v4.1-flash`, `deepseek/deepseek-v4.1-flash`, `deepseek-ai/DeepSeek-V4.1-Flash`, fireworks' `deepseek-v4p1-flash`, venice's `deepseek-v4-1-flash`) and the official DeepSeek provider's retired `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` aliases, which the DeepSeek API now serves with V4.1 Flash; the same alias on any other provider keeps the V4 Flash preset. The preset carries the shared core and the eval-routing stance only - none of the V4 Flash repair rules, which were written against V4-Flash-0731 transcripts and do not apply to the re-trained model ([#1574](https://github.com/code-yeongyu/senpi/issues/1574))
