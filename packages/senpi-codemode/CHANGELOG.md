@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- Column-capped eval output now preserves a recoverable full-output artifact ([#1597](https://github.com/code-yeongyu/senpi/issues/1597)).
+
 ### Removed
 
 ## [2026.9.10-2] - 2026-09-10
