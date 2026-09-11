@@ -4,7 +4,8 @@
 
 ### What changed
 
-- `src/output/streaming-output.ts`: raw output now starts the existing spill
+- `src/output/streaming-output-buffer.ts` and
+  `src/output/streaming-output.ts`: raw output now starts the existing spill
   artifact when the per-line column cap drops bytes, even if the total output
   has not crossed the spill threshold.
 - `src/prompt/eval-prompt-template.ts`: large text guidance now directs eval
