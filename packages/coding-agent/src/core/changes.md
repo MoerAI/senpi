@@ -1,5 +1,26 @@
 # changes
 
+## 2026-09-11 - Batch persisted entry hydration after resident-string eviction (senpi#1407)
+
+### What changed
+
+- `packages/coding-agent/src/core/session-entry-materializer.ts` batches missing resident-string recovery for an ordered materialization pass and performs one authoritative JSONL load.
+- `packages/coding-agent/src/core/session-manager.ts` uses the batch helper for `getEntries()` and `getBranch()` while preserving cache identity, branch order, and message-entry position tracking.
+- `packages/coding-agent/test/session-manager/session-mirror-budget.test.ts` proves that an evicted multi-entry read restores all payloads after one full-history parse.
+
+### Why
+
+- Image-heavy resumed sessions could parse the complete JSONL once per evicted large string, turning a bounded resident cache miss into repeated full-history I/O and JSON parsing.
+
+### Why an extension could not handle it
+
+- Resident-string materialization and session branch/cache views are owned by `SessionManager` below the extension boundary.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/coding-agent/src/core/session-manager.ts` materialization and branch/read caches.
+- LOW: new `packages/coding-agent/src/core/session-entry-materializer.ts` and the resident-mirror regression test.
+
 ## 2026-09-11 - Resolve branded changelog sources (senpi#1583)
 
 ### What changed

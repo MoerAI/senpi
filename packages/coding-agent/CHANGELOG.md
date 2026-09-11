@@ -22,6 +22,8 @@
 
 ### Fixed
 
+- Image-heavy `/resume` sessions no longer reparse the complete JSONL once per evicted resident string; one ordered materialization pass performs one authoritative history load while preserving transcript contents and branch state ([#1407](https://github.com/code-yeongyu/senpi/issues/1407))
+
 - Windows RPC host ownership checks no longer treat a temporarily empty process-identity probe
   for a live PID as evidence that the shared host is dead. Compatible endpoints are reused before
   ownership probing, preventing concurrent callers from replacing a healthy named-pipe host

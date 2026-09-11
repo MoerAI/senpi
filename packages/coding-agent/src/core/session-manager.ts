@@ -19,6 +19,7 @@ import { StringDecoder } from "string_decoder";
 import { APP_NAME, getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { listSessionInfos, listSessionsFromDir, type SessionListProgress } from "./session-discovery.ts";
+import { materializeSessionEntries } from "./session-entry-materializer.ts";
 import { type ResidentStoreStats, ResidentStringStore } from "./session-resident-store.ts";
 import { reserveSessionWrite } from "./session-write-reservation.ts";
 
@@ -1523,19 +1524,20 @@ export class SessionManager {
 		if (fromId !== undefined && !entriesById.has(fromId) && this.mirrorTrimmed && this.sessionFile) {
 			entriesById = new Map(
 				this._loadFullHistoryEntries()
-					.filter((entry) => entry.type !== "session")
-					.map((entry) => [entry.id, this.residentStore.materialize(entry) as SessionEntry]),
+					.filter((entry): entry is SessionEntry => entry.type !== "session")
+					.map((entry) => [entry.id, this.residentStore.materialize(entry)]),
 			);
 		}
 		let current = startId ? entriesById.get(startId) : undefined;
 		while (current) {
-			path.unshift(this._materializeEntry(current));
+			path.unshift(current);
 			current = current.parentId ? entriesById.get(current.parentId) : undefined;
 		}
+		const materializedPath = this._materializeEntries(path);
 		if (fromId === undefined) {
-			this.branchCache = { leafId: this.leafId, mutation: this.mutationCount, entries: path };
+			this.branchCache = { leafId: this.leafId, mutation: this.mutationCount, entries: materializedPath };
 		}
-		return path;
+		return materializedPath;
 	}
 
 	/**
@@ -1613,10 +1615,27 @@ export class SessionManager {
 			return this.entriesCache.entries;
 		}
 		const entries = this.fileEntries
-			.filter((e): e is SessionEntry => e.type !== "session")
-			.map((entry) => this._materializeEntry(entry));
-		this.entriesCache = { mutation: this.mutationCount, entries };
-		return entries;
+			.filter((e): e is SessionEntry => e.type !== "session");
+		const materializedEntries = this._materializeEntries(entries);
+		this.entriesCache = { mutation: this.mutationCount, entries: materializedEntries };
+		return materializedEntries;
+	}
+
+	private _materializeEntries(entries: readonly SessionEntry[]): SessionEntry[] {
+		return materializeSessionEntries(
+			entries,
+			{
+				residentStore: this.residentStore,
+				loadHistoryEntries: () => this._loadFullHistoryEntries(),
+				onMaterialized: (entry) => {
+					if (entry.type !== "message") return;
+					const order = this.entryOrdersById.get(entry.id);
+					if (order !== undefined) {
+						this.messageEntryPositions.set(entry.message, { entryId: entry.id, order });
+					}
+				},
+			},
+		);
 	}
 
 	private _getCompactEntries(): SessionEntry[] {
