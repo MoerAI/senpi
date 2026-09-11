@@ -50,7 +50,8 @@ function handleOwnAnswerKey(ctx: AskUserKeyHandlerContext, data: string, kb: Ret
 		return;
 	}
 	if (kb.matches(data, "tui.select.cancel")) {
-		ctx.state.returnToOptions();
+		if (ctx.state.request.waitForAnswer) ctx.state.returnToOptions();
+		else ctx.finish("cancelled");
 		ctx.updateAll();
 		return;
 	}
@@ -64,7 +65,8 @@ function handleSubmitKey(ctx: AskUserKeyHandlerContext, data: string, kb: Return
 		return;
 	}
 	if (kb.matches(data, "tui.select.cancel")) {
-		ctx.state.returnToOptions();
+		if (ctx.state.request.waitForAnswer) ctx.state.returnToOptions();
+		else ctx.finish("cancelled");
 		ctx.updateAll();
 		return;
 	}
@@ -90,7 +92,7 @@ function handleOptionsKey(ctx: AskUserKeyHandlerContext, data: string, kb: Retur
 		return;
 	}
 	if (kb.matches(data, "tui.select.cancel")) {
-		if (state.requestDismiss() === "cancel") ctx.finish("cancelled");
+		if (!state.request.waitForAnswer || state.requestDismiss() === "cancel") ctx.finish("cancelled");
 		else ctx.updateAll();
 		return;
 	}
@@ -120,7 +122,7 @@ function handleOptionsKey(ctx: AskUserKeyHandlerContext, data: string, kb: Retur
 			state.activateOption(state.activeQuestion.id, option.label);
 			ctx.emitProgress();
 			if (!state.activeQuestion.multiSelect) {
-				if (state.request.questions.length === 1) ctx.attemptSubmit();
+				if (state.request.waitForAnswer && state.request.questions.length === 1) ctx.attemptSubmit();
 				else state.advance();
 			}
 			ctx.updateAll();
@@ -160,7 +162,11 @@ function activateHighlighted(ctx: AskUserKeyHandlerContext, confirm: boolean): v
 	ctx.emitProgress();
 	ctx.updateAll();
 	if (confirm) {
-		if (!state.activeQuestion.multiSelect && state.request.questions.length === 1) {
+		if (
+			!state.activeQuestion.multiSelect &&
+			state.request.waitForAnswer &&
+			state.request.questions.length === 1
+		) {
 			ctx.attemptSubmit();
 		} else {
 			state.advance();

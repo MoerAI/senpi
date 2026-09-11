@@ -74,7 +74,7 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 			commentInput: this.commentInput,
 			finish: (status, autoResolvedAfterMs) => this.finish(status, autoResolvedAfterMs),
 			attemptSubmit: () => this.attemptSubmit(),
-			openOwnAnswer: () => this.openOwnAnswer(),
+			openOwnAnswer: (initialText) => this.openOwnAnswer(initialText),
 			commitOwnAnswer: () => this.commitOwnAnswer(),
 			emitProgress: () => this.emitProgress(),
 			updateAll: () => this.updateAll(),
@@ -135,7 +135,10 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 
 	private openOwnAnswer(initialText?: string): void {
 		this.state.focus = "own-answer";
-		this.ownAnswerInput.setValue(initialText ?? this.state.textFor(this.state.activeQuestion.id) ?? "");
+		const existing = this.state.textFor(this.state.activeQuestion.id) ?? "";
+		this.ownAnswerInput.setValue("");
+		if (existing !== "") this.ownAnswerInput.handleInput(existing);
+		if (initialText !== undefined) this.ownAnswerInput.handleInput(initialText);
 		this.updateAll();
 	}
 

@@ -225,6 +225,32 @@ describe("AskUserQuestionComponent", () => {
 		expect(single.doneCalls[0]?.status).toBe("answered");
 	});
 
+	it("keeps an async one-question selection open for an optional comment", () => {
+		const request = buildRequest();
+		const asyncQuestion = mount({
+			...request,
+			waitForAnswer: false,
+			questions: [request.questions[0]!],
+		});
+
+		asyncQuestion.component.handleInput("1");
+
+		expect(asyncQuestion.doneCalls).toHaveLength(0);
+		expect(asyncQuestion.render()).toContain("Review your answers");
+	});
+
+	it("preserves the first printable character when opening own-answer", () => {
+		const request = buildRequest();
+		const h = mount({ ...request, questions: [request.questions[0]!] });
+
+		h.component.handleInput("x");
+		h.component.handleInput("rest");
+		h.component.handleInput(ENTER);
+		h.component.handleInput(ENTER);
+
+		expect(h.doneCalls[0]?.answers.auth).toEqual({ selected: [], text: "xrest" });
+	});
+
 	it("submits answered status from the Submit tab once every question is answered", () => {
 		const h = mount();
 
