@@ -1,3 +1,40 @@
+## Devin Cascade model transport (2026-09-12)
+
+### What changed
+
+- `packages/ai/proto/devin/cascade.proto` plus `packages/ai/src/api/devin-agent/gen/cascade_pb.ts`: a vendored SUBSET of Codeium/Windsurf's Cascade schema, generated with protoc-gen-es v2.13.0 and run through `scripts/transform-cursor-agent-proto.mjs` like the Cursor schema. Only the messages the transport reads or writes are declared; every field number matches upstream, so unknown upstream fields round-trip as unknown fields.
+- `packages/ai/src/api/devin-agent.ts`: the `devin-agent` API. One server-streaming `GetChatMessage` Connect call per turn, request sent as a single gzipped frame, response frames mapped onto senpi's assistant event protocol, terminal `done`/`error` with abort handling.
+- `packages/ai/src/api/devin-agent/frames.ts`: Connect framing - 5-byte prefix, gzip flag 0x01, end-of-stream trailer flag 0x02, and a 64 MiB payload cap so a corrupted length prefix cannot become a 4 GiB allocation.
+- `packages/ai/src/api/devin-agent/request.ts`: request building. Cascade has no system role, so the system prompt travels in the top-level `prompt` field and history becomes flat `ChatMessagePrompt` entries whose `source` carries the role; message ids are derived from the conversation id and index so a retried turn does not fork the server-side transcript.
+- `packages/ai/src/api/devin-agent/stream-state.ts`: delta bookkeeping. Cascade blocks are implicit and one frame may carry thinking, text and a tool call at once, so this module opens and closes senpi's blocks and maps Cascade stop reasons onto senpi's vocabulary.
+- `packages/ai/src/api/devin-agent/metadata.ts` and `paths.ts`: the CLI identity envelope, the `devin-session-token$` scheme prefix, and the RPC paths.
+- `packages/ai/src/api/devin-agent/discovery.ts`: credential-scoped `GetCliModelConfigs` discovery that returns undefined on failure or an empty roster.
+- `packages/ai/src/api/devin-agent.lazy.ts`, `packages/ai/src/compat.ts`, `packages/ai/src/types.ts`: the Node-only lazy boundary, the builtin api-registry entry, and the `devin-agent` api id with its options type.
+- `packages/ai/src/providers/devin.ts` and `packages/ai/src/providers/devin.models.ts`: the provider bound to the merged Devin OAuth flow, its public SWE seed, and a `refreshModels` that publishes the account's real lanes but never an empty catalog.
+- `packages/ai/src/providers/all.ts`: registers the provider among the builtins.
+
+- `packages/ai/src/api/devin-agent.ts` only upgrades the default `stop` to `toolUse` when a tool call block is present: a server-reported `length` means the turn was truncated, and a truncated tool call must not be advertised as a complete one.
+
+- `packages/ai/src/api/devin-agent.ts` terminates a Cascade `ERROR` or `CONTENT_FILTER` stop as an `error` event rather than a `done` event: senpi's protocol has no "done because it failed", and a done event carrying a failed turn would be consumed as a successful assistant message.
+
+- `packages/ai/src/api/devin-agent/discovery.ts` authenticates with the same `Bearer devin-session-token$…` header as the chat call, not only the protobuf `Metadata.api_key`: Cascade rejects an unauthenticated discovery request, which would have silently degraded every account to the static seed.
+
+### Why
+
+- The merged Devin OAuth flow could mint a credential that nothing could spend: senpi had no Cascade transport, so a signed-in user still had no Devin model to select.
+- Cascade deviates from every OpenAI-shaped adapter senpi already had (Connect framing, gzip per frame, protobuf payloads, no system role, implicit blocks, credential-scoped catalog), so the deviations are pinned in code next to the reasons.
+
+### Why an extension could not handle it
+
+- An api id must exist in `KnownApi`, in the per-api options map and in the builtin api-registry inside `packages/ai`; an extension cannot add one, cannot participate in the Bun binary's static bundle, and cannot return a `ProviderStreams` implementation that the model runtime treats as first-class.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/types.ts`: the `KnownApi` union and the api options map - upstream adding an api touches both.
+- `packages/ai/src/compat.ts`: the lazy re-export block and the builtin api registration list.
+- `packages/ai/src/providers/all.ts`: the provider import list and the builtin provider array.
+- Everything under `packages/ai/src/api/devin-agent/` and the two `providers/devin*` files are additions with no upstream counterpart.
+
 ## Devin CLI OAuth login flow (2026-09-11)
 
 ### What changed

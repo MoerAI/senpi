@@ -6,6 +6,8 @@
 
 ### Added
 
+- Added the Devin (Cognition) Cascade model transport: after signing in with Devin OAuth you can select a Devin model and stream completions through the native `devin-agent` Connect/protobuf protocol, with text, thinking, tool calls, usage and stop reasons mapped natively, plus credential-scoped model discovery that keeps the bundled seed when discovery is unavailable (fixes #1604).
+
 - Added Devin (Cognition) OAuth login: sign in through Devin's CLI authorization flow (PKCE S256, loopback callback on `127.0.0.1:59653`, state validated before the code is spent) and senpi stores the issued CLI token with its JWT-derived expiry (fixes #1601).
 
 - Branded builds can provide an absolute changelog path and authored version, with source-isolated seen-version tracking and interactive changelog rendering; engine changelog notifications retain their existing link rewriting and install telemetry behavior (fixes #1583).
