@@ -1,5 +1,121 @@
 # changes
 
+## 2026-09-13 - Report entry-graph sizes on success
+
+### What changed
+
+- `scripts/check-entry-graphs.mjs` prints each declared entry's file count on success so a green run still reports the `./harness/session` size.
+
+### Why
+
+- The session budget is a cost contract. A silent pass hid the 132-file AI-barrel regression until the script was run by hand.
+
+### Why an extension could not handle it
+
+- Entry-graph walking is a commit-time source import check. Extensions cannot change which modules the checker walks.
+
+### Expected merge conflict zones
+
+- LOW: the success `console.log` in `scripts/check-entry-graphs.mjs`.
+
+## 2026-09-13 - Share compiled standalone entry graphs
+
+### What changed
+
+- `scripts/build-binaries.sh` adds `--splitting` immediately after `--compile` in both platform branches, retaining minification, names, autoload isolation and all four explicit entries.
+- `scripts/build-binaries-flags.test.mjs` checks parsed release/package argv. `scripts/session-worker-compile.test.ts` characterizes split and unsplit relocated production clients with two live workers, shared-memory acknowledgments and native exits.
+
+### Why
+
+- `scripts/build-binaries.sh` previously embedded duplicate copies of the shared session-worker graph. Splitting shares those bytes without changing the runtime worker-entry contract (Refs #1656).
+
+### Why an extension could not handle it
+
+- `scripts/build-binaries.sh` selects embedded entry graphs at compile time, before runtime extensions exist.
+
+### Expected merge conflict zones
+
+- The Windows and non-Windows compile argv in `scripts/build-binaries.sh`.
+
+## 2026-09-13 - Keep Bun provider registration outside Node bundles
+
+### What changed
+
+- `scripts/build-coding-agent-bundle.mjs` resolves literal `bun/runtime-modules` imports to an empty module only in its Node esbuild graph.
+- Bundle coverage tests require positive implementation bytes reachable from both compiled entries; relocated binary probes consume terminal assistant errors in classic and shared RPC.
+
+### Why
+
+- esbuild follows literal imports even inside the worker's `isBunBinary` branch and would otherwise inline all three Node-only provider modules and the AWS SDK into its unsplit Node worker.
+
+### Why an extension could not handle it
+
+- `scripts/build-coding-agent-bundle.mjs` establishes distribution bundle membership at build time, before extension execution.
+
+### Expected merge conflict zones
+
+- `scripts/build-coding-agent-bundle.mjs` plugin list and Bun-only import resolver.
+
+## 2026-09-12 - Chord keeps upstream's release identity instead of the fork CalVer
+
+### What changed
+
+- `scripts/registry-packages.mjs`: chord is deliberately absent from the owned-alias map, so the fork does not publish a `@code-yeongyu/senpi-chord` package and chord's declared edges resolve to upstream's published version.
+- `scripts/release-packages.mjs`: `packages/chord` is removed from `WORKSPACE_PACKAGES` so the CalVer stamp no longer overwrites chord's version, and a new `BUNDLED_INTERNAL_WORKSPACES` export lists chord as a bundled runtime workspace that is internal to the install-lock but not lockstep-versioned.
+- `scripts/generate-coding-agent-install-lock.mjs`: the install-lock classifies `WORKSPACE_PACKAGES` ∪ `BUNDLED_INTERNAL_WORKSPACES` as internal, so chord's closure resolves from the local workspace manifest (its `esbuild@0.28.2` dep) instead of fetching upstream `@earendil-works/chord@0.85.1` metadata (which pins `esbuild@0.28.1`). The lockstep CalVer version check still applies only to `WORKSPACE_PACKAGES`.
+- `scripts/install-lock-validation.mjs`: the registry-metadata exemption now covers every internal name (not only the CalVer-locked ones), so a bundled-internal workspace staged with a registry tarball URL and no integrity is accepted.
+- `packages/chord/package.json`: version returns to upstream's `0.85.1` (no CalVer stamp).
+- `packages/{agent,client,coding-agent,protocol,server}/package.json`: the `@earendil-works/chord` dependency is pinned to the exact upstream `0.85.1` it resolves to.
+
+### Why
+
+- `@code-yeongyu/senpi@2026.9.12-3` could not be installed with bun: chord had been CalVer-stamped, so the packaged manifest and the published `@code-yeongyu/senpi-agent-core` manifest declared `@earendil-works/chord@^2026.9.12-3`, a version no registry package provides (only upstream's 0.85.x exists), and bun resolves those declared edges from the registry (issue #1632). npm's OIDC trusted publishing cannot create the first version of a brand-new package name, so publishing a `@code-yeongyu/senpi-chord` alias is not viable without a manual bootstrap; chord is byte-for-byte upstream apart from packaging metadata, so it keeps upstream's own `0.85.1` identity and its edges pin that exact published version. Keeping chord classified internal for the install-lock (`packages/chord/package.json`, `scripts/generate-coding-agent-install-lock.mjs`, `scripts/install-lock-validation.mjs`) keeps the installer closure resolving the bundled fork copy's `esbuild@0.28.2` rather than dragging upstream chord's `esbuild@0.28.1` into the lock. `scripts/release-packages.mjs` and `scripts/registry-packages.mjs` are where the fork records which workspaces ride the CalVer lockstep and which are published, so both had to drop chord from those roles.
+
+### Why an extension could not handle it
+
+- Version stamping, publish-target selection, registry-alias mapping and install-lock generation all run in the release scripts before publication, outside the runtime extension system: `scripts/registry-packages.mjs`, `scripts/release-packages.mjs`, `scripts/generate-coding-agent-install-lock.mjs` and `scripts/install-lock-validation.mjs` execute in the release pipeline, never inside a running agent session, and the `packages/*/package.json` edges are static manifest data.
+
+### Expected merge conflict zones
+
+- `scripts/registry-packages.mjs` owned-alias map; `scripts/release-packages.mjs` workspace lists; `scripts/generate-coding-agent-install-lock.mjs` internal-name construction; `scripts/install-lock-validation.mjs` exemption predicate; the `@earendil-works/chord` dependency range in `packages/{agent,chord,client,coding-agent,protocol,server}/package.json`.
+
+## 2026-09-12 - Registry planning and concurrent-main release recovery
+
+### What changed
+
+- `scripts/publish.mjs` selects its ordered publish targets from the shared owned-registry mapping and uses `scripts/npm-registry.mjs` for registry lookups. `scripts/calver.mjs` uses the same names and treats first-publish 404 responses as an empty baseline. Private-only server, chord, and sqlite workspaces remain excluded; explicitly rewritten source-private packages retain their fork registry names.
+- `scripts/release.mjs` throws command failures to its caller and handles fatal errors at the CLI boundary, allowing `syncRemoteMainBeforePush` to recover from a non-ancestor result instead of exiting before its merge.
+
+### Why
+
+- Release 34688541952 completed its tests but failed when main advanced during preparation: the ancestry probe exited before the existing merge recovery could run. The planner also queried private senpi-server and stale upstream names rather than the fork publish set.
+
+### Why an extension could not handle it
+
+- `scripts/publish.mjs` and `scripts/release.mjs` run before publication, outside the runtime extension system.
+
+### Expected merge conflict zones
+
+- `scripts/publish.mjs` package selection and registry query helper; `scripts/release.mjs` command error handling and CLI entry point.
+
+## 2026-09-12 - Binary build script drops the `--min-release-age=0` native install clause
+
+### What changed
+
+- `scripts/build-binaries.sh`: the `--min-release-age=0` native install step listed in the 2026-08-25 entry below is gone; it guarded the cross-platform `@mariozechner/clipboard` install, which D-E/C25 delete along with `--skip-deps`. Every other fork-owned behavior in that entry (jsdom xhr sync worker embedding, codemode sidecar, PTY prebuilds, TUI native helpers, darwin codesign, host smoke test) still holds for the resolved script.
+
+### Why
+
+- The clipboard package the clause installed no longer exists in the fork; the native clipboard now ships as tui prebuilds.
+
+### Why an extension could not handle it
+
+- Release packaging is build tooling, not runtime.
+
+### Expected merge conflict zones
+
+- The dependency-install section of `scripts/build-binaries.sh`.
+
 ## 2026-09-10 - Publish a Bun-compile-safe css-tree
 
 ### What changed
@@ -549,4 +665,50 @@ The divergence lives in core wiring, package identity, or build plumbing that ex
 - Future changes to the independent-package allowlist in `scripts/sync-versions.js`.
 - Upstream changes that add more independently versioned workspaces with lockstep runtime
   dependencies.
+
+
+## Upstream sync (upstream/main@71dca871) integration repairs (2026-09-12)
+
+### What changed
+
+- `scripts/build-coding-agent-bundle.mjs`: the fork bundle inputs add `dist/client/index.js` and the RPC `session-worker` entry to upstream's esbuild configuration.
+- `scripts/check-pinned-deps.mjs`: internal-package detection also matches the `@code-yeongyu/` scope so fork workspaces are checked as lockstep packages.
+- `scripts/generate-coding-agent-install-lock.mjs`: generates `@code-yeongyu/senpi-install`, derives lockstep internal names from `WORKSPACE_PACKAGES` (incl. chord), uses the shared `install-lock-validation.mjs`, `install-lock-utils.mjs` and `publish-lock-optional-registry.mjs` helpers instead of upstream's in-file copies.
+- `scripts/generate-coding-agent-shrinkwrap.mjs`: writes `packages/coding-agent/publish-deps.lock.json` (never `npm-shrinkwrap.json`, which npm would force-pack and break bundled installs), treats `@earendil-works/chord`, `@earendil-works/pi-*` and `@code-yeongyu/senpi-codemode` as internal, and resolves optional registry packages.
+- `scripts/local-release.mjs`: fork local release flow (`senpi` CLI shim, `prepareSenpiBundledWorkspaces` staging, `local-release-runner.mjs` helpers, npm 11.6+ pack output handling) in place of upstream's `coding-agent-consumer.mjs` driven flow.
+- `scripts/release-packages.mjs`: exports `WORKSPACE_PACKAGES` (with `packages/chord` in the CalVer lockstep), `applyWorkspaceVersions` and `runSyncVersions`, and resolves registry packages through `registry-packages.mjs`.
+
+### Why
+
+- The fork releases a self-contained `senpi` tarball with bundled workspaces under CalVer, so lock generation, pin checking, bundling and local release must know the fork scopes, the chord workspace and the no-shrinkwrap contract.
+
+### Why an extension could not handle it
+
+- Release and lock tooling runs outside the product process.
+
+### Expected merge conflict zones
+
+- HIGH: `scripts/generate-coding-agent-install-lock.mjs` and `scripts/generate-coding-agent-shrinkwrap.mjs` whenever upstream changes lock generation; `scripts/local-release.mjs` flow.
+- MEDIUM: `scripts/release-packages.mjs` workspace list.
+- LOW: `scripts/check-pinned-deps.mjs` internal-name predicate; `scripts/build-coding-agent-bundle.mjs` entry list.
+
+## 2026-09-12 - Sync CI repair: upstream release tooling against the fork manifest and typescript-Go layouts
+
+### What changed
+
+- `scripts/release-packages.mjs`: `getRuntimeDepsCheckPackages()` (new) returns the public-by-flag workspaces union the fork registry sources; `getPublicWorkspacePackages()` keeps its 7-package registry contract for publishing.
+- `scripts/check-runtime-deps.mjs`: the classic TypeScript API is imported from `@typescript/typescript6` (root `typescript` is typescript-Go 7.0.2 with no classic entry), config reads fall back to plain fs, and a file excluded from a package build is only a violation when a runtime import edge from a build root reaches it (the fork's generated app-server protocol tree is excluded on purpose and is no longer flagged).
+- `scripts/local-release.mjs` / `scripts/local-release.test.mjs`: the pty build/pack step resolves the fork's pi-pty packaging (native/index.js + platform prebuild), and the release-package list materializes the chord workspace; fixture arithmetic carries a provenance comment.
+
+### Why
+
+- Upstream's new release tooling assumed upstream's manifest layout (all pi-* public, registry-resolvable sources); the fork keeps pi-* private in source, publishes under @code-yeongyu, excludes generated trees from the build, and installs typescript-Go — so the tooling crashed or misflagged instead of checking.
+
+### Why an extension could not handle it
+
+- Manifest/private/publish naming and the toolchain layout are repo-wide invariants, not runtime behavior.
+
+### Expected merge conflict zones
+
+- LOW: the public-package lists and the classic-API import in these three scripts; upstream edits them only for new release tooling.
 

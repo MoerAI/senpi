@@ -1,5 +1,106 @@
 # changes
 
+## 2026-09-13 - Centralize standalone provider registration
+
+### What changed
+
+- `packages/coding-agent/src/bun/runtime-modules.ts` synchronously registers Bedrock, Cursor, Devin and bundled OAuth once per isolate, preserving later overrides on repeat calls.
+- `packages/coding-agent/src/bun/runtime-setup.ts` delegates registration to that entry.
+- `packages/coding-agent/src/bun/cli.ts` retains sandbox -> runtime setup -> CLI order and removes the separate `register-cursor-agent.ts` import; that redundant file is deleted.
+
+### Why
+
+- Variable-specifier imports cannot resolve implementations absent from a relocated compiled binary, and launcher registration does not initialize worker-isolate module state.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/bun/runtime-setup.ts` and `packages/coding-agent/src/bun/cli.ts` establish startup state before extensions run; static bundle membership belongs to the entry graph.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/bun/runtime-setup.ts` registration calls and `packages/coding-agent/src/bun/cli.ts` startup imports.
+
+## 2026-09-12 - Clear the ask-user own-answer editor when advancing to the next question
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-question.ts`: `commitOwnAnswer()` clears `ownAnswerInput` after committing the typed text to the active question. Previously the editor kept the committed value, so the Enter path (commit + `advance()`) left focus in own-answer on the next question with the previous question's text still in the editor, and pressing Enter again committed that stale text as the next question's own answer (it also reached `onProgress` drafts through `emitProgress`).
+- Revisiting a tab is unchanged: `openOwnAnswer()` still reloads the question's saved text from `AskUserQuestionState.textFor()`, so committed answers stay editable per question.
+- `packages/coding-agent/test/suite/ask-user-question-component.test.ts`: regression coverage for the empty editor on the next question, no stale `onProgress` answer for the next question, and the saved answer reloading when the tab is revisited.
+
+### Why
+
+- With multi-question `ask-user` requests, answering a question with the own-answer editor prefilled the following question with the previous answer's text and submitted it as that question's custom answer when the user pressed Enter again — silently answering a question the user had not answered.
+
+### Why an extension could not handle it
+
+- The editor lifetime is owned by the fork's in-tree question overlay component; `AskUserQuestionState` deliberately stays free of pi-tui input state, so only the component can reset the editor.
+
+### Expected merge conflict zones
+
+- `commitOwnAnswer()` in `packages/coding-agent/src/modes/interactive/components/ask-user-question.ts` if upstream changes the own-answer commit/advance flow.
+
+## 2026-09-12 - Support the Notification hook event and fire it for ask-user settlements
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/hooks/types.ts`: `Notification` moves from `UNSUPPORTED_KNOWN_HOOK_EVENTS` to `SUPPORTED_HOOK_EVENTS`, and `HookInputWire` gains a `Notification` variant carrying `message`, `kind`, optional `title`, `notification_source`, `request_id`, `status`, and `transcript_path`.
+- `packages/coding-agent/src/core/extensions/builtin/hooks/matcher.ts`, `dispatcher.ts`, `output-parser.ts`, `lifecycle-adapter.ts`: `Notification` dispatches like the other non-blocking lifecycle events (matcher ignored, block-only aggregation, `additionalContext` accepted, decisions rejected with an `unsupported_field` diagnostic). New `buildNotificationHookInput` / `dispatchNotificationHookEvent` / `notificationResultDetails` helpers mirror the SessionStart path.
+- `packages/coding-agent/src/core/extensions/builtin/ask-user/notify.ts`, `tool.ts`, and `resume.ts`: live and resumed non-cancelled settlements publish `ask-user:settled`. The active hooks builtin owns Notification execution (`kind` `ask-user-timeout` on timeout, `ask-user-settled` otherwise); disabling or excluding hooks prevents execution. Configuration and atomic trust snapshots are read asynchronously, and no Notification handlers means no trust I/O. Only validated hook `additionalContext` is recorded.
+- `packages/coding-agent/test/suite/hooks-notification*.test.ts`: schema/output parsing, real trusted command dispatch with ignored matchers, disabled/excluded builtin activation through the resource loader, registered-tool blocking/async answers and authoritative fake-clock timeouts, late UI responses, cancellation, concurrent IDs, resume/reload exactly-once delivery, gated preparation/command completion, rejected-output recording, and typed persistent/in-memory payload fields.
+
+### Why
+
+- Question timeouts previously arrived only as framed user messages, so there was no hook surface for notifying on them (for example desktop or mobile push on `ask-user-timeout`).
+
+### Why an extension could not handle it
+
+- The supported hook wire event and authoritative ask-user settlement publication are owned by in-tree builtins. Extensions can observe the settlement event, but adding the Notification wire contract requires core changes.
+
+### Expected merge conflict zones
+
+- `SUPPORTED_HOOK_EVENTS` / `UNSUPPORTED_KNOWN_HOOK_EVENTS` in `hooks/types.ts` and any upstream change that adds a `Notification` event with different semantics.
+
+## 2026-09-12 - Remove the client transcript/remote-session island, keep the dist `./client` export
+
+### What changed
+
+- `packages/coding-agent/src/client/transcript.ts`, `src/client/remote-session.ts`, and their tests are deleted (C14); upstream replaced that island with the source-only experimental client under `src/experimental/`.
+- `packages/coding-agent/src/client/index.ts` stays a one-line barrel, and `packages/coding-agent/package.json` keeps the fork's dist-based `./client` export instead of upstream's `source`-conditioned entry, so `@code-yeongyu/senpi/client` keeps resolving for installed consumers.
+- The 2026-08 block below that cites `src/client/transcript.ts` for an optional-chaining guard describes deleted code and stays as history.
+
+### Why
+
+- The transcript island duplicated what upstream now provides through Chord-routed services; carrying it would fork the RPC surface twice.
+
+### Why an extension could not handle it
+
+- Package exports and the client barrel are packaging contracts outside the extension API.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/package.json` `exports["./client"]` and `src/client/index.ts` whenever upstream touches the client entry.
+
+## 2026-09-12 - Keep upstream's experimental server, client, and plugin sources source-only
+
+### What changed
+
+- `packages/coding-agent/src/experimental/cli.ts`, `src/experimental/commands.ts`, `src/experimental/server.ts`, `src/experimental/client.ts`, `src/experimental/client-runtime.ts`, `src/experimental/plugin.ts`, and the rest of `src/experimental/` arrive from upstream unchanged and are reachable only through `pi-test.sh` in a checkout (`Q-C=source-only`).
+- They are not exported from the published `@code-yeongyu/senpi` package, are not bundled into standalone binaries, and no fork runtime module imports them. `src/experimental/server.ts` still reads `PI_SERVER_DIR`/`PI_SERVER_ID` and defaults to `~/.pi/server`; that upstream naming is intentional for the source-only tree and is not part of the `SENPI_*` environment contract.
+- Unlike upstream, `@earendil-works/pi-client` and `@earendil-works/pi-protocol` stay runtime dependencies of `@code-yeongyu/senpi`, and the `./client` entry point stays published.
+
+### Why
+
+- Upstream moved its remote-harness experiment behind a `source` export condition after 0.85.0 shipped it by accident. The fork wants the sources present so future syncs merge cleanly, without widening the supported CLI surface or the tarball.
+
+### Why an extension could not handle it
+
+- Package export conditions, bundle inputs, and CLI entry wiring are build and packaging contracts; an extension cannot decide what the tarball contains.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/package.json` `exports` (fork keeps `./client`; upstream gates `client` behind `source`), `scripts/build-coding-agent-bundle.mjs` inputs, `pi-test.sh`, and any upstream change that starts importing `src/experimental/` from `src/main.ts` or `src/cli.ts`.
+
 ## 2026-09-11 - Support brand-owned changelog sources (senpi#1583)
 
 ### What changed
@@ -132,7 +233,6 @@
 - MEDIUM: `packages/coding-agent/src/config.ts` around `getThemesDir()` / `getExportTemplateDir()` if upstream edits
   either resolver; the shared `ShippedAsset` descriptors and `resolveShippedAssetDir()` are fork-owned.
 
-||||||| parent of e351a846f (docs(rpc): document edit_assistant_message, the leaf token, and the entry_appended identity channel)
 ## 2026-09-09 - Forward shared-host policy to extension loading
 
 ### What changed
@@ -3042,3 +3142,49 @@ The instrumented transitions (`_emit`, queue internals, `RequiredCompactionError
 ### Expected merge conflict zones
 
 - Agent-session event handling, coding-agent barrel exports, and RPC command/client/response unions.
+
+## Upstream sync (upstream/main@71dca871) integration repairs (2026-09-12)
+
+### What changed
+
+- `packages/coding-agent/src/bun/cli.ts`: the Bun entry keeps the fork order: upstream sandbox env setup, then `runtime-setup.ts` (sole Bedrock registration owner, Bun OAuth, process title), then the fork `register-cursor-agent.ts`, then `../cli-main.ts`; upstream's `bun/register-bedrock.ts` deletion was accepted.
+- `packages/coding-agent/src/cli.ts`: the fork launcher (Bun re-exec, package-manager command routing, `--version` fast path, bootstrap self-update, startup compile cache, isolated-process decision, inspector policy, dynamic `./cli-main.ts` import); upstream's `cli/setup.ts` is not imported here because `cli-main.ts` performs the same setup for both entry paths.
+- `packages/coding-agent/src/config.ts`: fork brand profile (`BRAND`, `APP_COMMAND`, `CONFIG_FLAT_LAYOUT`, `DISPLAY_VERSION`, `ENV_PREFIX`, `resolveAgentDir` with nearest-parent config discovery and flat-layout sentinel), shipped-asset resolution, Bun launcher repair command and the `code-yeongyu/senpi` self-update instruction.
+- `packages/coding-agent/src/index.ts`: keeps every fork barrel export (filesystem policy types, `InputDispositionEvent`, MCP declarations, notice primitives, read classifiers, RPC host/daemon helpers and errors, `sanitizeTerminalLabel`, `OAuthCredential`) and drops the PowerShell tool exports upstream still lists; upstream's `CompactionModelOverride` and `CustomEditorOptions` types were added.
+- `packages/coding-agent/src/migrations.ts`: the fork migration chain (`migrateEngineStateForBrand` first, `migrateLegacySenpiDirs`, `migrateExtensionSystem`) replaces upstream's in-file commands/prompts and deprecated-dir helpers; upstream's live `earendil-works/pi` doc URLs were taken.
+
+### Why
+
+- Startup ordering, runtime selection, brand/config-dir resolution and the public barrel are where the senpi product identity and its Bun/Node dual runtime live.
+
+### Why an extension could not handle it
+
+- These run before extensions load or define the module surface extensions import from.
+
+### Expected merge conflict zones
+
+- HIGH: `packages/coding-agent/src/cli.ts` top-level flow; `packages/coding-agent/src/index.ts` export list.
+- MEDIUM: `packages/coding-agent/src/config.ts` constants block and `getAgentDir`; `packages/coding-agent/src/bun/cli.ts` import order.
+- LOW: `packages/coding-agent/src/migrations.ts` migration order.
+
+## 2026-09-12 - Sync CI repair: experimental runtime honors explicit agent dir and spawn context
+
+### What changed
+
+- `packages/coding-agent/src/experimental/server.ts`: `resolveSessionDirectory()` now honors an explicit `PI_CODING_AGENT_DIR` ahead of the branded `getAgentDir()` (SENPI_/OMO_ lanes), so the durable experimental server lists and attaches sessions from the directory its process was actually started with instead of the brand-quarantine default. The ask-user widget's minimal borrowed receiver also stays a prototype call target.
+- `packages/coding-agent/src/experimental/process.ts`: spawned internal processes carry the same explicit-dir resolution through their cwd/env instead of inheriting the brand default, so a server child sees its parent's session directory.
+- `packages/coding-agent/src/experimental/source-resolver.ts`: the experimental source resolver prefers the explicit `PI_CODING_AGENT_DIR` lane over the branded lane for the same reason; behavior on the plain `senpi` brand is unchanged when the variable is unset.
+- `packages/coding-agent/src/experimental/plugins/bundled.ts`: bundled plugin registration carries the explicit agent directory so cold server composition finds its own sessions (upstream CI arbiter: `test/experimental-remote-runtime.test.ts`, 26/26).
+
+### Why
+
+- The upstream durable-server composition contract treats an explicit `PI_CODING_AGENT_DIR` as THE agent-directory override; the fork's branded `envValue` lanes (SENPI_/OMO_ before PI_) shadowed it, so the server listed sessions from an empty quarantine dir and rejected every attach with `Unknown session`.
+
+### Why an extension could not handle it
+
+- The resolution lives inside the experimental server's process bootstrap and spawn plumbing, before any extension runs.
+
+### Expected merge conflict zones
+
+- LOW: `resolveSessionDirectory` and the spawn context construction in `experimental/{server,process,source-resolver}.ts`; upstream only touches these for new composition features.
+

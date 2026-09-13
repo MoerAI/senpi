@@ -1,5 +1,118 @@
 # Core Extensions Changes
 
+
+## 2026-09-13 - Optional authoritative session goal-store path (senpi#1663)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/types.ts` adds optional read-only `ExtensionContext.goalStoreFile`, preserving source compatibility for hand-built contexts.
+- `packages/coding-agent/src/core/extensions/runner.ts` implements the guarded lazy getter in `createContext()` using `goalFilePath(goalStoreRef(runner.sessionManager, runner.cwd))`. Reading it does not create a file. Persisted sessions honor session-directory overrides; in-memory sessions use the cwd-hashed no-session bucket.
+
+### Why
+
+- `packages/coding-agent/src/core/extensions/types.ts` gives shell tools and eval kernels a shared authoritative path to expose as `PI_GOAL_STORE_FILE`, alongside `ctx.cwd` as `PI_SESSION_CWD`.
+- `packages/coding-agent/src/core/extensions/runner.ts` resolves that path from the actual session manager and cwd rather than letting consumers guess from a session JSONL filename, which is insufficient for overridden directories and in-memory sessions.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/extensions/types.ts` owns the public host-context contract; an extension cannot add a getter available to every other extension and core tool.
+- `packages/coding-agent/src/core/extensions/runner.ts` owns context creation and lifecycle guards. Resolving the path there avoids duplicate consumer-specific storage logic and rejects stale contexts consistently.
+
+### Expected merge conflict zones
+
+- LOW: the `ExtensionContext.sessionManager` neighborhood in `packages/coding-agent/src/core/extensions/types.ts`.
+- LOW: the goal persistence imports and `createContext()` getter list in `packages/coding-agent/src/core/extensions/runner.ts`. Preserve the optional public field and `assertActive()` guard.
+
+### Tests
+
+- `packages/coding-agent/test/suite/session-goal-store-context.test.ts`: persisted, `SessionManager.open(path, otherSessionDir)`, and in-memory paths; getter reads do not create files.
+- `packages/coding-agent/test/sdk-session-manager.test.ts`: SDK-created session paths reach the registered bash tool.
+- `packages/senpi-codemode/test/extension-session-env.test.ts`: runtime creation forwards cwd and the optional goal-store path from the extension context.
+
+
+
+## 2026-09-13 - Pending-question arrival and blocked bus contracts (senpi#1645)
+
+### What changed
+
+- `packages/coding-agent/docs/extensions.md` documents `ask-user:asked` and `herdr:blocked` on the existing extension bus: fresh registration, per-ID active/inactive pairs, both wait modes, and transport replay suppression. No public lifecycle-event union or transport frame changes are required.
+
+### Why
+
+- Status and Notification integrations must distinguish a fresh question from UI hydration and retain blocked state while any request remains pending.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/extensions/builtin/ask-user/tool.ts` owns registration and authoritative settlement; `packages/coding-agent/src/modes/interactive/interactive-mode.ts` owns host dialog lifetimes. A consuming extension cannot infer these boundaries reliably from tool-return text.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/docs/extensions.md`: lifecycle events section. Implementation details are tracked in `builtin/changes.md` and `modes/interactive/changes.md`.
+
+
+## 2026-09-13 - `resources_discover` advertises scoped-entry support (senpi#1655)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/types.ts`: `ResourcesDiscoverEvent` gains `scopedEntries: true`, the capability signal that the host accepts `{ path, scope }` entries (senpi#1640) in the result.
+- `packages/coding-agent/src/core/extensions/runner.ts`: `emitResourcesDiscover` constructs the event with `scopedEntries: true`.
+- Docs: `docs/extensions.md` shows a handler that returns the object form only when the field is present.
+
+### Why
+
+- A host that predates scoped entries treats an object entry as a path string and aborts session start (`input.trim is not a function` from `resolvePath`), so a distribution extension that must load on both old and new engines had no safe way to use the scoped form. The event field is the feature-detect: absent on old hosts, `true` here.
+
+### Why an extension could not handle it
+
+- Only the host knows which entry forms its runner accepts; an extension cannot probe the runner without crashing an old host, and engine version strings do not identify dev builds that already carry the feature.
+
+### Expected merge conflict zones
+
+- LOW: the `ResourcesDiscoverEvent` interface in `types.ts` and the event literal inside `emitResourcesDiscover` in `runner.ts`; both sit beside the senpi#1640 changes.
+
+## 2026-09-13 - Optional steering-specific tool signal (senpi#1637)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/types.ts` adds optional read-only `ExtensionContext.steeringSignal`, separate from cancellation.
+- `packages/coding-agent/src/core/extensions/wrapper.ts` accepts an optional invocation-context factory and disposes its scope in `finally`, including thrown and detached results. Callers without the factory retain their prior context behavior.
+
+### Why
+
+- `packages/coding-agent/src/core/extensions/types.ts` lets foreground tools observe steering without polling or cancelling work.
+- `packages/coding-agent/src/core/extensions/wrapper.ts` is the shared invocation boundary for built-in and extension tools, so it can remove session-owned subscriptions at settlement.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/extensions/types.ts` defines the host-owned context contract.
+- `packages/coding-agent/src/core/extensions/wrapper.ts` adapts every registered tool before execution, outside an individual extension's lifecycle.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/extensions/types.ts`: `ExtensionContext.signal` neighbours.
+- `packages/coding-agent/src/core/extensions/wrapper.ts`: wrapper signatures and the execute call; tool-result metadata handling remains unchanged.
+
+## 2026-09-13 - `system` scope for builtin extensions and scoped `resources_discover` entries (senpi#1640)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/loader.ts`: `createExtension` passes `scope: source === "builtin" ? "system" : "temporary"` to `createSyntheticSourceInfo`, so a `<builtin:*>` extension starts out as `system` instead of `temporary`.
+- `packages/coding-agent/src/core/extensions/types.ts`: new `ResourceDiscoverEntry = string | { path: string; scope?: SourceScope }`; `ResourcesDiscoverResult.skillPaths` / `promptPaths` / `themePaths` / `hookPaths` are `ResourceDiscoverEntry[]` instead of `string[]`. A bare string inherits its scope from the contributor; the object form pins it.
+- `packages/coding-agent/src/core/extensions/runner.ts`: `emitResourcesDiscover` returns `DiscoveredResourceEntry[]` (`{ path, extensionPath, scope? }`, from the fork-only `packages/coding-agent/src/core/discovered-resource-scope.ts`) and normalises each handler entry through a local `toEntry`, keeping `scope` only when the handler set one. `agent-session.ts` resolves the final scope with `resolveDiscoveredResourcePaths`.
+
+### Why
+
+- Builtin extensions are part of the harness and should carry the new `system` scope from creation, and a system extension that surfaces user-owned data (for example a skills directory under the home folder) needs a way to say those paths are `user`, not `system`.
+
+### Why an extension could not handle it
+
+- The loader owns the synthetic source info of builtins, and the runner owns the shape of `resources_discover` results before `agent-session.ts` sees them. An extension can only fill in the entries; it cannot widen the result type or re-scope its own registration.
+
+### Expected merge conflict zones
+
+- MEDIUM: `emitResourcesDiscover` in `packages/coding-agent/src/core/extensions/runner.ts` (return type, the four accumulator arrays, `toEntry` and the four `push` lines).
+- LOW: `ResourceDiscoverEntry` / `ResourcesDiscoverResult` and the `SourceScope` import in `packages/coding-agent/src/core/extensions/types.ts`; the `createSyntheticSourceInfo` call in `createExtension` in `packages/coding-agent/src/core/extensions/loader.ts`.
+
 ## 2026-09-10 - ctx.editAssistantMessage
 
 ### What changed
@@ -2115,3 +2228,21 @@ If upstream modifies compaction event definitions in `types.ts`, preserve the ad
 Extension APIs now expose `pi.rpc.emit(name, data)`. It validates a non-empty name and publishes an
 opaque payload on the generation-owned extension bus; it does not write to a transport directly.
 Keep ordinary `pi.events` extension-local, and keep RPC delivery opt-in at the connection boundary.
+
+## 2026-09-12 - Upstream sync (upstream/main@71dca871) integration repairs
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/loader.ts`: fork loader (per-cwd LRU module cache capped at `MAX_EXTENSION_CACHE_CWD_ENTRIES`, `@code-yeongyu/senpi` alias table, pending provider registration queue, read-classifier and MCP declaration registration, RPC event channel) with `registerTool` running the fork `runtime.assertActive()` and `tool_search` reservation first and then upstream's object-schema parameter check with its exact error text (D-O).
+
+### Why
+
+- Extension registration has to keep the fork's isolation and reserved-name rules while rejecting non-object tool schemas the same way upstream does.
+
+### Why an extension could not handle it
+
+- The loader is what instantiates extensions; its validation order is not visible to them.
+
+### Expected merge conflict zones
+
+- MEDIUM: `registerTool` in `createExtension`; the alias table and importer factory.

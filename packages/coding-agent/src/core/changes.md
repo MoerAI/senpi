@@ -1,5 +1,206 @@
 # changes
 
+
+## 2026-09-13 - Session cwd and authoritative goal-store environment (#1663)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/types.ts` adds optional read-only `ExtensionContext.goalStoreFile`, preserving hand-built context compatibility.
+- `packages/coding-agent/src/core/extensions/runner.ts` implements the guarded lazy getter once in `createContext()` through `goalFilePath(goalStoreRef(sessionManager, cwd))`, honoring persisted, overridden-directory, and in-memory sessions without creating a goal file.
+- `packages/coding-agent/src/core/tools/bash.ts` clears inherited `PI_SESSION_CWD` and `PI_GOAL_STORE_FILE` before setting context values, including opt-out and custom spawn-hook semantics.
+- `packages/coding-agent/src/core/extensions/builtin/terminal/tools/bash.ts` supplies the same values for foreground/background PTY bash and clears inherited values even when no context or optional goal path is supplied. Explicit undefined overrides preserve deletion through PTY backends that merge the host environment.
+
+### Why
+
+- `packages/coding-agent/src/core/extensions/types.ts` and `packages/coding-agent/src/core/extensions/runner.ts` expose facts consumers cannot infer from the session JSONL path, especially with a session-directory override or no persisted session.
+- `packages/coding-agent/src/core/tools/bash.ts` and `packages/coding-agent/src/core/extensions/builtin/terminal/tools/bash.ts` must not route child processes to stale inherited session paths; the session cwd is not necessarily the child's overridden working directory.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/extensions/types.ts` and `packages/coding-agent/src/core/extensions/runner.ts` own the host context and its lifecycle guards; an extension cannot add a universally available authoritative context getter.
+- `packages/coding-agent/src/core/tools/bash.ts` owns core child spawn environment construction. `packages/coding-agent/src/core/extensions/builtin/terminal/tools/bash.ts` owns its independent PTY spawn boundary. A consumer extension cannot sanitize all children at either boundary.
+
+### Expected merge conflict zones
+
+- LOW: the session-manager neighborhood of `ExtensionContext` in `packages/coding-agent/src/core/extensions/types.ts`, and imports plus `createContext()` in `packages/coding-agent/src/core/extensions/runner.ts`.
+- LOW: `resolveSpawnContext()` in `packages/coding-agent/src/core/tools/bash.ts`; session environment and the two spawn sites in `packages/coding-agent/src/core/extensions/builtin/terminal/tools/bash.ts`.
+
+### Tests
+
+- `test/suite/session-goal-store-context.test.ts`: persisted, `SessionManager.open(path, otherSessionDir)`, and in-memory goal paths; getter reads do not create files.
+- `test/suite/bash-session-env.test.ts`: real registered shell children, opt-out, optional getter omission.
+- `test/suite/terminal-bash-session-env.test.ts`: real foreground/background PTY children, execute-time/fallback contexts, inherited-value clearing.
+- `test/sdk-session-manager.test.ts`: SDK-created session values through the registered bash surface.
+
+
+
+## 2026-09-13 - Configurable pending-question arrival bell (senpi#1645)
+
+### What changed
+
+- `packages/coding-agent/src/core/settings-shapes.ts` adds optional `AskUserSettings.bell`; `packages/coding-agent/src/core/settings-manager.ts` resolves it to true by default and honors an explicit false value. `docs/settings.md` documents the bell and pending-title behavior.
+
+### Why
+
+- Question arrivals should be noticeable without forcing an audible signal on users who disable it.
+
+### Why an extension could not handle it
+
+- The core settings manager owns global/project merge precedence and the typed ask-user settings contract consumed by the interactive host.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/settings-shapes.ts`: AskUserSettings; `packages/coding-agent/src/core/settings-manager.ts`: getAskUserSettings.
+
+## 2026-09-13 - Pending-question cycling keybinding (senpi#1645)
+
+### What changed
+
+- `packages/coding-agent/src/core/keybindings.ts` adds `app.question.next`, default `alt+down`, for cycling pending requests from an empty composer. Tab autocomplete and Shift+Tab thinking cycling are unchanged.
+- The answer action defaults to both `alt+up` and the retained `alt+a`. Exported primary/fallback key constants keep terminal-aware hints tied to the binding table. Pending-question interception precedes dequeue without changing its handler; Windows/WSL retain their independent `alt+q` dequeue key.
+
+### Why
+
+- Multiple requests need a configurable cycling chord without taking existing editor actions.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/keybindings.ts` owns the app binding table and its TUI type augmentation; host dispatch and hints must share that declaration.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/keybindings.ts`: AppKeybindings and KEYBINDINGS question entries.
+
+
+## 2026-09-13 - Invocation-scoped steering notification (senpi#1637)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts` binds each registered tool invocation to the existing synchronous queue-update event through a separate AbortSignal. Registration precedes the queued-steering check; completion, caller abort and session disposal remove the subscription. Context getters remain live.
+
+### Why
+
+- `packages/coding-agent/src/core/agent-session.ts` owns the steering queue. Foreground tools need push notification without consuming messages or treating follow-up input as cancellation.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/agent-session.ts` owns both queue updates and registered tool invocation lifetimes below the extension API; an extension cannot safely subscribe to that queue through the existing context.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/agent-session.ts`: queue-update helpers, disposal, and the two registered-tool wrapper construction sites. Agent-loop queue consumption and cancellation are unchanged.
+
+## 2026-09-13 - `system` provenance scope for harness-provided resources (senpi#1640)
+
+### What changed
+
+- `packages/coding-agent/src/core/source-info.ts`: `SourceScope` is now `"user" | "project" | "temporary" | "system"`. `system` marks resources the harness itself provides: `<builtin:*>` and bundled extensions, command-line packages whose manifest declares `pi.system`, and what those contribute.
+- `packages/coding-agent/src/core/pi-manifest.ts`: `PiManifest.system?: boolean`, read from `pkg.pi.system` only when it is a boolean; any other type is ignored.
+- `packages/coding-agent/src/core/package-manager.ts`: `collectPackageResources` reads the manifest up front and flips `metadata.scope` from `temporary` to `system` when `manifest.system === true`. Only command-line packages carry the `temporary` scope here, so a package installed through settings keeps its `user`/`project` scope and cannot hide itself from the trust surface. The local `SourceScope` alias is gone in favour of the `source-info.ts` type; `InstalledSourceScope` excludes `system` as well as `temporary`, and the update filter skips both.
+- `packages/coding-agent/src/core/resource-loader.ts`: the CLI metadata loop collapses into one `cliMetadata` helper that keeps `source: "cli", scope: "system", origin: "top-level", baseDir: <package root>` for resources that resolved to `system`, and `source: "cli", scope: "temporary"` for everything else, so CLI precedence over settings packages is unchanged. `getDefaultSourceInfoForPath` returns `scope: "system"` for `<builtin:*>` paths. `applyExtensionSourceInfo` resolves bundled extensions to `source: "builtin", scope: "system"` with the bundled package root as `baseDir`, using the new `getBundledExtensionPackageRoots` (which `getBundledExtensionEntryPaths` now wraps), and the generated global-default shims (`diff.js`, `files.js`, `prompt-url-widget.js`, `tps.js` under the agent extensions directory) to the same `system` scope while they still carry the generated banner (`getHarnessExtensionSourceInfo`, `isGeneratedGlobalDefaultExtensionShimPath`); a user-authored file at a shim path keeps the `user` scope.
+- `packages/coding-agent/src/core/agent-session.ts`: `resources_discover` results go through `resolveDiscoveredResourcePaths` instead of the removed `buildExtensionResourcePaths` / `getExtensionSourceLabel` methods.
+- `packages/coding-agent/src/core/discovered-resource-scope.ts` (new, fork-only): `DiscoveredResourceEntry`, `getExtensionSourceLabel` and `resolveDiscoveredResourcePaths`. An entry with an explicit `scope` keeps it; a bare path becomes `system` when the contributor is builtin, or is a system package and the path lies inside that package root; otherwise it stays `temporary`.
+- `packages/coding-agent/src/modes/app-server/server/skills.ts` (fork-only): `mapSkillScope` maps `system` to the app-server `system` skill scope, next to `temporary`.
+
+### Why
+
+- Resources only knew user, project and temporary scopes, so builtin extensions and the package a distribution launcher passes with `--extension` were filed as ad-hoc paths next to the user's own `-e` files. The harness needs a scope of its own so the banner, diagnostics and app-server can tell its resources from the user's.
+
+### Why an extension could not handle it
+
+- Scope is assigned by the loader and package manager before any extension runs, and `SourceScope` is the host-owned provenance contract those consumers read. An extension can pin a scope on the paths it contributes, but it cannot change how its own package or the builtins are classified.
+
+### Expected merge conflict zones
+
+- MEDIUM: the CLI metadata loop in `DefaultResourceLoader` (`cliMetadata` replaces five identical `for` loops), `getDefaultSourceInfoForPath`, `applyExtensionSourceInfo` and `getBundledExtensionEntryPaths` / `getBundledExtensionPackageRoots` in `packages/coding-agent/src/core/resource-loader.ts`.
+- MEDIUM: `collectPackageResources` (manifest read moved above the filter branch) and the `InstalledSourceScope` alias plus the update filter in `packages/coding-agent/src/core/package-manager.ts`.
+- LOW: the `SourceScope` union in `packages/coding-agent/src/core/source-info.ts`; the `system` field in `packages/coding-agent/src/core/pi-manifest.ts`; the `extendResources` call site in `packages/coding-agent/src/core/agent-session.ts` where the two private helpers were removed.
+
+## 2026-09-12 - `app.question.answer` keybinding and `/answer` command for the async ask-user widget (senpi#1623)
+
+### What changed
+
+- `packages/coding-agent/src/core/keybindings.ts`: new `AppKeybindings` id `app.question.answer`
+  (`defaultKeys: "alt+a"`, "Open the pending question"), so the chord that expands a pending async
+  question is configurable in `keybindings.json` and visible to `/hotkeys` and the hint system.
+- `packages/coding-agent/src/core/extensions/builtin/ask-user/extension.ts`: registers the `/answer`
+  command ("Open the pending question") so it is listed and autocompleted; in TUI mode interactive-mode's
+  text dispatch handles it first (the `/keybindings` pattern), outside the TUI it notifies that the
+  command belongs to the TUI.
+
+### Why
+
+- The shortcut lived as a constant in the interactive widget and could not be rebound when another
+  keymap claimed Option/Alt+A; `/answer` gives a chord-free path that every terminal delivers.
+
+### Why an extension could not handle it
+
+- Keybinding ids are declared once in `KEYBINDINGS` and merged into the `pi-tui` `Keybindings`
+  augmentation; an extension cannot add an app-level id that `KeybindingsManager`, `/hotkeys` and
+  `keyText` resolve. The `/answer` command is registered through the extension API, but its TUI
+  behavior (mounting the overlay) is interactive-mode state that no extension hook reaches.
+
+### Expected merge conflict zones
+
+- LOW: the `AppKeybindings` interface and `KEYBINDINGS` table in `keybindings.ts` (fork-only ids sit
+  beside upstream ones); the ask-user extension is fork-only.
+
+## 2026-09-12 - Cursor admission never deletes a turn (senpi#1603)
+
+### What changed
+
+- `packages/coding-agent/src/core/cursor-history-admission.ts` (new): owns Cursor request admission - the per-tool-result grapheme cap, blanking the oldest tool result bodies against an explicit byte budget, and `cursorAdmissionBudgetBytes` (effective context window x 4 chars per token, matching `core/compaction` `estimateTokens`). `admitCursorHistory` reports `blankedToolResults`, `bytesBefore`, `bytesAfter` and `overBudget`; `truncateToolResultBodies` stays as the positional entry point.
+- `packages/coding-agent/src/core/agent-session.ts`: the admission pass moved out of this file and the old names are re-exported from it. The third pass, which deleted the oldest whole turns when blanking was not enough, is gone: an over-budget history is admitted as-is. The `transformContext` closure now applies the observed Cursor ceiling to the live model (`cursor_context_window_observed`), derives the budget from `model.contextWindow`, and logs `cursor_admission_truncated` / `cursor_admission_over_budget`. `_wouldCompactionOverflow` sizes its simulated Cursor context with the same window-derived budget.
+- `packages/coding-agent/src/core/extensions/builtin/cursor-cli-oauth/models.ts`: catalog entries materialize `contextWindow` through `resolveCursorContextWindow`.
+- Tests: `packages/coding-agent/test/suite/regressions/1603-cursor-history-budget.test.ts` (new) and the rewritten aggregate cases in `packages/coding-agent/test/suite/regressions/1043-cursor-toolresult-truncate.test.ts`, which now pass explicit budgets and assert that bodies shrink while messages do not.
+
+### Why
+
+- Admission enforced a fixed 50,000-byte cap that had nothing to do with the model window, and measured it over both the prompt blobs and Cursor's display copies of the same conversation. A 1M-token model therefore admitted roughly 6K tokens, and a tool-free history - where there is no body to blank - lost its oldest turns outright, so a codeword or instruction from the first turn was gone before the model ever saw it.
+- Cursor rebuilds the conversation each hop, so the pass cannot compact mid-run; the correct answer to an oversized history is to admit it and let the existing 0-token `resource_exhausted` overflow path compact with the session's own policy.
+
+### Why an extension could not handle it
+
+- The pass runs inside `AgentSession`'s installed `transformContext` and feeds the same session-owned compaction and context-usage accounting; an extension context hook cannot see the model window admission is budgeting against, and cannot mutate the live model.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/coding-agent/src/core/agent-session.ts` - the constants block above the class and the `transformContext` closure inside `_installAgentNextTurnRefresh`.
+- LOW: the new `packages/coding-agent/src/core/cursor-history-admission.ts`.
+- LOW: the `contextWindow` line in `packages/coding-agent/src/core/extensions/builtin/cursor-cli-oauth/models.ts`.
+## 2026-09-12 - Bind session-write grants to live writers (senpi#1612)
+
+### What changed
+
+- `packages/coding-agent/src/core/session-write-reservation.ts` adds a live-writer registry
+  (`registerSessionWriter`, `unregisterSessionWriter`, `liveSessionWritePaths`) that holds owners
+  weakly, prunes collected ones on enumeration, and reports the current session file of every live
+  persisted writer.
+- `packages/coding-agent/src/core/session-manager.ts` registers every persisted manager in its
+  constructor, and splits `newSession()` into `_resetToNewSession()` (state reset and header, no
+  path work) plus the path allocation. `_setSessionFile()` now resets in place for a missing or
+  empty explicit file instead of allocating and reserving a second path it immediately discards.
+- `packages/coding-agent/src/core/agent-session-runtime.ts` unregisters the replaced session
+  manager after `teardownCurrent()` disposes it, so a superseded session file has no live writer.
+- `packages/coding-agent/test/suite/regressions/1612-session-manager-single-reservation.test.ts`
+  pins that opening a missing or zero-byte session file reserves exactly that one path.
+
+### Why
+
+- Under the shared RPC host every reservation was permanent, so a long-lived session died at the
+  64-path worker budget with `session_path_in_use`, and each explicit open burned two grants
+  instead of one. Ownership now follows the writer that actually exists.
+
+### Why an extension could not handle it
+
+- `SessionManager` and the runtime replacement path own session-file writes below the extension
+  boundary; the grant is taken synchronously before any extension observes the new session.
+
+### Expected merge conflict zones
+
+- MEDIUM: `session-manager.ts` around `newSession()` / `_setSessionFile()`.
+- LOW: the `teardownCurrent()` tail in `agent-session-runtime.ts` and the reservation module.
+
 ## 2026-09-11 - Batch persisted entry hydration after resident-string eviction (senpi#1407)
 
 ### What changed
@@ -299,7 +500,6 @@
 ### Expected merge conflict zones
 
 - LOW: the `executeTool` try block in `packages/coding-agent/src/core/agent-session.ts`.
-||||||| parent of e351a846f (docs(rpc): document edit_assistant_message, the leaf token, and the entry_appended identity channel)
 ## askUser settings and --no-ask-user session override (2026-09-10)
 
 ### What changed
@@ -5601,3 +5801,32 @@ unrelated fallback bus, silently disconnecting `pi.rpc.emit` on trust-requiring 
   packages/coding-agent/src/core/retry-fallback/controller.ts.
 
 
+
+## 2026-09-12 - Upstream sync (upstream/main@71dca871) integration repairs
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session-runtime.ts`: fork `AgentSessionLaunchProfile` (immutable cwd/permission/creation-model/thinking flags), settle-before-replacement and `session_extensions_removed` reporting, plus upstream's import path: `reserveSessionWrite(destinationPath)` followed by `copyFileSync(..., COPYFILE_EXCL)` when the source is not already stored.
+- `packages/coding-agent/src/core/agent-session.ts`: fork structure throughout (admission accounting, `compactBeforeNextAdmission` instead of upstream's `_compactBeforeNextAssistantResponse`, `preflightToolCall`/`_emitAfterToolCallHooks`, constants and tool-result truncation, input ids `${sessionId}:${n}` with `emitInputDisposition`/`throwIfCancelled`, `expandPromptTemplateWithMetadata` + `command_invocation`) with upstream behavior ported in: `_getCompactionSettings(forModel)` at every compaction read (D-L), retry delay `min(planner delay, settings.maxAgentDelayMs)` (D-M), and `steer`/`followUp` running input handlers through `_queueUserInput(text, images, behavior, { enqueueOrder, source })` (D-N).
+- `packages/coding-agent/src/core/keybindings.ts`: fork bindings `app.history.search` (ctrl+r), `app.tree.editMessage` (ctrl+e), `app.models.toggleFavorite` (ctrl+f) and the Windows/WSL defaults, alongside upstream's `app.thinking.save`; `isRecord`/`hasOwn` helpers for the config parse.
+- `packages/coding-agent/src/core/messages.ts`: fork `ConfigurationUpdateMessage`, context-excluded custom messages (`GOAL_CONTINUATION_MESSAGE_TYPE`), provenance copying, `dropFailedAssistantTurns` as the final transform, and the transport image budget (`elideOldImages`, `convertToLlmForTransport`, placeholders); upstream's `fromId: string | null` widening landed.
+- `packages/coding-agent/src/core/model-registry.ts`: fork `AuthStorage`-backed registry (`create`/`inMemory`, `modelRuntime` getter, availability snapshot fallback, `getUpstreamModelId`/`getServiceTier`, `extraBody` in compatibility headers) with upstream's `stream()`/`streamSimple()` passthroughs.
+- `packages/coding-agent/src/core/model-resolver.ts`: fork defaults (`openai-codex` gpt-5.6-sol, ollama, cursor `auto`), `AvailableModelsSource`, stored-reference resolution, pattern ownership metadata, service-tier and thinking provenance; upstream's `radius: "balanced"` default restored.
+- `packages/coding-agent/src/core/model-runtime.ts`: fork runtime (wire identity set at import, credential pool slots and rotation stream, remote catalog provider, `withPayloadRequestMetadata`, `isFallbackEligible`, `hasFreshAvailabilitySnapshot`, `reloadConfig`, native provider registration); upstream's `streamDeferred` split adopted.
+- `packages/coding-agent/src/core/session-manager.ts`: `_setSessionFile` keeps the fork reader contract (headerless file -> fresh in-memory id, never a replacement file, resident-store externalize, `mutationCount` bump) and upstream's `_loadEntries` + `inMemory(cwd, options, entries)` ingestion was extended with the same store handling.
+- `packages/coding-agent/src/core/settings-manager.ts`: `export type * from "./settings-public-types.ts"` stays (upstream's inline `CompactionSettings`/`RetrySettings` moved into the fork type modules); compaction getters take `forModel?` and keep the fork return type `ResolvedCompactionSettings & { model?: string }`; `getRetrySettings()` returns `maxAgentDelayMs` defaulting to pi-ai's `DEFAULT_MAX_AGENT_RETRY_DELAY_MS` and `maxRetries` from the senpi default retry profile.
+- `packages/coding-agent/src/core/skills.ts`: the fork `<skill_roots>` alias table and stronger loading sentence, rendered for both the read and upstream's new bash-only `fileReadTool` branch.
+
+### Why
+
+- The session loop, model runtime and settings model carry the fork's admission/compaction policy, credential pooling, Astra configuration replay and retry profiles; upstream's per-model compaction budgets, retry cap and queued-input handlers were folded into those shapes rather than replacing them.
+
+### Why an extension could not handle it
+
+- These are the core session, registry and settings classes that extensions receive; their constructors, getters and event contracts cannot be swapped from an extension.
+
+### Expected merge conflict zones
+
+- HIGH: `packages/coding-agent/src/core/agent-session.ts` (`prompt`, `steer`/`followUp`, `_queueUserInput`, compaction and retry blocks); `packages/coding-agent/src/core/settings-manager.ts` compaction/retry getters; `packages/coding-agent/src/core/session-manager.ts` loaders.
+- MEDIUM: `packages/coding-agent/src/core/model-runtime.ts` stream wrappers; `packages/coding-agent/src/core/model-registry.ts` availability methods; `packages/coding-agent/src/core/messages.ts` `convertToLlm`.
+- LOW: `packages/coding-agent/src/core/keybindings.ts` binding table; `packages/coding-agent/src/core/model-resolver.ts` defaults map; `packages/coding-agent/src/core/skills.ts` prompt text; `packages/coding-agent/src/core/agent-session-runtime.ts` import path.

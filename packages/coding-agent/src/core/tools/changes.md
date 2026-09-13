@@ -1,5 +1,29 @@
 # core/tools changes
 
+## Session cwd and goal-store environment keys (2026-09-13)
+
+### What changed
+
+- `packages/coding-agent/src/core/tools/bash.ts` extends `resolveSpawnContext()` with `PI_SESSION_CWD` from `ctx.cwd` and optional `PI_GOAL_STORE_FILE` from `ctx.goalStoreFile`. Both inherited keys are deleted before active session values are applied, and injection still precedes `spawnHook`. With session exposure disabled or the optional goal path absent, stale inherited values remain unset.
+
+### Why
+
+- `packages/coding-agent/src/core/tools/bash.ts` must give shell children the active session's working directory and authoritative goal-store path rather than inherited parent-session values. The session cwd can differ from a spawn-hook override, and the goal path cannot be inferred reliably from the session JSONL path for overridden session directories or in-memory sessions.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/tools/bash.ts` owns the core shell spawn environment and its session-exposure opt-out. A consumer extension cannot enforce the delete-then-set contract for every core shell child or guarantee that custom spawn hooks receive the resolved values.
+
+### Expected merge conflict zones
+
+- LOW: the inherited-key deletion list and active-context assignment block in `resolveSpawnContext()` in `packages/coding-agent/src/core/tools/bash.ts`. Preserve injection before `spawnHook` and the `exposeSessionEnvironment` gate.
+
+### Tests
+
+- `packages/coding-agent/test/suite/bash-session-env.test.ts`: real registered shell children receive both values; opt-out and optional-getter omission clear inherited values.
+- `packages/coding-agent/test/sdk-session-manager.test.ts`: SDK-created session metadata reaches the registered bash tool.
+- `packages/coding-agent/test/agent-session-dynamic-tools.test.ts`: existing custom spawn-hook and session-exposure opt-out coverage.
+
 ## Compact memory read classifications with stable headlines (2026-09-09)
 
 ### What changed
@@ -517,3 +541,33 @@ The divergence lives in core wiring, package identity, or build plumbing that ex
 ### Expected merge conflict zones on next upstream sync
 
 - LOW: the abort/timeout handler block inside `createLocalBashOperations`.
+
+## Upstream sync (upstream/main@71dca871) integration repairs (2026-09-12)
+
+### What changed
+
+- `packages/coding-agent/src/core/tools/bash.ts`: upstream renderer split (`createShellRenderers`) and strict-prefer sampling, plus the fork execute-path hardening: `rg` in the prompt snippet, `killedController` so `waitForChildProcess` stops preserving tails after the tree kill, streaming-callback error capture that aborts the command and rethrows, and output-finalization error aggregation.
+- `packages/coding-agent/src/core/tools/edit.ts`: fork `filesystemPolicy` check (`operation: "write"` on the canonicalized path) before any I/O; renderers come from `./renderers/edit.ts`.
+- `packages/coding-agent/src/core/tools/find.ts`: `filesystemPolicy` (`enumerate`) check on the search path and the fork `pathModule: typeof path.posix` typing.
+- `packages/coding-agent/src/core/tools/grep.ts`: `filesystemPolicy` (`enumerate`) check with a single `searchPath` declaration placed before the check.
+- `packages/coding-agent/src/core/tools/ls.ts`: `filesystemPolicy` (`enumerate`) check on the listed directory.
+- `packages/coding-agent/src/core/tools/read.ts`: `local://` URI guard with the eval-cell guidance, `filesystemPolicy` (`read`) check, and the definition keeps its third `ReadRenderState` type parameter.
+- `packages/coding-agent/src/core/tools/write.ts`: `filesystemPolicy` (`write`) check, `readLocalWriteBaseline` and `details: createWriteDetails(path, content, baseline)` (the app-server diff/updated source) with the `WriteToolDetails | undefined` return type.
+- `packages/coding-agent/src/core/tools/renderers/bash.ts`: upstream-new file carrying the fork presentation: whole-second `formatDuration` (`<1s`, `s`, `m`, `h`), `highlightBashCommand` with a bold `$ ` prompt ignoring the per-shell prompt, `detachAll()` instead of `clear()`, typed `getTextOutput`.
+- `packages/coding-agent/src/core/tools/renderers/edit.ts`: call preview and result body rendered through the fork `renderToolDiff(diff, { filePath, theme })`; `detachAll()`.
+- `packages/coding-agent/src/core/tools/renderers/read.ts`: `classifyRead` from the fork `read-classifiers.ts` registry (consulted after SKILL.md and before docs/resource), the `memory` headline branch, and per-call memoization of classifications in the exported `ReadRenderState`.
+- `packages/coding-agent/src/core/tools/renderers/write.ts`: `WriteCallRenderOptions.argsComplete` switches the preview to a `+`-prefixed `generateAddedContentDiff` rendered by `renderToolDiff`; `formatWriteResult` imported from `../write-result.ts`; `detachAll()`.
+
+### Why
+
+- The fork enforces extension-registered filesystem policy on every built-in tool, guards eval-only URIs, reports write details to the app server, and renders tool cards with themed diffs, highlighted commands and whole-second timings; upstream's renderer split moved presentation into new files, so that presentation had to be ported there.
+
+### Why an extension could not handle it
+
+- Built-in tool execution and their renderer pairs are core definitions; an extension can register new tools but cannot patch the built-ins' policy checks or renderers.
+
+### Expected merge conflict zones
+
+- HIGH: `packages/coding-agent/src/core/tools/bash.ts` execute body; `packages/coding-agent/src/core/tools/renderers/bash.ts` `formatShellCall`/`formatDuration`.
+- MEDIUM: policy blocks in `edit.ts`, `read.ts`, `write.ts`; `renderers/read.ts` classification; `renderers/write.ts` call preview.
+- LOW: import hunks in `find.ts`, `grep.ts`, `ls.ts`; `renderers/edit.ts` diff calls.

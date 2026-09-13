@@ -425,17 +425,36 @@ A `project_trust` handler must return `{ trusted: "yes" | "no" | "undecided" }`.
 
 #### resources_discover
 
-Fired after `session_start` so extensions can contribute additional skill, prompt, and theme paths.
+Fired after `session_start` so extensions can contribute additional skill, prompt, theme, and hook config paths.
 The startup path uses `reason: "startup"`. Reload uses `reason: "reload"`.
 
 ```typescript
 pi.on("resources_discover", async (event, _ctx) => {
   // event.cwd - current working directory
   // event.reason - "startup" | "reload"
+  // event.scopedEntries - true: this host accepts { path, scope } entries (absent on older hosts)
   return {
     skillPaths: ["/path/to/skills"],
     promptPaths: ["/path/to/prompts"],
     themePaths: ["/path/to/themes"],
+  };
+});
+```
+
+Each entry in `skillPaths`, `promptPaths`, `themePaths`, and `hookPaths` is a `ResourceDiscoverEntry`: either a path string or `{ path, scope? }`.
+
+A bare string inherits its scope from the contributing extension. It becomes `system` when the extension is builtin, or when the extension comes from a system package (see [`pi.system`](packages.md#creating-a-pi-package)) and the path lies inside that package. Otherwise the path keeps the `temporary` scope contributed paths have always had.
+
+Use the object form to pin the scope explicitly, for example when a system extension surfaces data the user owns. Hosts that accept the object form set `event.scopedEntries` to `true`; a host that predates it omits the field and would treat an object as a path string, so an extension that must load on both returns plain paths when the field is absent:
+
+```typescript
+pi.on("resources_discover", async (event) => {
+  const userSkills = join(homedir(), "my-skills");
+  return {
+    skillPaths: [
+      "/path/inside/this/package/skills", // inherits the extension's scope
+      event.scopedEntries ? { path: userSkills, scope: "user" } : userSkills, // pinned where supported
+    ],
   };
 });
 ```
@@ -676,6 +695,19 @@ pi.on("ui_prompt_end", async (event, ctx) => {
   // Pi is no longer waiting on that UI prompt span.
 });
 ```
+
+#### Pending-question bus events
+
+These additive events use `pi.events.on(...)`, not `pi.on(...)`:
+
+| Channel | Payload | Meaning |
+|---------|---------|---------|
+| `ask-user:asked` | `{ ctx, request, variant }` | One fresh runtime registration of a built-in question, in either `waitForAnswer` mode. The hooks builtin dispatches a `Notification` with `kind: "ask-user-asked"`, the request ID and question headers. |
+| `herdr:blocked` | `{ active: true, label, id }` or `{ active: false, id }` | A built-in question or host select/confirm/input/editor dialog opens or settles. Question labels are `<header> — <question>`; dialog labels are their titles. |
+
+Track blocked IDs as a set, not a boolean: requests can overlap. Each question registration emits one active/inactive pair, including cancellation, timeout, abort and orphaned restart recovery. A dangling disk call recovered after restart gets one new runtime registration; its persisted recovery marker prevents registering it again. Reconnect replay and UI hydration reuse an existing registration and do not repeat arrival events or the terminal bell. The builtin owns question events, so UI integrations must not emit a second pair when resolving the question.
+
+Question registration also retains an `ask-user:question` custom session entry containing `{ requestId, headers }`. This is display-only metadata, excluded from model context, for labeling compact answer chips during replay; it is not another bus event. The model-facing `[Answer to question ...]` message stays unchanged.
 
 #### turn_start / turn_end
 
@@ -1089,11 +1121,23 @@ ctx.sessionManager.buildContextEntries()    // Active branch entries with compac
 ctx.sessionManager.getLeafId()              // Current leaf entry ID
 ```
 
+### ctx.goalStoreFile
+
+Optional read-only getter for the absolute path to the current session's authoritative goal-store file. The host resolves it from the session manager and `ctx.cwd`; reading it performs no file creation. Persisted sessions honor session-directory overrides, while in-memory sessions use a cwd-hashed `extensions/goal/no-session/<hash>` bucket under the agent state directory. Do not derive it from `getSessionFile()`.
+
+Shell tools and eval kernels expose this value as `PI_GOAL_STORE_FILE` and `ctx.cwd` as `PI_SESSION_CWD`. Hand-built contexts and older hosts may omit the getter, in which case `PI_GOAL_STORE_FILE` is unset.
+
 ### ctx.modelRegistry / ctx.model / ctx.thinkingLevel / ctx.scopedModels
 
 Access to models, providers, and resolved authentication. `ctx.modelRegistry.getProvider(id)` returns the effective pi-ai provider, while `getProviderAuth(id)` resolves its current API key, headers, base URL, and provider-scoped environment without requiring a loaded model. `ctx.model` is the active model, and `ctx.thinkingLevel` is its current effective thinking level.
 
 `ctx.scopedModels` is the read-only list of models scoped to the current session — the same set the `/scoped-models` command shows. It is resolved at session start from the `--models` CLI flag and the `enabledModels` setting (matched against the available catalogue with minimatch on `provider/modelId` or a bare `modelId`). It is empty when no scoping is configured, meaning every available model is usable. Each entry is `{ model, thinkingLevel? }`, where `thinkingLevel` is set only when a pattern pinned it (e.g. `anthropic/*:high`). Use it to populate a model picker that mirrors the built-in one instead of enumerating the whole catalogue via `ctx.modelRegistry.getAvailable()`.
+
+#### Streaming model calls
+
+Use `ctx.modelRegistry.streamSimple(model, context, options)` for provider-neutral options such as `reasoning`, or `stream()` for API-specific options. Both use configured providers and resolve authentication, including for providers registered with `pi.registerProvider()`. Use these instead of `pi-ai/compat` streaming functions, which cannot see extension provider registrations.
+
+Both return an `AssistantMessageEventStream`. Iterate it for response events and await `.result()` for the final message. Setup failures produce error events and error results.
 
 ### ctx.signal
 
@@ -1276,7 +1320,7 @@ Options:
 
 ### ctx.navigateTree(targetId, options?)
 
-Navigate to a different point in the session tree:
+Navigate to a different point in the session tree. Rejects with `SessionStreamingError` while an agent response is streaming, even with `summarize: false`; that leaves the active branch unchanged and rejects the promise rather than returning `{ cancelled: true }`. Wait for the response to finish (for example, with `await ctx.waitForIdle()` in a command handler) and retry:
 
 ```typescript
 const result = await ctx.navigateTree("entry-id-456", {
@@ -1840,14 +1884,14 @@ Each entry has this shape:
   sourceInfo: {
     path: string;
     source: string;
-    scope: "user" | "project" | "temporary";
+    scope: "user" | "project" | "temporary" | "system";
     origin: "package" | "top-level";
     baseDir?: string;
   };
 }
 ```
 
-Use `sourceInfo` as the canonical provenance field. Do not infer ownership from command names or from ad hoc path parsing.
+Use `sourceInfo` as the canonical provenance field. Do not infer ownership from command names or from ad hoc path parsing. The `system` scope marks resources the harness itself provides: builtin and bundled extensions, the generated global-default extension shims in the agent extensions directory, command-line packages whose manifest declares `pi.system`, and what those contribute.
 
 Built-in interactive commands (like `/model` and `/settings`) are not included here. They are handled only in interactive
 mode and would not execute if sent via `prompt`.
@@ -1948,7 +1992,7 @@ const all = pi.getAllTools();
 //   description: "Read file contents...",
 //   parameters: ...,
 //   promptGuidelines: ["Use read to examine files instead of cat or sed."],
-//   sourceInfo: { path: "<builtin:read>", source: "builtin", scope: "temporary", origin: "top-level" }
+//   sourceInfo: { path: "<builtin:read>", source: "builtin", scope: "system", origin: "top-level" }
 // }, ...]
 const builtinTools = all.filter((t) => t.sourceInfo.source === "builtin");
 const extensionTools = all.filter((t) => t.sourceInfo.source !== "builtin" && t.sourceInfo.source !== "sdk");
@@ -2443,14 +2487,14 @@ See [examples/extensions/tool-override.ts](../examples/extensions/tool-override.
 **Your implementation must match the exact result shape**, including the `details` type. The UI and session logic depend on these shapes for rendering and state tracking.
 
 Built-in tool implementations:
-- [read.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/read.ts) - `ReadToolDetails`
-- [bash.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/bash.ts) - `BashToolDetails`
-- [powershell.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/powershell.ts) - `PowerShellToolDetails`
-- [edit.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/edit.ts)
-- [write.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/write.ts)
-- [grep.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/grep.ts) - `GrepToolDetails`
-- [find.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/find.ts) - `FindToolDetails`
-- [ls.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/tools/ls.ts) - `LsToolDetails`
+- [read.ts](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/read.ts) - `ReadToolDetails`
+- [bash.ts](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/bash.ts) - `BashToolDetails`
+- [powershell.ts](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/powershell.ts) - `PowerShellToolDetails`
+- [edit.ts](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/edit.ts)
+- [write.ts](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/write.ts)
+- [grep.ts](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/grep.ts) - `GrepToolDetails`
+- [find.ts](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/find.ts) - `FindToolDetails`
+- [ls.ts](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/tools/ls.ts) - `LsToolDetails`
 
 ### Remote Execution
 
@@ -2499,7 +2543,7 @@ const bashTool = createBashTool(cwd, {
 });
 ```
 
-`createBashTool()` and `createPowerShellTool()` expose the current session to commands through `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL`. Injection happens before `spawnHook`, so hooks receive these values in `env` and preserve them when they spread the existing environment as above. Set `exposeSessionEnvironment: false` to disable them:
+`createBashTool()` and `createPowerShellTool()` expose the current session to commands through `PI_SESSION_ID`, `PI_SESSION_FILE`, `PI_SESSION_CWD`, `PI_GOAL_STORE_FILE`, `PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL`. Injection happens before `spawnHook`, so hooks receive these values in `env` and preserve them when they spread the existing environment as above. Set `exposeSessionEnvironment: false` to disable them:
 
 ```typescript
 const bashTool = createBashTool(cwd, {
@@ -2581,7 +2625,7 @@ export default function (pi: ExtensionAPI) {
 
 ### Custom Rendering
 
-Tools can provide `renderCall` and `renderResult` for custom TUI display. See [tui.md](tui.md) for the full component API and [tool-execution.ts](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/modes/interactive/components/tool-execution.ts) for how tool rows are composed.
+Tools can provide `renderCall` and `renderResult` for custom TUI display. See [tui.md](tui.md) for the full component API and [tool-execution.ts](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/modes/interactive/components/tool-execution.ts) for how tool rows are composed.
 
 By default, tool output is wrapped in a `Box` that handles padding and background. A defined `renderCall` or `renderResult` must return a `Component`. If a slot renderer is not defined, `tool-execution.ts` uses fallback rendering for that slot.
 
@@ -2749,6 +2793,10 @@ The DIY lifecycle is:
 - **Anthropic**
   - **Models:** Sonnet, Opus, Fable version 4.5 or newer (without Haiku)
   - **Native representation:** Deferred definitions use `defer_loading`; the load point uses `tool_reference` content.
+- **Fireworks Messages API**
+  - **Native representation:** Deferred definitions use `defer_loading`; the load point uses `tool_reference` content.
+  - **Loader names:** Use `ToolSearch` or `tool_search` for prefix deferral. Other loader names still work, but Fireworks includes the loaded schemas in the initial tool prefix, losing the cache benefit.
+  - This does not change API routing: Fireworks GLM models and Kimi K3 use Chat Completions, not Messages.
 - **OpenAI**
   - **Models:** `gpt-5.4` and newer family
   - **Native representation:** Senpi adds completed client `tool_search_call` and `tool_search_output` items at the load point.
@@ -3193,6 +3241,7 @@ export default function (pi: ExtensionAPI) {
 **Key points:**
 - Extend `CustomEditor` (not base `Editor`) to get app keybindings (escape to abort, ctrl+d, model switching)
 - Call `super.handleInput(data)` for keys you don't handle
+- Custom editors keep the standalone working row by default. Pass `{ embedWorkingStatus: true }` as the fourth `CustomEditor` constructor argument to use the built-in editor-border spinner instead.
 - Factory receives `tui`, `theme`, and `keybindings` from the app
 - Use `ctx.ui.getEditorComponent()` before `setEditorComponent()` to wrap the previously configured custom editor
 - Pass `undefined` to restore default: `ctx.ui.setEditorComponent(undefined)`

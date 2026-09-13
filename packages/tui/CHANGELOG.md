@@ -10,6 +10,91 @@
 
 ### Fixed
 
+### Removed
+
+## [2026.9.13-2] - 2026-09-13
+
+### Breaking Changes
+
+### Added
+
+- Added opt-in, lease-scoped regular-mode mouse clicks with shared SGR parsing, committed-layout hit testing, private cursor-position calibration, and fail-closed handling of uncertain frame placement. Fullscreen selection and scrolling remain unchanged ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.13] - 2026-09-13
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.12-3] - 2026-09-12
+
+### Breaking Changes
+
+### Added
+
+- Added fullscreen mouse input: `TuiAltScreen` normalizes press, release, click, move, drag, and wheel events, components can implement `handleMouse(event)`, and the new `MouseRegion` component adds pointer behavior without changing rendering. `Input`, `Editor`, `SelectList`, and `SettingsList` respond to clicks and hover in alternate-screen mode.
+- Added platform-native helpers for modifier-key state and asynchronous text/image clipboard access on macOS (`darwin-platform.node`), Windows (`win32-platform.node`), and Linux (`native/linux`), replacing the previous modifier-only and console-mode addons.
+- Added five-times-faster mouse wheel scrolling while holding Alt in fullscreen mode ([#9166](https://github.com/earendil-works/pi/pull/9166) by [@xl0](https://github.com/xl0)).
+- Added a `TuiAltScreen` `scrollToEndIndicator` option that renders a clickable jump-to-end label on a follow-end primary scroll view while it is scrolled away from the end ([#9080](https://github.com/earendil-works/pi/pull/9080) by [@rwachtler](https://github.com/rwachtler)).
+
+### Changed
+
+- Changed fullscreen scrollbars to render muted thin tracks with contrasting proportional two-cell-minimum thumbs, preserve underlying backgrounds without inheriting foreground styles, reserve an unstyled column in `always` mode, reveal hidden `auto` tracks on pointer entry, expand the same-colored thumb on hover, and support track-click jumping in addition to thumb dragging. `ScrollView` exposes `scrollbarTrackStyle` and `scrollbarThumbStyle` for themes.
+- Changed fullscreen transcript search to use a bordered, placeholder-based input with a muted result count, right-aligned clickable key-and-arrow buttons with configurable hover styling, and open-shortcut toggling.
+- Reduced fullscreen transcript search latency on large transcripts by caching unchanged search results, indexing ASCII runs, and limiting highlight work to visible matches ([#8800](https://github.com/earendil-works/pi/pull/8800) by [@cristinaponcela](https://github.com/cristinaponcela)).
+
+### Fixed
+
+- Fixed mouse hover changing selection and recentering autocomplete and settings lists, causing clicks to target a different item.
+
+### Removed
+
+## [2026.9.12-2] - 2026-09-12
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.12] - 2026-09-12
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.11] - 2026-09-11
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
 - Complete skill hints for `$` tokens at valid prompt boundaries while preserving literal shell variables such as `$HOME` and `$1` ([#1575](https://github.com/code-yeongyu/senpi/issues/1575)).
 - Keep dollar skill autocomplete active on multiline drafts and follow-up input while streaming ([#1590](https://github.com/code-yeongyu/senpi/issues/1590)).
 

@@ -1,3 +1,42 @@
+## 2026-09-13 - Publish static provider module subpaths
+
+### What changed
+
+- `packages/ai/package.json` exports `./cursor-agent-provider` and `./devin-provider` from the built distribution, alongside `./bedrock-provider`.
+
+### Why
+
+- Standalone Bun consumers need static imports that also resolve from the published layout without exposing Node-only transports through the browser-safe root.
+
+### Why an extension could not handle it
+
+- `packages/ai/package.json` controls package resolution before extensions execute.
+
+### Expected merge conflict zones
+
+- `packages/ai/package.json` public exports block.
+
+## 2026-09-12 - Fork-owned model catalog shards survive generation
+
+### What changed
+
+- `packages/ai/scripts/model-shards.ts` (new) owns shard ownership: `FORK_OWNED_MODEL_SHARDS` lists the `*.models.ts` catalogs the fork maintains by hand (currently `devin.models.ts`), and `isPrunableModelShard` decides deletion.
+- `packages/ai/scripts/generate-models.ts` prunes through that predicate instead of deleting every shard the current run did not write.
+- `packages/ai/scripts/model-data.ts` excludes fork-owned shards when it compares the shard directory against the aggregator's provider imports.
+- `packages/ai/test/model-shards.test.ts` derives the expected fork-owned set from the tree - the shards providers import minus the shards `src/models.generated.ts` imports - so a new hand-authored provider fails this test instead of the release.
+
+### Why
+
+- models.dev has no `devin` provider, so `devin.models.ts` is hand-authored and the aggregator never imports it. The release job regenerates the catalog before typechecking, so generation deleted the shard and `tsc` failed with `Cannot find module './devin.models.ts'` (run 34621164006), and `check:model-data` already failed on the committed tree for the same reason. Ordinary CI typechecks the committed catalog, so neither failure is visible outside the release path.
+
+### Why an extension could not handle it
+
+- Catalog generation and its validation are build-time scripts that run long before any extension loads.
+
+### Expected merge conflict zones
+
+- LOW: the shard prune loop in `generate-models.ts` and the shard comparison in `readModelDataStructure`.
+
 ## 2026-09-10 - Venice AI catalog generation
 
 ### What changed
@@ -1207,3 +1246,23 @@ These failures are in upstream `packages/ai` live integration tests, not in the 
 ### Expected merge conflict zones
 
 - Generated ZAI provider catalog entries and the model generator's reference-cost selection.
+
+## 2026-09-12 - Upstream sync (upstream/main@71dca871) integration repairs
+
+### What changed
+
+- `packages/ai/package.json`: fork CalVer `2026.9.12` and `private: true`; held pins `openai 6.26.0` and `@anthropic-ai/sdk 0.123.0` instead of upstream's `6.40.0`/`0.124.0`; fork-only runtime deps `@bufbuild/protobuf`, `@smithy/types`, `yaml`; the `./auth/pool/*` and `./node/provider-scope` export subpaths; `tsx`-driven generator scripts, a `build` that does not regenerate models, `build:offline`/`dev`/`dev:tsc`, Node `>=24.0.0`, `@types/node 26.2.0`, `vitest 4.1.11`. Upstream's `typebox 1.3.27` and the rest of the D-Q bumps were adopted.
+- `packages/ai/scripts/generate-models.ts`: the fork generator with its overlays (Venice, OpenGateway, Kimi coding stable rows, ZAI GLM-5.2 and Kimi K3 thinking maps, xAI thinking maps, Bedrock strict-mode ids, OpenAI priority-tier and Codex `additional_tools` sets, GPT-6 Astra 600k context, documented OpenAI input caps applied after context windows, `isPrunableModelShard` shard pruning, OpenRouter reasoning metadata) plus upstream's new provider metadata handling (DeepSeek Flash, Fireworks, Mistral GLM-5.2, OpenRouter affinity, Codex Off effort, GPT-5.4 Codex retirement, OpenCode header).
+
+### Why
+
+- The fork publishes its own catalog (extra providers, seven thinking levels, Astra context sizing, fast/priority clones) from upstream's model data; the generator is where those overlays live, and the manifest carries the fork's held SDK pins and export map.
+
+### Why an extension could not handle it
+
+- Catalog generation runs at build time and the manifest's exports/pins are resolved by the package manager; neither is reachable from runtime extension hooks.
+
+### Expected merge conflict zones
+
+- HIGH: `packages/ai/scripts/generate-models.ts` provider blocks (OpenAI, xAI, Fireworks, Mistral, OpenRouter) whenever upstream reshapes a provider's metadata.
+- MEDIUM: `packages/ai/package.json` `dependencies` and `exports` on every upstream dependency bump.

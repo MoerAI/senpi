@@ -38,6 +38,20 @@ export function nativePrebuildFile(target) {
 }
 
 const bundledWorkspaces = [
+	// The vendored client/protocol dist and the bundled agent-core dist both import
+	// `@earendil-works/chord`, so the packed copy under coding-agent/node_modules is what the
+	// runtime loads. The declared dependency edge still has to point at the fork's published
+	// alias (`@code-yeongyu/senpi-chord`): Bun resolves bundled entries from the registry too and
+	// otherwise synthesizes `^<bundled version>`, which no upstream release satisfies (issue
+	// #1632). `/context` ships too because the client runtime imports
+	// `@earendil-works/chord/context`.
+	{
+		source: "packages/chord",
+		packageName: "@earendil-works/chord",
+		targetParts: ["@earendil-works", "chord"],
+		sourceOnly: false,
+		requiredFiles: ["package.json", "dist/index.js", "dist/context/index.js"],
+	},
 	{ source: "packages/agent", packageName: "@earendil-works/pi-agent-core", targetParts: ["@earendil-works", "pi-agent-core"], sourceOnly: false },
 	{ source: "packages/ai", packageName: "@earendil-works/pi-ai", targetParts: ["@earendil-works", "pi-ai"], sourceOnly: false },
 	{

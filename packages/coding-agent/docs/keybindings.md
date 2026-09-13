@@ -86,9 +86,11 @@ The dedicated history actions always change history entries, regardless of the c
 
 ### TUI Fullscreen Viewport
 
-These actions apply when interactive mode uses `--tui-mode fullscreen` and target the primary transcript scroll region. Two-finger trackpad and mouse-wheel input scroll the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler. Dragging with the primary mouse button selects text and copies it to the clipboard; holding at the transcript's top or bottom edge auto-scrolls into off-screen content. See [Terminal setup](terminal-setup.md) for terminal-specific mouse and trackpad behavior.
+These actions apply when interactive mode uses `--tui-mode fullscreen` and target the primary transcript scroll region. Two-finger trackpad and mouse-wheel input scroll the region under the pointer, falling back to the transcript over the fixed editor/status/footer dock. Clicking an OSC 8 hyperlink opens it in the default handler. Dragging with the primary mouse button selects text and copies it to the clipboard; holding at the transcript's top or bottom edge auto-scrolls into off-screen content. While the transcript is scrolled up, a clickable "Jump to latest message" label on its bottom row shows the `tui.altScreen.bottom` shortcut. See [Terminal setup](terminal-setup.md) for terminal-specific mouse and trackpad behavior.
 
 Fullscreen transcript bindings take precedence over editor bindings. The default unmodified navigation keys therefore control the transcript in fullscreen mode, while their `ctrl` variants continue to control the editor. Outside fullscreen mode, both variants control the editor.
+
+The transcript search panel shows the configured previous/next shortcuts and clickable arrow controls. Press `tui.altScreen.search` again, or use `tui.altScreen.searchClose`, to close it.
 
 | Key | Default mode | Fullscreen mode |
 |-----|--------------|-----------------|
@@ -149,8 +151,10 @@ This routing remains configurable through the ordinary action bindings. For exam
 |--------|---------|-------------|
 | `app.model.select` | `ctrl+l` | Open model selector |
 | `app.model.cycleForward` | `ctrl+p` | Cycle to next model |
-| `app.model.cycleBackward` | `shift+ctrl+p` | Cycle to previous model |
+| `app.model.cycleBackward` | `shift+ctrl+p` (`alt+p` on Windows and WSL) | Cycle to previous model |
+| `app.models.save` | `ctrl+s` | Save the selected default model or scoped model configuration to settings |
 | `app.thinking.cycle` | `shift+tab` | Cycle thinking level |
+| `app.thinking.save` | `ctrl+s` | Save current thinking level to settings |
 | `app.thinking.toggle` | `ctrl+t` | Collapse or expand thinking blocks |
 
 ### Display and Message Queue
@@ -160,7 +164,11 @@ This routing remains configurable through the ordinary action bindings. For exam
 | `app.tools.expand` | `ctrl+o` | Collapse or expand tool output |
 | `app.message.copy` | `ctrl+x` | Copy the selected message in `/tree`; otherwise copy the last assistant message, or the active fullscreen text selection when `fullscreenCopyOnSelect` is disabled |
 | `app.message.followUp` | `alt+enter` | Queue follow-up message |
-| `app.message.dequeue` | `alt+up` | Restore queued messages to editor |
+| `app.message.dequeue` | `alt+up` (`alt+q` on Windows and WSL) | Restore queued messages to editor when no pending question claims the chord |
+| `app.question.answer` | `alt+up`, `alt+a` | Open the pending async question before dequeue. Enter on an empty editor also opens it; `/answer` lists multiple requests. On macOS, the Option-composed glyph of a bound letter is also accepted (except dead keys e, i, n, u). |
+| `app.question.next` | `alt+down` | Cycle pending requests while the composer is empty and no overlay or autocomplete is open |
+
+The question hint prefers `alt+up` (`option+up` on macOS). In tmux, Apple Terminal, Warp, and VS Code it shows the retained `alt+a` alternative. Both bindings remain active; there is no third fallback chord. On Windows and WSL, dequeue uses `alt+q`, so `alt+up` does not conflict with it. Tab completion and Shift+Tab thinking-level cycling are unchanged.
 
 ### Tree Navigation
 

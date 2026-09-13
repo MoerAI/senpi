@@ -1,5 +1,48 @@
 # changes
 
+## 2026-09-12 - App-server turn steering carries its input source
+
+### What changed
+
+- `packages/coding-agent/src/modes/app-server/threads/turns.ts` and `src/modes/app-server/turn-adapter.ts`: turn steering and follow-up input pass the app-server `InputSource` value to `AgentSession.steer()` / `followUp()`, so extension `input` handlers observe the real source instead of the interactive default (upstream faa9863cb, adopted per D-N).
+
+### Why
+
+- Same gap as RPC: queued app-server input skipped extension `input` handlers.
+
+### Why an extension could not handle it
+
+- Source tagging happens where the session enqueues input, below the extension API.
+
+### Expected merge conflict zones
+
+- The steer/follow-up call sites in `threads/turns.ts` and `turn-adapter.ts`, and the `InputSource` union.
+
+## 2026-09-12 - Read a guard-less pidfile as unknown ownership
+
+### What changed
+
+- `packages/coding-agent/src/modes/app-server/daemon/process.ts`: `DaemonPidFile.processStartTime`
+  accepts `null` for a record written while the identity probe was starved, `parseDaemonPidFile`
+  round-trips it, and `processMatchesPidFile` answers only the liveness half for such a record - a
+  pid that is gone is `false`, a live one raises `ProcessIdentityUnreadableError`.
+
+### Why
+
+- The RPC host registration needs a way to record a live host it cannot fingerprint. Without a
+  representable "no guard" state the supervisor had to choose between killing a healthy host and
+  writing a record that later callers would mistake for proven ownership; the null guard makes the
+  unknown explicit so no caller can signal a pid it never verified.
+
+### Why an extension could not handle it
+
+- The pidfile contract is consumed by daemon and RPC supervisor code that runs before extensions
+  load.
+
+### Expected merge conflict zones
+
+- LOW around the `DaemonPidFile` shape and the head of `processMatchesPidFile`.
+
 ## 2026-09-11 - Treat live processes with temporarily absent identity as observable gaps
 
 ### What changed

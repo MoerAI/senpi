@@ -2,6 +2,7 @@ import type { SessionEntry } from "../../../session-manager.ts";
 import type { ExtensionAPI, ExtensionContext, SessionStartEvent } from "../../types.ts";
 import { TOOL_NAMES } from "./family.ts";
 import { formatUserMessage } from "./format.ts";
+import { emitAskUserNotification } from "./notify.ts";
 import {
 	type AskUserVariant,
 	DEFAULT_ASK_USER_TIMEOUT_MS,
@@ -9,6 +10,7 @@ import {
 	type QuestionResponse,
 	toCanonical,
 } from "./schema.ts";
+import { startQuestion } from "./tool.ts";
 
 export const ASK_USER_RESUMED_ENTRY = "ask-user:resumed";
 
@@ -63,26 +65,22 @@ function requestFromCall(dangling: DanglingQuestion, timeoutMs: number): Questio
 	}
 }
 
-function orphaned(request: QuestionRequest): QuestionResponse {
-	return {
-		status: "orphaned-after-restart",
-		answers: {},
-		unanswered: request.questions.map((question) => question.id),
-	};
-}
-
 function deliver(
-	pi: Pick<ExtensionAPI, "sendUserMessage">,
+	pi: Pick<ExtensionAPI, "sendUserMessage" | "events">,
+	ctx: ExtensionContext,
 	request: QuestionRequest,
 	response: QuestionResponse,
+	variant: AskUserVariant,
 ): void {
+	if (response.status === "cancelled") return;
 	pi.sendUserMessage(formatUserMessage(response, request.requestId, request.questions));
+	emitAskUserNotification(pi, ctx, request, response, variant);
 }
 
 export async function resumeDanglingQuestion(
-	pi: Pick<ExtensionAPI, "appendEntry" | "sendUserMessage">,
+	pi: Pick<ExtensionAPI, "appendEntry" | "sendUserMessage" | "events">,
 	event: Pick<SessionStartEvent, "reason">,
-	ctx: Pick<ExtensionContext, "sessionManager" | "ui" | "getAskUserSettings">,
+	ctx: ExtensionContext,
 ): Promise<void> {
 	if (event.reason !== "resume" && event.reason !== "reload") return;
 	const dangling = findDanglingQuestion(ctx.sessionManager.getBranch());
@@ -90,15 +88,16 @@ export async function resumeDanglingQuestion(
 	pi.appendEntry(ASK_USER_RESUMED_ENTRY, { toolCallId: dangling.toolCallId });
 	const timeoutMs = (ctx.getAskUserSettings?.().timeoutMinutes ?? DEFAULT_ASK_USER_TIMEOUT_MS / 60_000) * 60_000;
 	const request = requestFromCall(dangling, timeoutMs);
-	const question = ctx.ui.question;
-	if (!question) {
-		deliver(pi, request, orphaned(request));
-		return;
-	}
-	try {
-		const response = await question.call(ctx.ui, request, { timeout: request.timeoutMs });
-		deliver(pi, request, response);
-	} catch {
-		deliver(pi, request, orphaned(request));
-	}
+	// A dangling disk record creates a new runtime registration. Transport/UI
+	// hydration reuses that registration and never re-enters this lifecycle.
+	const response = await startQuestion(
+		pi,
+		ctx,
+		request,
+		ctx.signal,
+		{ timedOut: false, unavailable: false },
+		dangling.variant,
+		{ resuming: true },
+	);
+	deliver(pi, ctx, request, response, dangling.variant);
 }

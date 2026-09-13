@@ -1,13 +1,14 @@
 /**
  * Ask-user question overlay: tab bar of question headers, numbered options
- * with descriptions, per-question own-answer editor, one always-visible
- * comment editor, submit footer and a countdown chip. Layout lives in
+ * with descriptions, per-question own-answer editor, a Submit tab with review
+ * rows and the comment editor, submit footer and a countdown chip. Layout lives in
  * ask-user-question-render.ts, interaction rules in ask-user-question-state.ts
  * and key dispatch in ask-user-question-keys.ts.
  */
 
 import { Container, type Focusable, Input, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import type { QuestionRequest, QuestionResponse } from "../../../core/extensions/types.ts";
+import { AskUserCountdown } from "./ask-user-countdown.ts";
 import { type AskUserKeyHandlerContext, handleAskUserKeyInput } from "./ask-user-question-keys.ts";
 import {
 	renderCommentLabel,
@@ -27,15 +28,20 @@ import {
 	NOT_ANSWERED_NOTICE,
 	type QuestionDraft,
 } from "./ask-user-question-state.ts";
-import { CountdownTimer } from "./countdown-timer.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 
 export interface AskUserQuestionOptions {
 	tui?: TUI;
 	/** Idle countdown duration; defaults to the request's timeoutMs. */
 	timeoutMs?: number;
+	/** Authoritative extension deadline; when supplied the component never expires the request itself. */
+	getDeadlineAtMs?: () => number;
 	/** Draft notification on every selection or keystroke (drives the idle timer). */
 	onProgress?: (draft: QuestionDraft) => void;
+	/** Answers and comment captured earlier (an async question re-expanded from its widget). */
+	initialDraft?: QuestionDraft;
+	/** Host digit entry targets the first unanswered sub-question. */
+	initialQuestionIndex?: number;
 }
 
 export class AskUserQuestionComponent extends Container implements Focusable {
@@ -44,7 +50,7 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 	private readonly options: AskUserQuestionOptions;
 	private readonly ownAnswerInput = new Input();
 	private readonly commentInput = new Input();
-	private readonly countdown: CountdownTimer | undefined;
+	private readonly countdown: AskUserCountdown | undefined;
 	private readonly titleText: Text;
 	private readonly tabText: Text;
 	private readonly questionText: Text;
@@ -100,17 +106,25 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 
+		if (opts.initialDraft) {
+			this.state.restoreDraft(opts.initialDraft);
+			if (this.state.comment !== undefined) this.commentInput.setValue(this.state.comment);
+		}
+
+		if (opts.initialQuestionIndex !== undefined) this.state.jumpToQuestion(opts.initialQuestionIndex);
+
 		const timeoutMs = opts.timeoutMs ?? request.timeoutMs;
-		if (timeoutMs > 0) {
-			this.countdown = new CountdownTimer(
+		if (timeoutMs > 0 || opts.getDeadlineAtMs) {
+			this.countdown = new AskUserCountdown(
 				timeoutMs,
 				opts.tui,
-				(seconds) => {
-					this.countdownLabel = formatCountdownLabel(seconds * 1000);
+				(remainingMs) => {
+					this.countdownLabel = formatCountdownLabel(remainingMs);
 					this.updateTitle();
 					this.options.tui?.requestRender();
 				},
 				() => this.finish("timed_out", timeoutMs),
+				opts.getDeadlineAtMs,
 			);
 		}
 		this.updateAll();
@@ -144,6 +158,7 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 
 	private commitOwnAnswer(): void {
 		this.state.setOwnAnswer(this.state.activeQuestion.id, this.ownAnswerInput.getValue());
+		this.ownAnswerInput.setValue("");
 		this.emitProgress();
 	}
 
@@ -183,7 +198,7 @@ export class AskUserQuestionComponent extends Container implements Focusable {
 
 	private applyFocusFlags(): void {
 		this.ownAnswerInput.focused = this._focused && this.state.focus === "own-answer";
-		this.commentInput.focused = this._focused && this.state.focus === "submit";
+		this.commentInput.focused = this._focused && this.state.isCommentFocused;
 	}
 
 	private updateTitle(): void {

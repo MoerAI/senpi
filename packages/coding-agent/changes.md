@@ -1,5 +1,59 @@
 # Local fork changes
 
+## 2026-09-13 - Align standalone compile entries and splitting
+
+### What changed
+
+- `packages/coding-agent/package.json` adds `--splitting` and the missing RPC session-worker entry to `build:binary`, keeping the existing minify, keep-names and autoload flags. The RPC documentation describes splitting support without changing the build-time worker-entry define.
+
+### Why
+
+- `packages/coding-agent/package.json` must embed the same four entries as the release script, sharing the duplicated graph while retaining multi-session workers (Refs #1656).
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/package.json` supplies compiler argv before any extension can load.
+
+### Expected merge conflict zones
+
+- The `build:binary` script in `packages/coding-agent/package.json`.
+
+## 2026-09-13 - Public Bun runtime registration entry
+
+### What changed
+
+- `packages/coding-agent/package.json` exports `./bun-runtime` with JavaScript and declaration entries under `dist/bun/runtime-modules`.
+
+### Why
+
+- Compiled consumers must register static provider implementations once per isolate using a published, opt-in entry; ordinary Node and browser roots stay unchanged.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/package.json` defines the package-resolution boundary before extension loading.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/package.json` exports block; binary build scripts are deliberately unchanged.
+
+## 2026-09-12 - Pin the chord dependency to upstream's published version
+
+### What changed
+
+- packages/coding-agent/package.json: `@earendil-works/chord` is pinned to the exact upstream `0.85.1` it resolves to, instead of a fork CalVer range.
+
+### Why
+
+- chord is bundled into the senpi tarball but kept on upstream's own release identity (issue #1632): the fork does not publish it, so a CalVer range was unresolvable on the registry and broke `bun add @code-yeongyu/senpi`. Pinning the exact published `0.85.1` keeps the declared edge resolvable while the bundled copy shadows it at runtime.
+
+### Why an extension could not handle it
+
+- packages/coding-agent/package.json is static manifest data consumed by the package manager and the release/publish pipeline, never reachable from the runtime extension system.
+
+### Expected merge conflict zones
+
+- The `@earendil-works/chord` dependency range in packages/coding-agent/package.json.
+
 ## 2026-09-11 - Make file reload detection independent of mtime granularity
 
 ### What changed
@@ -965,3 +1019,26 @@ amplification or dropping classic per-event backpressure.
 ### Expected merge conflict zones
 
 - `package.json` `scripts` and `devDependencies` versus upstream `tsgo` usage.
+
+## 2026-09-12 - Upstream sync (upstream/main@71dca871) integration repairs
+
+### What changed
+
+- `packages/coding-agent/package.json`: stays `@code-yeongyu/senpi` `2026.9.12` (`piConfig.configDir: .senpi`, `bin.senpi: dist/cli.js` beside `bin.pi`), `./rpc-entry` -> `dist/rpc-entry.js`, a dist-based `./client` export and no `./experimental/plugin` export, `files` without `!dist/client`/`npm-shrinkwrap.json`, the fork `build`/`build:binary`/`copy-assets`/`copy-binary-assets` scripts (pty build, Bun compile assets, codemode sidecar, native prebuilds), the runtime dependency set the fork bundles (`@anthropic-ai/claude-agent-sdk`, `@code-yeongyu/senpi-codemode`, `@earendil-works/pi-pty`, `@earendil-works/pi-client`/`pi-protocol` as runtime deps, MCP SDK, jsdom, held `openai 6.26.0`/`@anthropic-ai/sdk 0.123.0`/`signal-exit 3.0.7`), `bundledDependencies`/`bundleDependencies` incl. `@earendil-works/chord`, `private: true`, Node `>=24.0.0`, `typescript 7.0.2`, `vitest 4.1.11`; upstream's Chord dependency and D-Q bumps (`diff 9.0.0`, `highlight.js 11.12.0`, `hosted-git-info 10.1.1`, `marked 18.0.11`, `grok-mermaid 0.2.3`) were adopted.
+- `packages/coding-agent/install-lock/package.json`: generated installer manifest named `@code-yeongyu/senpi-install` `2026.9.12` depending on `@code-yeongyu/senpi 2026.9.12`, with the fork overrides (`protobufjs 7.6.5`, `rimraf 6.1.3`, `gaxios.rimraf`, `@hono/node-server 2.1.1`) and Node `>=24.0.0`.
+- `packages/coding-agent/tsconfig.build.json`: adds `@earendil-works/pi-client`, `pi-protocol` and `pi-pty` dist type paths and excludes the generated app-server protocol sources, while keeping `src/experimental` and `src/cli/experimental` out of the stable build (Q-C).
+- `packages/coding-agent/vitest.config.ts`: fork `setupFiles`, CI-only `forks` pool with two workers and a 20 s teardown, and source aliases for `pi-ai/node/provider-scope`, `pi-pty`, `pi-client` and `pi-protocol`.
+
+### Why
+
+- The published product is `senpi`, a self-contained tarball with bundled workspaces and held SDK pins; the build config keeps experimental source out of `dist`, and the vitest config must resolve the fork's extra workspaces from source and stay stable on CI runners.
+
+### Why an extension could not handle it
+
+- Package identity, bundling, compiler excludes and test-runner pools are build-time configuration; nothing at runtime can alter them.
+
+### Expected merge conflict zones
+
+- HIGH: `packages/coding-agent/package.json` `scripts`, `exports`, `dependencies` and `files` on every upstream release.
+- MEDIUM: `tsconfig.build.json` `paths`/`exclude` and `vitest.config.ts` `alias` when upstream adds workspaces.
+- LOW: `install-lock/package.json` (regenerated, never hand-edited).

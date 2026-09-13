@@ -1,22 +1,26 @@
 /**
- * Collapsed one-line widget for a pending async (waitForAnswer=false)
- * question: it sits above the editor, shows the unanswered count and the
- * idle countdown, and names the shortcut that expands the full
- * AskUserQuestionComponent. The response-building helpers here are pure so
- * interactive-mode can turn ordinary composer text into the comment answer.
+ * Collapsed widget for a pending async (waitForAnswer=false) question: it
+ * sits above the editor and shows the unanswered count with the idle
+ * countdown, the first unanswered question with its options, and every way
+ * into the full AskUserQuestionComponent. The response-building helpers here
+ * are pure so interactive-mode can turn ordinary composer text into the
+ * comment answer.
  */
 
-import { Container, Text, type TUI } from "@earendil-works/pi-tui";
+import { Container, Text, TruncatedText, type TUI } from "@earendil-works/pi-tui";
 import type { QuestionRequest, QuestionResponse } from "../../../core/extensions/types.ts";
 import { theme } from "../theme/theme.ts";
+import { askUserAnswerKeyHint } from "./ask-user-answer-key.ts";
+import { AskUserCountdown } from "./ask-user-countdown.ts";
 import { formatCountdownLabel, type QuestionDraft } from "./ask-user-question-state.ts";
-import { CountdownTimer } from "./countdown-timer.ts";
-import { rawKeyHint } from "./keybinding-hints.ts";
+import { keyText } from "./keybinding-hints.ts";
 
-/** Widget slot key used with `setWidget`; one pending async question at a time. */
+/** Host-owned widget slot displaying one request from the pending queue. */
 export const ASK_USER_WIDGET_KEY = "ask-user";
-/** Editor shortcut that expands the pending question into the full component. */
-export const ASK_USER_ANSWER_KEY = "alt+a";
+
+type Question = QuestionRequest["questions"][number];
+
+const INDENT = "  ";
 
 function hasAnswer(answer: QuestionResponse["answers"][string] | undefined): boolean {
 	if (!answer) return false;
@@ -59,59 +63,103 @@ export function buildTimedOutResponse(
 	};
 }
 
-export function renderAsyncQuestionLine(unanswered: number, countdownLabel: string): string {
+export function renderStatusLine(unanswered: number, countdownLabel: string, pendingCount = 1): string {
 	const countdown = countdownLabel === "" ? "" : theme.fg("muted", ` · ${countdownLabel}`);
 	return (
 		theme.fg("accent", theme.bold("?")) +
-		theme.fg("text", ` Question pending (${unanswered} unanswered)`) +
-		theme.fg("muted", " - ") +
-		rawKeyHint(ASK_USER_ANSWER_KEY, "to answer, or just type your reply") +
+		theme.fg(
+			"text",
+			pendingCount > 1 ? ` ${pendingCount} questions pending` : ` Question pending (${unanswered} unanswered)`,
+		) +
 		countdown
 	);
 }
 
+export function renderQuestionLine(question: Question): string {
+	return (
+		INDENT +
+		theme.fg("text", theme.bold(question.header)) +
+		theme.fg("muted", " — ") +
+		theme.fg("text", question.question)
+	);
+}
+
+export function renderOptionsLine(question: Question, remaining: number): string {
+	const parts = question.options.map(
+		(option, index) => theme.fg("dim", `${index + 1}`) + theme.fg("muted", ` ${option.label}`),
+	);
+	parts.push(theme.fg("muted", "own answer"));
+	if (remaining > 0) parts.push(theme.fg("muted", `+${remaining} more question${remaining === 1 ? "" : "s"}`));
+	return INDENT + parts.join(theme.fg("muted", " · "));
+}
+
+/** Hint naming every way into the pending question; the shortcut segment follows the effective binding. */
+export function renderAnswerHint(): string {
+	const shortcut = askUserAnswerKeyHint();
+	const keys = shortcut === "" ? "enter" : `enter or ${shortcut}`;
+	return [
+		theme.fg("dim", keys) + theme.fg("muted", " to answer"),
+		theme.fg("dim", "/answer"),
+		theme.fg("muted", "or just type your reply"),
+	].join(theme.fg("muted", " · "));
+}
+
 export interface AskUserAsyncWidgetOptions {
-	unanswered: number;
+	request: QuestionRequest;
+	draft: QuestionDraft;
 	/** Idle countdown shown in the line; 0 disables it. */
 	timeoutMs: number;
+	getDeadlineAtMs?: () => number;
+	pendingCount?: number;
 	tui?: TUI;
 	onExpire: () => void;
 }
 
 export class AskUserAsyncWidget extends Container {
-	private readonly line = new Text("", 1, 0);
-	private readonly countdown: CountdownTimer | undefined;
-	private unanswered: number;
+	private readonly request: QuestionRequest;
+	private readonly draft: QuestionDraft;
+	private readonly countdown: AskUserCountdown | undefined;
+	private readonly pendingCount: number;
 	private countdownLabel = "";
 
 	constructor(options: AskUserAsyncWidgetOptions) {
 		super();
-		this.unanswered = options.unanswered;
-		this.addChild(this.line);
-		if (options.timeoutMs > 0) {
-			this.countdown = new CountdownTimer(
+		this.request = options.request;
+		this.draft = options.draft;
+		this.pendingCount = options.pendingCount ?? 1;
+		if (options.timeoutMs > 0 || options.getDeadlineAtMs) {
+			this.countdown = new AskUserCountdown(
 				options.timeoutMs,
 				options.tui,
-				(seconds) => {
-					this.countdownLabel = formatCountdownLabel(seconds * 1000);
+				(remainingMs) => {
+					this.countdownLabel = formatCountdownLabel(remainingMs);
 					this.update();
 				},
 				options.onExpire,
+				options.getDeadlineAtMs,
 			);
 		}
 		this.update();
 	}
 
-	setUnanswered(count: number): void {
-		this.unanswered = count;
-		this.update();
-	}
-
 	dispose(): void {
 		this.countdown?.dispose();
+		super.dispose();
 	}
 
 	private update(): void {
-		this.line.setText(renderAsyncQuestionLine(this.unanswered, this.countdownLabel));
+		const pending = unansweredIds(this.request, this.draft);
+		const shown = this.request.questions.find((question) => question.id === pending[0]);
+		this.clear();
+		this.addChild(new Text(renderStatusLine(pending.length, this.countdownLabel, this.pendingCount), 1, 0));
+		if (shown) {
+			this.addChild(new TruncatedText(renderQuestionLine(shown), 1, 0));
+			this.addChild(new TruncatedText(renderOptionsLine(shown, pending.length - 1), 1, 0));
+		}
+		const nextHint =
+			this.pendingCount > 1
+				? theme.fg("muted", ` · +${this.pendingCount - 1} more · ${keyText("app.question.next")} next question`)
+				: "";
+		this.addChild(new Text(INDENT + renderAnswerHint() + nextHint, 1, 0));
 	}
 }

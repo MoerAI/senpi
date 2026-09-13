@@ -1,15 +1,50 @@
 # senpi-codemode fork changes
 
-## 2026-09-05 - Explain eval's run-only language requirement
+## 2026-09-13 - Session cwd and authoritative goal-store environment (#1663)
 
-- The live and exported eval schemas describe `language` as required for runs,
-  with no default kernel, while keeping it optional for `peek` and `stop`.
-- Request parsing distinguishes an omitted language from an unsupported value
-  and lists the supported language identifiers for invalid values.
-- The README documents explicit language selection for runs and language-free
-  `peek`/`stop` requests.
-- Regression: `test/eval-request-language.test.ts` covers distinct diagnostics,
-  omitted run languages, and language-free control requests. Fixes #1395.
+### What changed
+
+- `packages/senpi-codemode/src/kernels/session-env.ts` adds `PI_SESSION_CWD` and optional `PI_GOAL_STORE_FILE` from the extension context, clearing inherited values before applying the active session. The shared subprocess environment carries both to Python, Ruby, and Julia.
+- `packages/senpi-codemode/src/kernels/js/worker-core.js` mirrors both keys in its worker-init clearing list, including the isolated inline fallback and children spawned by cells.
+
+### Why
+
+- A kernel's process cwd or session JSONL path cannot identify the authoritative goal store for an overridden session directory or an in-memory session. Consumers need host-resolved values, and an omitted optional value must never expose a stale parent session's path.
+
+### Why an extension could not handle it
+
+- `packages/senpi-codemode/src/kernels/session-env.ts` owns the environment contract at interpreter creation; `packages/senpi-codemode/src/kernels/js/worker-core.js` owns the separate worker environment before cells or their imports run. Consumer extensions cannot sanitize either boundary themselves.
+
+### Expected merge conflict zones
+
+- LOW: `packages/senpi-codemode/src/kernels/session-env.ts` key list, structural context slice, and resolver; `packages/senpi-codemode/src/kernels/js/worker-core.js` mirrored key list. Runtime factory plumbing is unchanged because it already passes the context.
+
+### Tests
+
+- `test/session-env.test.ts`: resolution, optional omission, inherited-value clearing.
+- `test/js-kernel-session-env.test.ts`: worker/inline cells and children, inherited-value clearing.
+- `test/py-kernel-session-env.test.ts`: subprocess sanitization and live Python/child values.
+- `test/extension-session-env.test.ts`: session-start forwarding and exact environment snapshots.
+
+## 2026-09-13 - Steering detaches eligible foreground evaluations (#1637)
+
+### What changed
+
+- `packages/senpi-codemode/src/tool/run-eval-cell.ts` subscribes to the invocation's steering-only signal before acquiring a kernel, checks queued steering at readiness, and reuses the idle watchdog's successful detach transition. Failed steering admission preserves the foreground wait without cancellation. The listener is removed when the foreground call returns or rejects.
+- `packages/senpi-codemode/src/tool/detached-cell-manager.ts` refuses a detach when its language already has a detached owner, preserving the existing one-slot limit at the transition itself.
+
+### Why
+
+- Queued steering should release the interactive turn without killing computation or in-flight bridge work. Boot-time steering must not be lost, and a colliding detach must not replace another cell's ownership.
+
+### Why an extension could not handle it
+
+- `packages/senpi-codemode/src/tool/run-eval-cell.ts` owns the foreground wait and cancellation separation; `packages/senpi-codemode/src/tool/detached-cell-manager.ts` owns atomic detached admission. Neither transition is replaceable from a consumer extension.
+
+### Expected merge conflict zones
+
+- LOW: `packages/senpi-codemode/src/tool/run-eval-cell.ts` around idle detachment, kernel readiness, and foreground settlement.
+- LOW: `packages/senpi-codemode/src/tool/detached-cell-manager.ts` around `detach()` admission. No kernel queue, capacity setting, or deadline duration changes.
 
 ## 2026-09-11 - Column-capped eval output keeps a recovery artifact
 
@@ -199,6 +234,17 @@
 - MEDIUM: `src/kernels/js/context-manager.ts` was split; an upstream change to worker startup or
   interrupt lands in `worker-slot.ts` / `worker-startup.ts` / `interrupt-bounds.ts` now.
 - LOW: `worker-core.js`, `worker-runtime.js`, `worker-shell-capture.js`, `detached-cell-*.ts`.
+
+## 2026-09-05 - Explain eval's run-only language requirement
+
+- The live and exported eval schemas describe `language` as required for runs,
+  with no default kernel, while keeping it optional for `peek` and `stop`.
+- Request parsing distinguishes an omitted language from an unsupported value
+  and lists the supported language identifiers for invalid values.
+- The README documents explicit language selection for runs and language-free
+  `peek`/`stop` requests.
+- Regression: `test/eval-request-language.test.ts` covers distinct diagnostics,
+  omitted run languages, and language-free control requests. Fixes #1395.
 
 ## 2026-09-05 - GPT eval dialect routes waits through tool.monitor
 

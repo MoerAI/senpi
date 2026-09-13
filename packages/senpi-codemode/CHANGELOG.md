@@ -8,12 +8,89 @@
 
 ### Changed
 
+### Fixed
+
+- The eval schema now explains that runs require an explicit language, and invalid language values produce a distinct error from an omitted language; `peek` and `stop` remain language-free ([#1395](https://github.com/code-yeongyu/senpi/issues/1395)).
+
+### Removed
+
+## [2026.9.13-2] - 2026-09-13
+
+### Breaking Changes
+
+### Added
+
+- Added `PI_SESSION_CWD` and `PI_GOAL_STORE_FILE` session environment keys for kernels and shell children, including clearing of inherited values when absent (fixes #1663).
+
+- Interactive foreground eval cells detach on queued steering without cancelling their computation or in-flight tools. An occupied detached slot keeps the call waiting ([#1637](https://github.com/code-yeongyu/senpi/issues/1637)).
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.13] - 2026-09-13
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.12-3] - 2026-09-12
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.12-2] - 2026-09-12
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.12] - 2026-09-12
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.11] - 2026-09-11
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
 - The eval tool instructions now tell callers to emit large text in bounded chunks or through offset-based file reads, and to treat a truncation notice as incomplete data that must be recovered from the full-output path instead of being read as the whole result ([#1600](https://github.com/code-yeongyu/senpi/pull/1600)).
 
 ### Fixed
 
 - Column-capped eval output now preserves a recoverable full-output artifact, so a cell whose output is clipped by a narrow terminal column cap still exposes the complete text through the artifact path ([#1600](https://github.com/code-yeongyu/senpi/pull/1600)).
-- The eval schema now explains that runs require an explicit language, and invalid language values produce a distinct error from an omitted language; `peek` and `stop` remain language-free ([#1395](https://github.com/code-yeongyu/senpi/issues/1395)).
 
 ### Removed
 

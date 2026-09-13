@@ -10,6 +10,7 @@ import { getAgentDir } from "../../config.ts";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../utils/ansi.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
+import type { DiscoveredResourceEntry } from "../discovered-resource-scope.ts";
 import { createEventBus, type EventBus, EXTENSION_RPC_EVENT_CHANNEL, type ExtensionRpcEvent } from "../event-bus.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
@@ -17,6 +18,8 @@ import type { ScopedModel } from "../model-resolver.ts";
 import { getSessionContextEntryId, SESSION_CONTEXT_ENTRY_ID, type SessionManager } from "../session-manager.ts";
 import { SettingsManager } from "../settings-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import { goalFilePath } from "./builtin/goal/persistence.ts";
+import { goalStoreRef } from "./builtin/goal/store-ref.ts";
 import { drainPendingProviderRegistrations } from "./loader.ts";
 import type {
 	BeforeAgentStartEvent,
@@ -61,6 +64,7 @@ import type {
 	RegisteredTool,
 	ReplacedSessionContext,
 	ResolvedCommand,
+	ResourceDiscoverEntry,
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
 	ServiceTier,
@@ -1106,6 +1110,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.sessionManager;
 			},
+			get goalStoreFile() {
+				runner.assertActive();
+				return goalFilePath(goalStoreRef(runner.sessionManager, runner.cwd));
+			},
 			get modelRegistry() {
 				runner.assertActive();
 				return runner.modelRegistry;
@@ -1744,15 +1752,21 @@ export class ExtensionRunner {
 		cwd: string,
 		reason: ResourcesDiscoverEvent["reason"],
 	): Promise<{
-		skillPaths: Array<{ path: string; extensionPath: string }>;
-		promptPaths: Array<{ path: string; extensionPath: string }>;
-		themePaths: Array<{ path: string; extensionPath: string }>;
-		hookPaths: Array<{ path: string; extensionPath: string }>;
+		skillPaths: DiscoveredResourceEntry[];
+		promptPaths: DiscoveredResourceEntry[];
+		themePaths: DiscoveredResourceEntry[];
+		hookPaths: DiscoveredResourceEntry[];
 	}> {
-		const skillPaths: Array<{ path: string; extensionPath: string }> = [];
-		const promptPaths: Array<{ path: string; extensionPath: string }> = [];
-		const themePaths: Array<{ path: string; extensionPath: string }> = [];
-		const hookPaths: Array<{ path: string; extensionPath: string }> = [];
+		const skillPaths: DiscoveredResourceEntry[] = [];
+		const promptPaths: DiscoveredResourceEntry[] = [];
+		const themePaths: DiscoveredResourceEntry[] = [];
+		const hookPaths: DiscoveredResourceEntry[] = [];
+		const toEntry = (entry: ResourceDiscoverEntry, extensionPath: string): DiscoveredResourceEntry =>
+			typeof entry === "string"
+				? { path: entry, extensionPath }
+				: entry.scope === undefined
+					? { path: entry.path, extensionPath }
+					: { path: entry.path, extensionPath, scope: entry.scope };
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("resources_discover");
@@ -1760,21 +1774,21 @@ export class ExtensionRunner {
 
 			for (const handler of handlers) {
 				try {
-					const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
+					const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason, scopedEntries: true };
 					const handlerResult = await handler(event, this.createContext(ext.path));
 					const result = handlerResult as ResourcesDiscoverResult | undefined;
 
 					if (result?.skillPaths?.length) {
-						skillPaths.push(...result.skillPaths.map((path) => ({ path, extensionPath: ext.path })));
+						skillPaths.push(...result.skillPaths.map((entry) => toEntry(entry, ext.path)));
 					}
 					if (result?.promptPaths?.length) {
-						promptPaths.push(...result.promptPaths.map((path) => ({ path, extensionPath: ext.path })));
+						promptPaths.push(...result.promptPaths.map((entry) => toEntry(entry, ext.path)));
 					}
 					if (result?.themePaths?.length) {
-						themePaths.push(...result.themePaths.map((path) => ({ path, extensionPath: ext.path })));
+						themePaths.push(...result.themePaths.map((entry) => toEntry(entry, ext.path)));
 					}
 					if (result?.hookPaths?.length) {
-						hookPaths.push(...result.hookPaths.map((path) => ({ path, extensionPath: ext.path })));
+						hookPaths.push(...result.hookPaths.map((entry) => toEntry(entry, ext.path)));
 					}
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
