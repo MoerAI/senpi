@@ -10,6 +10,65 @@
 
 ### Fixed
 
+- RPC `close_session` acknowledgements and `session_closed` events, including worker-failure terminals, are published only after the session registry has removed the entry, so an immediate `list_sessions` never returns the closed session. Filesystem watchers are cancelled atomically with shutdown, every disposer is joined before process exit, reentrant RPC shutdown shares that join and keeps a failure exit code, and nonpersistent RPC probes do not start watchers ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+
+- The RPC host watchdog's ppid fallback no longer spawns `ps -o lstart=` every 250ms while the supervisor is alive: a dead supervisor is reaped by its own parent and the host is then reparented, so the free `kill(pid, 0)` + ppid comparison observes the loss without any child process. Long-lived shared hosts no longer accumulate thousands of `ps` children (zombies on runtimes that fail to reap them) ([#1507](https://github.com/code-yeongyu/senpi/issues/1507)).
+
+
+- Terminal monitors no longer burn CPU while paused: a paused file watch clears its 250ms poll timer entirely (no stat/SHA-256 digest work) and resume runs one immediate check, so a change made during the pause still fires. Session-output line buffers are now capped at 64KiB, so a newline-less stream can no longer grow a monitor's retained tail without bound ([#1698](https://github.com/code-yeongyu/senpi/issues/1698)).### Removed
+
+## [2026.9.15] - 2026-09-15
+
+### Breaking Changes
+
+### Added
+
+- Added a real search engine behind `grep`. A native `senpi-grep` addon walks the tree with ordered parallelism, bounded reads and cancellation, and ripgrep stays as the fallback; `SENPI_GREP_ENGINE=auto|native|rg` chooses, and `SENPI_GREP_NATIVE_PATH` points at a different addon. `mode` selects `content`, `count` or `files`, `limit` and `skip` paginate over files, `path` takes a file, a directory, an array or a `<file>:L1-L2` selector, and `glob` accepts `!` exclusions. Every result ends in a `[grep: matches=2 files=2 searched=42 elapsedMs=8 engine=native nextSkip=none]` footer and carries `details` v1 with structured matches, file counts, scan status and pagination. The TUI, the HTML export and the eval widget group the matches under their file ([#1678](https://github.com/code-yeongyu/senpi/issues/1678)).
+
+- Added `exposure: "eval"` to tool definitions: enabled tools remain registered and callable inside eval while hidden from direct model calls whenever eval is available. Built-in `bash`, `powershell` and `grep` declare this exposure; explicit SDK `evalOnlyToolNames` overrides still take precedence ([#1678](https://github.com/code-yeongyu/senpi/issues/1678)).
+
+- Added a builtin herdr lifecycle reporter: pending questions and host dialogs mark the pane blocked with their label, active turns/subagents/monitors remain working, and settlement restores idle. It coexists with herdr's managed integration, defers to loaded user-authored `herdr-*` reporters, and releases the pane only on quit. Extensions can inspect the optional read-only `ctx.loadedExtensionPaths` list ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+- Added clickable pending-question options, own-answer entry, question cycling and expanded question tabs in regular and fullscreen modes. A single-question option click commits its selection highlight before answering. The new `terminal.mouse` setting defaults to `whilePending`; `off` disables capture in both modes, while `always` keeps regular-mode capture active. Native selection bypass hints appear while questions capture the mouse ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+### Changed
+
+- Retired the `GrepOperations` override hook from `GrepToolOptions` in favor of the engine-backed grep implementation, and aligned Cursor `pi_grep` frames with the new `pattern`/`path`/`glob`/`ignoreCase`/`literal`/`context`/`limit` contract. Unknown Cursor flags are ignored with a debug log. The tool always returns the structured footer and `details` v1 contract ([#1678](https://github.com/code-yeongyu/senpi/issues/1678)).
+
+- Restored `grep` as a default eval-only tool, callable with `tool.grep({ pattern, path })` and discoverable through `tool_schema`. Direct model calls return an eval hint without executing; sessions without eval retain direct grep access, and existing hooks and permissions still apply ([#1678](https://github.com/code-yeongyu/senpi/issues/1678)).
+
+- `tool_search` is now side-effect-free: it lists up to five matching deferred tools with their parameter schemas and never activates them; calling a listed tool by name activates it on that first call, so the "callable from your NEXT turn" round trip is gone and the request's tools array only changes when a tool is genuinely used. Results are gated on query-term coverage and a relative score floor, so an incidental word match no longer surfaces unrelated tools, and a query naming an eval-only or removed tool (`bash`, `monitor`, ...) answers with that tool's redirect hint instead of "No tools matched" ([#1682](https://github.com/code-yeongyu/senpi/issues/1682)).
+
+- `generate_image` is registered as a deferred (search-exposed) tool: it no longer ships its ~1K-token schema on every request and activates on the first by-name call; the bundled imagegen skill names it ([#1682](https://github.com/code-yeongyu/senpi/issues/1682)).
+
+- Standalone binaries load codemode from the staged on-disk package instead of embedding a second copy; the sidecar includes its JS parser dependency and retains the bun-1-4 skill ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+- Replaced webfetch's browser-emulation dependency with inert LinkeDOM parsing, preserving reader output and omitted document tags while resolving relative article links and images against the final response URL and retiring CSS/XHR compile assets ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+- Compiled Bun binaries load TypeScript extensions through native runtime modules instead of embedding jiti, preserving host-module identity and fresh dependency graphs on reload. Computed imports and requires share their generation, unused graphs can be reclaimed, native data imports keep Bun's loaders, and parser errors retain source locations. Node runtimes retain their existing jiti options and load only their own importer when needed ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+### Fixed
+
+- Fixed background processes surviving shutdown when the shell that started them exited first: the bash tool now keeps owning a command's process group until its last descendant is gone, so `sleep 30 &` or `nohup server &` is killed by shutdown cleanup instead of being orphaned. Tracked groups that have drained are pruned, and a group whose leader already exited is never re-signalled by bare pid ([#1697](https://github.com/code-yeongyu/senpi/issues/1697)).
+
+- Fixed native grep reporting duplicate files across overlapping roots and symlink aliases; each file is searched once and reported under its lexically smallest display path without canonicalizing every file ([#1678](https://github.com/code-yeongyu/senpi/issues/1678)).
+
+- Fixed deferred (search-exposed) tools never activating by name in sessions without the tool-search builtin: the session now promotes the tool itself when no catalog activator claims it ([#1682](https://github.com/code-yeongyu/senpi/issues/1682)).
+
+- Fixed the standalone Node bundle builder's Bun-only imports and native package boundaries, and prevented shared-session workers from entering the supervisor CLI after bundling ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+- Fixed Enter on multi-select question options to toggle the highlighted choice without advancing, including option 1; empty own-answer commits preserve selections, and hints direct users to Tab and Submit when done (#8249).
+
+- Fixed unclickable short startup question blocks inside tmux by calibrating the frame from two stable pane-cursor CLI readings, bounded by 750 ms. Private cursor queries remain unchanged outside tmux, and uncertain positions still ignore clicks ([#1645](https://github.com/code-yeongyu/senpi/issues/1645)).
+
+- Fixed `/btw` showing its question twice in the interactive TUI: extension commands no longer paint an optimistic user bubble while their handler runs on either submit path (Enter and Alt+Enter follow-up while streaming), so only the side-question panel shows the question during the stream.
+
+- Fixed the `Tip:` line reading as part of the block above it: every tip surface — the startup header and the working-status row — now renders one blank line above the tip ([#1680](https://github.com/code-yeongyu/senpi/issues/1680)).
+
+- Fixed the `/btw` panel having no off switch: a bare `/btw` now dismisses the panel (or cancels the in-flight side query), Escape is matched through the shared key matcher so it also works under the kitty keyboard protocol (and kitty key-release events are ignored so they cannot cancel the query), and the panel footer names both.
+
+- Fixed publish staging so the packed tarball mirrors `publish-deps.lock.json` exactly regardless of how the developer's package manager laid out `node_modules`: nested manifest entries (such as `htmlparser2`'s own `entities@7`) are staged at their manifest path from a version-matched installed copy, npm's workspace-local placements keep the top-level slot with a conflicting root copy re-nested under the dependents npm resolved to it, and packages the manifest no longer lists are pruned instead of riding along. A tarball staged from a bun-hoisted install previously shipped `htmlparser2@10` next to a stale `entities@8` (compiling the engine failed with `No matching export ... for import "fromCodePoint"`), and the published tarball carried `zod@3` and `https-proxy-agent@7` under a manifest declaring `zod@4.4.3` and `https-proxy-agent@9.1.0` ([#1677](https://github.com/code-yeongyu/senpi/issues/1677)).
 ### Removed
 
 ## [2026.9.13-2] - 2026-09-13
