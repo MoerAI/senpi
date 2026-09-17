@@ -1,3 +1,42 @@
+## 2026-09-17 - Remember the detected terminal background (senpi#1781)
+
+### What changed
+
+- New `theme/terminal-theme-cache.ts`: reads and atomically writes `<agentDir>/cache/terminal-theme.json`, failing open in both directions.
+- `theme/theme-controller.ts`: seeds `terminalTheme` from that hint before falling back to `detectTerminalBackgroundFromEnv()`, and writes the hint whenever a detection resolves (both the background and the `auto` paths).
+
+### Why
+
+- Detection became non-blocking, so the first frame is painted from a guess. For a `light/dark` setting that guess came only from `COLORFGBG`, which most terminals do not set, and nothing was persisted - so an `auto` user on a light terminal was repainted on every single launch rather than once.
+
+### Why an extension could not handle it
+
+- The terminal background is read by the host's own theme controller before any extension is bound.
+
+### Expected merge conflict zones
+
+- LOW: the `terminalTheme` field initializer and the two detection branches in `theme-controller.ts`.
+
+## 2026-09-17 - Mark the init seams and stop waiting on the theme query (senpi#1781)
+
+### What changed
+
+- `interactive-mode.ts` `init()` resets the `tui` timing namespace and marks changelog, component tree plus `ui.start`, theme, managed tools, key handlers, session rebind and initial render.
+- `theme/theme-controller.ts` `applyFromSettings()` applies the environment or last-known theme immediately, runs `detectTerminalBackgroundTheme` / `detectTerminalThemeForAuto` in the background, and applies plus persists a high-confidence answer when it arrives; a pinned theme still skips detection.
+
+### Why
+
+- The phase was measured as a single number, so nothing could be budgeted inside it; the first instrumented run attributed 749 ms of 820 ms to the session rebind and 2 ms to the terminal component tree.
+- The OSC query blocked the first frame for up to its 100 ms timeout on every launch with no persisted theme or an `auto` setting.
+
+### Why an extension could not handle it
+
+- Both live in the host's own interactive entry, before and around the extension bind.
+
+### Expected merge conflict zones
+
+- MEDIUM: the body of `init()` and `applyFromSettings()`.
+
 ## 2026-09-17 - Skill mentions render bold in the composer, transcript lists every skill (senpi#1778)
 
 ### What changed
