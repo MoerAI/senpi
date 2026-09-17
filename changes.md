@@ -1,5 +1,24 @@
 # changes — senpi-monorepo root
 
+## Type-check the qa scripts (2026-09-16)
+
+### What changed
+
+- `tsconfig.json` includes `scripts/qa/**/*.ts` so root `tsc --noEmit` type-checks the qa runners.
+- `package.json`: `npm run check` also runs `tsc --noEmit -p scripts/tsconfig.json` after the root program.
+
+### Why
+
+- `scripts/qa/*.ts` sat outside every tsconfig, so implicit-any import errors there never failed CI.
+
+### Why an extension could not handle it
+
+- Root `tsconfig.json` include globs and the `package.json` `check` script are compile-time gates; no runtime extension can add files to `tsc`.
+
+### Expected merge conflict zones
+
+- LOW: the `include` array in root `tsconfig.json` and the `check` script string in root `package.json`.
+
 ## Re-wire check:entry-graphs into the root check chain (2026-09-13)
 
 ### What changed

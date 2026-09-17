@@ -11,6 +11,7 @@ const agentArgsSchema = Type.Object(
 		label: Type.Optional(Type.String()),
 		schema: Type.Optional(Type.Unknown()),
 		handle: Type.Optional(Type.Boolean()),
+		tools: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 		isolated: Type.Optional(Type.Boolean()),
 		apply: Type.Optional(Type.Boolean()),
 		merge: Type.Optional(Type.Boolean()),
@@ -19,7 +20,19 @@ const agentArgsSchema = Type.Object(
 );
 
 const unsupportedIsolationWarning = "isolated/apply/merge unsupported (no isolation in task engine)";
-const taskIdPattern = /\bst_[A-Za-z0-9_-]+\b/;
+const taskHandleSchema = Type.Object(
+	{
+		task_id: Type.String({ pattern: "^st_[0-9a-f]+$" }),
+		run_epoch: Type.Integer({ minimum: 0 }),
+	},
+	{ additionalProperties: true },
+);
+
+/** Structural host contract; no orchestration package dependency. */
+export type TaskHandleDetails = {
+	readonly task_id: string;
+	readonly run_epoch: number;
+};
 const droppedOptionNames = ["isolated", "apply", "merge"] as const;
 
 type AgentArgs = Static<typeof agentArgsSchema>;
@@ -29,6 +42,7 @@ type TaskParams = {
 	readonly model?: string;
 	readonly name?: string;
 	readonly run_in_background: boolean;
+	readonly tools?: readonly string[];
 };
 type ProgressContext = { readonly fallbackId: string; readonly warning?: string };
 
@@ -48,7 +62,7 @@ export type EvalAgentResult =
 	| { readonly text: string }
 	| { readonly text: string; readonly data: unknown }
 	| { readonly text: string; readonly parseError: string }
-	| { readonly text: string; readonly id: string; readonly handle: string };
+	| { readonly text: string; readonly id: string; readonly handle: string; readonly run_epoch: number };
 
 class AgentArgumentsError extends Error {
 	readonly name = "AgentArgumentsError";
@@ -68,9 +82,10 @@ class AgentUnavailableError extends Error {
 
 class AgentHandleError extends Error {
 	readonly name = "AgentHandleError";
+	readonly code = "invalid_task_handle";
 
 	constructor() {
-		super("agent() background task result did not include a task id");
+		super("agent() requires successful task details with a valid task_id and nonnegative integer run_epoch");
 	}
 }
 
@@ -105,9 +120,8 @@ export async function runEvalAgent(args: unknown, options: RunEvalAgentOptions):
 
 	const text = resultText(result);
 	if (parsed.handle === true) {
-		const id = resultTaskId(result, text);
-		if (!id) throw new AgentHandleError();
-		return { text, id, handle: `agent://${id}` };
+		const { task_id: id, run_epoch } = resultTaskHandle(result);
+		return { text, id, handle: `agent://${id}`, run_epoch };
 	}
 	if (!structured) return { text };
 	return parseStructuredText(text);
@@ -130,6 +144,7 @@ function toTaskParams(args: AgentArgs, structured: boolean): TaskParams {
 		...(args.model === undefined ? {} : { model: args.model }),
 		...(args.label === undefined ? {} : { name: args.label }),
 		run_in_background: args.handle === true,
+		...(args.tools === undefined ? {} : { tools: args.tools }),
 	};
 }
 
@@ -168,11 +183,15 @@ function resultText(result: AgentToolResult<unknown>): string {
 		.join("\n");
 }
 
-function resultTaskId(result: AgentToolResult<unknown>, text: string): string | undefined {
-	const details = isRecord(result.details) ? result.details : undefined;
-	const detailId = firstString(details, ["task_id", "taskId", "id"]);
-	if (detailId) return detailId;
-	return text.match(taskIdPattern)?.[0];
+function resultTaskHandle(result: AgentToolResult<unknown>): TaskHandleDetails {
+	const details = result.details;
+	if (
+		("isError" in result && result.isError === true) ||
+		(isRecord(details) && (details.isError === true || details.error !== undefined)) ||
+		!Check(taskHandleSchema, details)
+	)
+		throw new AgentHandleError();
+	return details;
 }
 
 function firstString(

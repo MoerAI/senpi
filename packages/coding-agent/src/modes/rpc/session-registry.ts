@@ -40,6 +40,13 @@ export interface RpcSessionEntry {
 	cwd: string;
 	/** Live attachments (open + later attaches). The runtime is disposed only when the last one closes. */
 	attachments: number;
+	/**
+	 * Opt-in retention: a dropped connection only DETACHES from this session. The
+	 * entry stays open at zero attachments (still listed, still running its turn,
+	 * still holding its path) until an explicit close_session or idle eviction.
+	 * Requested per `open_session`; an attach may turn it on, never off.
+	 */
+	retainOnDisconnect?: boolean;
 	/** Timestamp of the last routed command / observed activity; drives idle eviction. */
 	lastCommandAt: number;
 	lifecycleMutex: Promise<void>;
@@ -71,6 +78,12 @@ export interface RpcSessionRegistryOptions {
 	now?: () => number;
 	/** Maximum time to wait for graceful runtime teardown before forced release. */
 	closeGraceMs?: number;
+}
+
+/** Host-side lifecycle policy for one `open_session`, distinct from the session's launch profile. */
+export interface RpcSessionOpenOptions {
+	/** Keep the session alive when its last client disconnects (`open_session.retain_on_disconnect`). */
+	retainOnDisconnect?: boolean;
 }
 
 export interface OpenRpcSession {
@@ -122,7 +135,7 @@ export class RpcSessionRegistry {
 		return this.entries.size;
 	}
 
-	async openSession(profile: RpcSessionLaunchProfile): Promise<OpenRpcSession> {
+	async openSession(profile: RpcSessionLaunchProfile, options?: RpcSessionOpenOptions): Promise<OpenRpcSession> {
 		this.validateProfile(profile);
 		this.syncRuntimeMetadata();
 		const sessionPath = profile.sessionPath ? canonicalPath(profile.sessionPath) : undefined;
@@ -137,6 +150,9 @@ export class RpcSessionRegistry {
 			if (!existing) throw new RpcSessionRegistryError("session_path_in_use");
 			const [handle, entry] = existing;
 			entry.attachments += 1;
+			// Retention is a property of the live session: any attach may ask for it, and
+			// no attach may revoke it for the clients that already rely on it.
+			if (options?.retainOnDisconnect) entry.retainOnDisconnect = true;
 			if (!entry.durableSessionId) throw new RpcSessionRegistryError("session_path_in_use");
 			entry.lastCommandAt = this.now();
 			return {
@@ -175,6 +191,7 @@ export class RpcSessionRegistry {
 			reservationKey: sessionPath,
 			cwd: storedProfile.cwd,
 			attachments: 1,
+			retainOnDisconnect: options?.retainOnDisconnect === true,
 			lastCommandAt: this.now(),
 			lifecycleMutex: Promise.resolve(),
 		};
@@ -278,9 +295,13 @@ export class RpcSessionRegistry {
 		return entry;
 	}
 
-	/** Starts a close synchronously and returns the live entry for routing decisions. */
-	beginClose(handle: string, onRole?: (finalizer: boolean) => void): RpcSessionEntry {
-		return beginSessionClose(this.teardownHost, handle, onRole);
+	/**
+	 * Starts a close synchronously and returns the live entry for routing decisions.
+	 * `detach` marks a client going away rather than the session ending, which a
+	 * retained entry answers by staying open at zero attachments.
+	 */
+	beginClose(handle: string, onRole?: (finalizer: boolean) => void, options?: { detach?: boolean }): RpcSessionEntry {
+		return beginSessionClose(this.teardownHost, handle, onRole, options);
 	}
 
 	async close(handle: string): Promise<void> {
@@ -299,6 +320,7 @@ export class RpcSessionRegistry {
 		cwd: string;
 		name?: string;
 		status: Exclude<RpcSessionState, "quarantined">;
+		attachments: number;
 	}> {
 		this.syncRuntimeMetadata();
 		return [...this.entries].map(([sessionId, entry]) => ({
@@ -307,6 +329,8 @@ export class RpcSessionRegistry {
 			sessionPath: entry.sessionPath,
 			cwd: entry.cwd,
 			name: entry.runtime?.session.sessionManager.getSessionName(),
+			// A closing entry has already released its last attachment; never publish that as negative.
+			attachments: Math.max(0, entry.attachments),
 			status: entry.state === "quarantined" ? "closing" : entry.state,
 		}));
 	}

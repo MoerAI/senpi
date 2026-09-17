@@ -387,6 +387,8 @@ export class RpcClient {
 		modelId?: string;
 		thinkingLevel?: ThinkingLevel;
 		permissionPreset?: string;
+		/** Keep the session alive when its last client disconnects; needs the host's `retain_on_disconnect`. */
+		retain_on_disconnect?: boolean;
 	}): Promise<{ sessionId: string; state: RpcSessionState; attached?: boolean }> {
 		if (this.pendingOpenSession) throw new RpcClientOpenInFlightError();
 		this.pendingOpenSession = true;
@@ -432,6 +434,8 @@ export class RpcClient {
 			cwd: string;
 			name?: string;
 			status: "opening" | "open" | "closing" | "closed";
+			/** Live client attachments; absent from hosts older than the `retain_on_disconnect` capability. */
+			attachments?: number;
 		}>
 	> {
 		const response = await this.send({ type: "list_sessions" }, false);
@@ -443,6 +447,7 @@ export class RpcClient {
 				cwd: string;
 				name?: string;
 				status: "opening" | "open" | "closing" | "closed";
+				attachments?: number;
 			}>;
 		}>(response).sessions;
 	}

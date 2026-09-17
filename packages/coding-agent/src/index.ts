@@ -179,6 +179,12 @@ export {
 	wrapRegisteredTool,
 	wrapRegisteredTools,
 } from "./core/extensions/index.ts";
+export {
+	type ExtensionKernelTools,
+	type KernelToolInvokeOptions,
+	type KernelToolInvokeScope,
+	kernelToolsStorage,
+} from "./core/extensions/kernel-tools-context.ts";
 // Notice primitives
 export {
 	buildNoticeBox,

@@ -2977,7 +2977,7 @@ export class InteractiveMode {
 			return;
 		}
 		const intervalMs = largeSessionWorkingStatusInterval(
-			this.sessionManager.getEntries().length,
+			this.sessionManager.getEntryCount(),
 			DEFAULT_WORKING_STATUS_MESSAGE_ANIMATION_INTERVAL_MS,
 			LARGE_SESSION_WORKING_STATUS_MESSAGE_INTERVAL_MS,
 		);
@@ -3151,7 +3151,7 @@ export class InteractiveMode {
 		if (this.workingIndicatorOptions !== undefined) {
 			return this.workingIndicatorOptions;
 		}
-		const sessionEntryCount = this.sessionManager.getEntries().length;
+		const sessionEntryCount = this.sessionManager.getEntryCount();
 		return {
 			frames: theme.getColorMode() === "truecolor" ? ["•"] : [theme.fg("accent", "•"), theme.fg("muted", "◦")],
 			intervalMs: largeSessionWorkingStatusInterval(
@@ -4511,6 +4511,7 @@ export class InteractiveMode {
 				),
 		);
 		this.defaultEditor.onAction("app.session.resume", () => this.showSessionSelector());
+		this.defaultEditor.onAction("app.session.renameCurrent", () => this.showSessionRenameInput());
 
 		this.defaultEditor.onChange = (text: string) => {
 			const wasBashMode = this.isBashMode;
@@ -4766,8 +4767,8 @@ export class InteractiveMode {
 					this.editor.setText("");
 					return;
 				}
-				if (text === "/name" || text.startsWith("/name ")) {
-					await this.handleNameCommand(text);
+				if (text === "/rename" || text.startsWith("/rename ") || text === "/name" || text.startsWith("/name ")) {
+					await this.handleRenameCommand(text);
 					this.editor.setText("");
 					return;
 				}
@@ -5627,7 +5628,7 @@ export class InteractiveMode {
 
 	private showRetryStatusIndicatorWithCadence(event: { attempt: number; maxAttempts: number; delayMs: number }): void {
 		const refreshIntervalMs = largeSessionWorkingStatusInterval(
-			this.sessionManager.getEntries().length,
+			this.sessionManager.getEntryCount(),
 			DEFAULT_RETRY_STATUS_REFRESH_INTERVAL_MS,
 			LARGE_SESSION_RETRY_STATUS_REFRESH_INTERVAL_MS,
 		);
@@ -9118,20 +9119,18 @@ export class InteractiveMode {
 		}
 	}
 
-	private async handleNameCommand(text: string): Promise<void> {
-		const name = text.replace(/^\/name\s*/, "").trim();
+	/** `/rename [name]` and its `/name` alias: a bare command opens the inline editor. */
+	private async handleRenameCommand(text: string): Promise<void> {
+		const name = text.replace(/^\/(?:rename|name)\s*/, "").trim();
 		if (!name) {
-			const currentName = this.sessionManager.getSessionName();
-			if (currentName) {
-				this.chatContainer.addChild(new Spacer(1));
-				this.chatContainer.addChild(new Text(theme.fg("dim", `Session name: ${currentName}`), 1, 0));
-			} else {
-				this.showWarning("Usage: /name <name>");
-			}
-			this.ui.requestRender();
+			this.showSessionRenameInput();
 			return;
 		}
+		await this.applySessionName(name);
+	}
 
+	/** Store the display name and report the value the session kept. */
+	private async applySessionName(name: string): Promise<void> {
 		await this.session.setSessionName(name);
 		const sessionName = this.session.sessionName;
 		if (sessionName !== name) {
@@ -9140,6 +9139,34 @@ export class InteractiveMode {
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(theme.fg("dim", `Session name set: ${sessionName ?? name}`), 1, 0));
 		this.ui.requestRender();
+	}
+
+	/** Swap the composer for a single-line input prefilled with the current name. */
+	private showSessionRenameInput(): void {
+		this.extensionInput = new ExtensionInputComponent(
+			"Rename session",
+			undefined,
+			(value) => {
+				this.hideExtensionInput();
+				void this.commitSessionRename(value);
+			},
+			() => this.hideExtensionInput(),
+			{ tui: this.ui, initialValue: this.sessionManager.getSessionName() ?? "" },
+		);
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.extensionInput);
+		this.ui.setFocus(this.extensionInput);
+		this.ui.requestRender();
+	}
+
+	private async commitSessionRename(value: string): Promise<void> {
+		const name = value.trim();
+		if (!name) {
+			this.showWarning("Session name cannot be empty");
+			return;
+		}
+		if (name === this.sessionManager.getSessionName()) return;
+		await this.applySessionName(name);
 	}
 
 	private async handleSessionCommand(): Promise<void> {

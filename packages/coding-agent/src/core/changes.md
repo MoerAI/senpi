@@ -1,5 +1,164 @@
 # changes
 
+## 2026-09-17 - Record a pre-main phase and stop resolving !command keys at startup (senpi#1781)
+
+### What changed
+
+- `packages/coding-agent/src/core/timings.ts` exports `recordTiming(label, ms, namespace)`, which appends an entry with a caller-supplied duration and leaves the namespace cursor alone, so `main()` can report the phase that ended before its first instrumented statement.
+- `packages/coding-agent/src/core/provider-api-key-auth.ts`: `composeApiKeyAuth.check` treats a stored credential as winning only when it actually carries a key, so a models.json `!command` or env `apiKey` is classified without calling `inherited.resolve`; `resolveBaseAuth` falls through to the configured command when the stored credential is keyless, so the first request path still executes the helper.
+
+### Why
+
+- The pre-main phase (runtime boot, `cli.js`, the entry import graph) is over before any instrumented statement runs, so it can only be read from `process.uptime()`; `time()` can only express "now minus the last mark".
+- A CPU profile of an interactive boot showed `execSync` through `executeWithDefaultShell` and `resolveConfigValueOrThrow` reached from `resolveBaseAuth`: a keyless stored credential skipped the classification branch and ran the helper during startup.
+
+### Why an extension could not handle it
+
+- Startup timing instrumentation is host-internal, and provider composition plus `!command` resolution live in core auth.
+
+### Expected merge conflict zones
+
+- LOW: the new export in `timings.ts`; `composeApiKeyAuth.check` and `resolveBaseAuth` in `provider-api-key-auth.ts`.
+
+## 2026-09-17 - Read only the frontmatter prefix during skill discovery (senpi#1781)
+
+### What changed
+
+- New `packages/coding-agent/src/core/skill-discovery.ts` owns `collectSkillEntries` / `collectAutoSkillEntries` (moved out of `package-manager.ts`) and `readSkillMarkdownSource`.
+- `readSkillMarkdownSource` reads at most 8 KiB, slices at the closing `---` when that delimiter is inside the prefix (falling back to the rest of the file when it is not), and never feeds the markdown body to the YAML parser.
+- `packages/coding-agent/src/core/skills.ts` `loadSkillFromFile` uses that reader, and the directory walk skips `node_modules`, `.git` and dot-prefixed names.
+
+### Why
+
+- The startup `skills` phase read whole `SKILL.md` bodies only to parse their frontmatter. Extracting the walk also keeps `package-manager.ts` from growing further.
+
+### Why an extension could not handle it
+
+- Skill discovery and frontmatter parsing run in the host resource loader before any extension is bound.
+
+### Expected merge conflict zones
+
+- MEDIUM: `collectSkillEntries` used to live in `package-manager.ts`, so upstream edits to that walk must land in `skill-discovery.ts`.
+- LOW: the `loadSkillFromFile` read path in `skills.ts`.
+
+## 2026-09-17 - Inline skill mentions expand on submit (senpi#1778)
+
+### What changed
+
+- New `packages/coding-agent/src/core/skill-invocation.ts` holds `formatSkillInvocationPrompt`, `parseSkillBlock`, `parseSkillInvocationTokens`, `removeSkillInvocationTokens` and the two caps (moved out of `packages/coding-agent/src/core/agent-session.ts`, which re-exports them and passes the loaded skill names from `_expandSkillCommand`).
+- `parseSkillInvocationTokens(text, { knownSkillNames })`: outside the leading run a bare `$name` is executable when it names a loaded skill; `$skill:name` stays executable without the list; `$HOME`, `$1` and unknown names stay literal. The explicit form is unchanged for the desktop.
+- `parseSkillBlock` returns `skills: ParsedSkillBlockSkill[]` for every chained block (`name`/`location`/`content` mirror the first). `packages/coding-agent/src/core/export-html/template.js` (parser + tree/entry render) and `packages/coding-agent/src/core/export-html/template.css` (`.skill-invocation-name`) follow the same shape and list every invoked skill.
+
+### Why
+
+- senpi#1778: an inline `$commit` reached the model as literal text and the transcript named only the first of several expanded skills.
+
+### Why an extension could not handle it
+
+- Skill expansion runs in the session's prompt path before extension `input` handlers see the composed text.
+
+### Expected merge conflict zones
+
+- MEDIUM: the skill-invocation section of `agent-session.ts` is now an import + re-export block; upstream edits to those functions must land in `skill-invocation.ts`.
+
+## 2026-09-16 - Slow-stream retry branch and its settings withdrawn (senpi#1759)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: the retry branch for the agent loop's rate verdict, the session event it emitted when no fallback candidate remained, and its arm of the provider-error log kind are removed. Stalls, refusals and the 429 tiers are unchanged.
+- `packages/coding-agent/src/core/settings-manager.ts`: the getter that forwarded those thresholds to the agent is removed.
+- `packages/coding-agent/src/core/retry-fallback/settings.ts`: the three `retry.provider` rate fields are removed from `ProviderRetrySettings`.
+- `packages/coding-agent/src/core/sdk.ts`: the wiring that passed them to the `Agent` next to `timeoutMs` / `streamStartTimeoutMs` is removed.
+
+### Why
+
+- The agent-loop rate guard those knobs configured aborted healthy turns and was withdrawn (senpi#1759). With no such verdict reaching the session, the retry branch is unreachable and the settings configure nothing.
+
+### Why an extension could not handle it
+
+- Retry budget, fallback chain and turn termination live in `AgentSession`, and the settings surface is host-owned; an extension can neither add nor remove either.
+
+### Expected merge conflict zones
+
+- MEDIUM: the retry class chain in `_handleRetryableError` is back to stall / refusal / 429 tiers only, so an upstream edit there applies without the fork-local arm.
+- LOW: the settings getter and the `ProviderRetrySettings` fields.
+
+## 2026-09-16 - Stalled turns end with recovery guidance (senpi#1740)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts` adds the private `_terminalFailureText(message, attempts)` and uses it for the `auto_retry_end.finalError` of an exhausted transient retry. A provider-stream stall is rewritten through `describeProviderStallForUser` (imported from `@earendil-works/pi-ai/compat`) with the stalled model selector, the attempts spent and a recovery hint chosen from `RetryFallbackController.hasConfiguredChain()` (`chain-exhausted` vs `no-fallback-configured`); every other failure keeps `message.errorMessage` verbatim. The assistant message itself is left untouched, so `isProviderStreamStallError` and the retry/fallback routing are unchanged.
+
+### Why
+
+- senpi#1740: when a provider accepted a request and never streamed a first event, the session's visible outcome was the watchdog's interpolated message (`Provider stream start timed out after 180000ms`). It names no cause and no next step, and the same string has to stay on the message because the retry classifier matches on it - so the rewrite belongs at the event the UI renders, not at the message.
+
+### Why an extension could not handle it
+
+- `auto_retry_end` is emitted by the session at the moment it gives the turn up; only the session knows the attempts spent and whether a fallback chain existed.
+
+### Expected merge conflict zones
+
+- LOW: one import specifier, one new private method before `_degradeRateLimitedWithoutFallback`, and one `finalError:` line in the generic transient-exhaustion branch of `_handleRetryableError`.
+
+## 2026-09-16 - /rename session command
+
+### What changed
+
+- `packages/coding-agent/src/core/slash-commands.ts` adds the `/rename [name]` builtin and keeps `/name` as an alias that describes the same session-rename action.
+- `packages/coding-agent/src/core/keybindings.ts` registers unbound-by-default `app.session.renameCurrent` ("Rename the current session").
+
+### Why
+
+- `packages/coding-agent/src/core/slash-commands.ts` is the catalog `/help` and command discovery read, so the new command has to live there for the TUI to list it.
+- `packages/coding-agent/src/core/keybindings.ts` owns the bindable action table; a key that opens the current-session rename editor cannot be registered from an extension's command list.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/slash-commands.ts` is the host builtin catalog. An extension can add its own command, but it cannot replace the built-in `/name` row or insert `/rename` into that list.
+- `packages/coding-agent/src/core/keybindings.ts` owns first-class `app.session.*` ids that the interactive editor already dispatches; an extension cannot add `app.session.renameCurrent` there.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/slash-commands.ts`: the `name` row in `BUILTIN_SLASH_COMMANDS`.
+- `packages/coding-agent/src/core/keybindings.ts`: `AppKeybindings` / `KEYBINDINGS` next to `app.session.resume`.
+
+## 2026-09-16 - session_shutdown handler budget settings (senpi#1732)
+
+### What changed
+
+- `packages/coding-agent/src/core/settings-manager.ts` adds the typed `sessionShutdownHandlerWarnMs` (default 2000) and `sessionShutdownHandlerTimeoutMs` (default 10000) settings with `getSessionShutdownHandlerWarnMs`/`setSessionShutdownHandlerWarnMs` and `getSessionShutdownHandlerTimeoutMs`/`setSessionShutdownHandlerTimeoutMs`, validated through the existing `parseTimeoutSetting` path (finite, >= 0, 0 disables) exactly like `httpIdleTimeoutMs`, plus the exported `DEFAULT_SESSION_SHUTDOWN_HANDLER_WARN_MS` / `DEFAULT_SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS` constants the extension runner falls back to.
+
+### Why
+
+- `packages/coding-agent/src/core/settings-manager.ts` owns global/project settings precedence and validation, so the host's shutdown-handler budget has to be a typed setting there for users to tune or disable it.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/settings-manager.ts` is read by the extension runner during teardown; an extension cannot define a setting that bounds the host's own wait on extensions.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/settings-manager.ts`: the `Settings` interface next to `httpIdleTimeoutMs`/`websocketConnectTimeoutMs`, the timeout default constants near `DEFAULT_STREAM_START_TIMEOUT_MS`, and the accessors directly after `setHttpIdleTimeoutMs`.
+
+## 2026-09-16 - Export kernelTools storage (senpi#1647)
+
+### What changed
+
+- `packages/coding-agent/src/index.ts` exports `kernelToolsStorage` and `ExtensionKernelTools` so codemode can bind a JS eval's kernel-tool capability onto the host-tool context.
+
+### Why
+
+- `packages/coding-agent/src/index.ts` is the public senpi extension API surface consumed by senpi-codemode.
+
+### Why an extension could not handle it
+
+- Package index re-exports are owned by coding-agent.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/index.ts` adjacent to other extension exports.
+
 ## 2026-09-14 - Terminal mouse capture setting (senpi#1645)
 
 ### What changed
@@ -193,6 +352,26 @@
 - MEDIUM: the CLI metadata loop in `DefaultResourceLoader` (`cliMetadata` replaces five identical `for` loops), `getDefaultSourceInfoForPath`, `applyExtensionSourceInfo` and `getBundledExtensionEntryPaths` / `getBundledExtensionPackageRoots` in `packages/coding-agent/src/core/resource-loader.ts`.
 - MEDIUM: `collectPackageResources` (manifest read moved above the filter branch) and the `InstalledSourceScope` alias plus the update filter in `packages/coding-agent/src/core/package-manager.ts`.
 - LOW: the `SourceScope` union in `packages/coding-agent/src/core/source-info.ts`; the `system` field in `packages/coding-agent/src/core/pi-manifest.ts`; the `extendResources` call site in `packages/coding-agent/src/core/agent-session.ts` where the two private helpers were removed.
+
+## 2026-09-12 - O(1) full-history entry count on SessionManager (senpi#1635)
+
+### What changed
+
+- `packages/coding-agent/src/core/session-manager.ts`: maintain a non-header entry count on
+  append, load and reset; preserve it when compaction trims the resident mirror. Expose it through
+  `getEntryCount()` without loading history. Persisted tests cover trim, append, reopen and branch.
+
+### Why
+
+- Count-only UI cadence decisions must not reload and materialize the JSONL after compaction.
+
+### Why an extension could not handle it
+
+- The count follows `SessionManager` mutations below the extension boundary.
+
+### Expected merge conflict zones
+
+- LOW: count field, `_buildIndex()`, `_appendEntry()`, reset and accessor beside `getEntries()`.
 
 ## 2026-09-12 - `app.question.answer` keybinding and `/answer` command for the async ask-user widget (senpi#1623)
 
@@ -5907,3 +6086,89 @@ unrelated fallback bus, silently disconnecting `pi.rpc.emit` on trust-requiring 
 - HIGH: `packages/coding-agent/src/core/agent-session.ts` (`prompt`, `steer`/`followUp`, `_queueUserInput`, compaction and retry blocks); `packages/coding-agent/src/core/settings-manager.ts` compaction/retry getters; `packages/coding-agent/src/core/session-manager.ts` loaders.
 - MEDIUM: `packages/coding-agent/src/core/model-runtime.ts` stream wrappers; `packages/coding-agent/src/core/model-registry.ts` availability methods; `packages/coding-agent/src/core/messages.ts` `convertToLlm`.
 - LOW: `packages/coding-agent/src/core/keybindings.ts` binding table; `packages/coding-agent/src/core/model-resolver.ts` defaults map; `packages/coding-agent/src/core/skills.ts` prompt text; `packages/coding-agent/src/core/agent-session-runtime.ts` import path.
+
+## 2026-09-15 - Resident store blob backing + idle materialized-view release
+
+### What changed
+
+- `packages/coding-agent/src/core/session-resident-store.ts`: eviction now has a recoverable backing. When the resident budget is exceeded, the least-recently-used string is written to a lazily-resolved blob directory (temp file + rename) before being dropped from the map; `materialize` hydrates evicted strings from that directory without re-entering the resident cache, so a bulk read cannot refill the budget. Without a backing directory eviction is disabled entirely — strings stay resident beyond the budget because dropping them would leave consumers holding unreadable sentinel tokens (previously reachable for in-memory sessions over 64 MiB). `clear()` wipes the blob cache along with the map; `stats()` gained `evictedCount`/`evictedBytes`.
+- `packages/coding-agent/src/core/session-manager.ts`: persisted sessions configure the store with `<sessionDir>/resident-blobs/<sessionId>` (`--no-session` resolves to no directory and never writes blobs), and a new `dropMaterializedCaches()` releases `entriesCache`, `branchCache`, and `compactEntriesCache`.
+- `packages/coding-agent/src/core/agent-session.ts`: `_emitAgentIdleAfterDeferredTurns()` releases the memoized materialized views right before emitting `agent_idle`. Materialized entries hold the full persisted strings, so views kept between turns pinned the entire session text in resident memory while idle (measured: an idle session held ~1.1 GB dirty JS heap on macOS via `footprint`; the store budget alone bounded only its own map while the views re-pinned everything).
+
+### Why
+
+- The store's 64 MiB budget bounded only its own map. `getEntries()` memoizes fully materialized entries, so the last read before idle kept every large tool result alive, and recovery for evicted strings re-parsed the entire session JSONL per missing entry (`loadEntriesFromFile` inside `_materializeEntry`). The blob backing makes recovery O(string) via one small file read while the session file remains authoritative: a missing or corrupt blob falls back to the existing batched JSONL recovery unchanged.
+
+### Why an extension could not handle it
+
+- `entriesCache`/`branchCache`/`compactEntriesCache` are private `SessionManager` state and the `agent_idle` settle boundary is private `AgentSession` orchestration; no extension hook can release these views at the right time, and the recovery path lives inside the store's own materialization.
+
+### Expected merge conflict zones
+
+- LOW: `packages/coding-agent/src/core/session-resident-store.ts` internals; `packages/coding-agent/src/core/session-manager.ts` constructor tail and the block after `getEntries()`; `packages/coding-agent/src/core/agent-session.ts` `_emitAgentIdleAfterDeferredTurns` tail.
+
+## 2026-09-16 - Resident store review fixes (branch-token baking, blob integrity, dir leaks, idle state)
+
+### What changed
+
+- `packages/coding-agent/src/core/session-resident-store.ts`: blobs are JSON envelopes (`{v:1,text}`) and `_readBlob` validates them, so a truncated or mangled blob falls back to JSONL recovery instead of hydrating garbage; `externalizeString` consults an `idsByText` reverse index (deleted on eviction/spill/clear) so re-externalizing the same resident text is idempotent instead of double-counting bytes; new `externalizeInPlace()`/`materializeInPlace()` mutate nested string fields in place (object identity preserved) and `resolvedBlobsDir()` exposes the active backing.
+- `packages/coding-agent/src/core/session-manager.ts`: `createBranchedSession()` materializes the branched entries via `_materializeEntries()` BEFORE clearing the store, so re-externalization can no longer bake sentinel tokens into the new branched JSONL; `_resetToNewSession()` and the branch path capture and remove the previous session's blob directory that `clear()` could no longer reach after the session-id switch; new `getResidentStore()` accessor.
+- `packages/coding-agent/src/core/agent-session.ts`: the idle settle now also tokenizes `agent.state.messages` in place (the runtime copies that pinned the same large strings the views pinned); `prepareNextTurnWithContext` and `transformContext` re-materialize them, so every provider request and every per-turn consumer reads real strings.
+- `test/suite/harness.ts`: `getUserTexts`/`getAssistantTexts` materialize through the store — post-idle runtime state legitimately holds tokens.
+
+### Why
+
+- ChatGPT-web review of PR #1726/#1729 confirmed four defects: branch-time token baking, missing blob corruption detection, old-session blob-directory leaks, and idle retention through agent state. Each fix keeps the session file authoritative: corruption and hydration misses still fall back to the existing batched JSONL recovery.
+
+### Why an extension could not handle it
+
+- All four fixes live inside private store/`SessionManager`/`AgentSession` lifecycles (ordering around `clear()`, the blobsDir provider, and the idle settle boundary); extensions never see these transition points.
+
+### Expected merge conflict zones
+
+- LOW: `core/session-resident-store.ts` (blob envelope + reverse index); `core/session-manager.ts` (`_resetToNewSession`, `createBranchedSession`); `core/agent-session.ts` (idle settle, `transformContext`, `prepareNextTurnWithContext` wrappers).
+
+## 2026-09-15 - Spill resident strings to the blob backing across compaction
+
+### What changed
+
+- `packages/coding-agent/src/core/session-resident-store.ts`: new `spillResident()` writes every resident string to the blob backing and empties the map while keeping the backing itself, unlike `clear()` which wipes both.
+- `packages/coding-agent/src/core/session-manager.ts`: `_trimMirrorAfterCompaction()` spills instead of clearing, so strings referenced by the retained mirror (and by branches over pre-compaction history) keep hydrating from the backing after compaction instead of falling back to the batched full-JSONL reload.
+
+### Why
+
+- The previous compaction path cleared the store, which also dropped the blob cache, pushing every post-compaction read of evicted strings back onto `_loadFullHistoryEntries()` (a full session-file parse). With the spill, compact-context recovery stays O(string) per entry across compaction boundaries.
+
+### Why an extension could not handle it
+
+- The mirror-trim path and the store's backing lifecycle are private `SessionManager`/store internals; extensions never see the spill point.
+
+### Expected merge conflict zones
+
+- LOW: `packages/coding-agent/src/core/session-resident-store.ts` (new method after `clear()`); `packages/coding-agent/src/core/session-manager.ts` `_trimMirrorAfterCompaction` one-line change.
+
+## 2026-09-16 - Resident store: content-addressed blobs, token-free runtime reads, bounded blob lifetime
+
+### What changed
+
+- `packages/coding-agent/src/core/session-resident-store.ts`: blob ids are the SHA-256 hex of the text (the token stays `RESIDENT_STRING_PREFIX + id`); the `idsByText` reverse index and the per-instance counter are gone, so `spillResident()` releases every spilled string and re-externalizing hydrated text maps to the existing blob instead of minting a new file. `_writeBlob` skips a file that already exists (same hash, same bytes) while still counting the eviction; `_readBlob` deletes a blob that fails the envelope check so the next eviction rewrites it. `transformJsonValue` throws `TypeError("Do not know how to serialize a BigInt")` again instead of letting a bigint reach the `WeakSet` cycle guard.
+- `packages/coding-agent/src/core/agent-session.ts`: the idle settle releases the materialized views and tokenizes `agent.state.messages` only when `residentStore.stats().evictedCount > 0` (the release frees memory only for blob-hydrated strings) and sets a latch; `get messages()`, `prepareNextTurnWithContext`, and the out-of-turn token estimators (`_estimateCompactionLogTokens`, `_blockedAdmissionContentTokens`, `_resolveThresholdContextTokens`, the compaction-threshold estimate, `_shouldCompact`) read through `_runtimeMessages()`, which hydrates the runtime array in place when the latch is set. `dispose()` disposes the session manager.
+- `packages/coding-agent/src/core/session-manager.ts`: `dispose()` removes the blob directory and unregisters the session writer; `_setSessionFile` clears a stale `resident-blobs/<sessionId>` directory when a persisted session is opened or recovered.
+- `packages/coding-agent/test/suite/harness.ts`: `getUserTexts`/`getAssistantTexts` read plain message text again (the store wrapper was a symptom of the token leak).
+
+### Why
+
+- Review of PRs #1726/#1729 (issue #1746) found: spilled strings pinned by the reverse-index keys; a bigint crashing with `WeakSet values must be objects`; `session.messages` exposing resident tokens between `agent_idle` and the next turn; per-process numeric ids creating a new blob per re-externalize and colliding across processes on one session directory; the idle release re-materializing the full history every turn even when nothing was evicted; and no blob-directory cleanup on writer teardown or session reopen.
+
+### Why an extension could not handle it
+
+- Blob naming, the idle settle boundary, the runtime message accessor, and the session-writer lifecycle are private store/`SessionManager`/`AgentSession` internals; extensions observe none of these transition points.
+
+### Expected merge conflict zones
+
+- LOW: `core/session-resident-store.ts` (id derivation, `_writeBlob`/`_readBlob`); `core/agent-session.ts` (`_emitAgentIdleAfterDeferredTurns`, `get messages`, estimator call sites, `dispose`); `core/session-manager.ts` (`_setSessionFile`, new `dispose`).
+
+### 2026-09-16 addendum - the last owner clears the blob directory
+
+- `packages/coding-agent/src/core/session-write-reservation.ts`: new `hasOtherLiveSessionWriter(path, self)` answers whether another live persisted writer still owns a session file, pruning collected refs like `liveSessionWritePaths()` does.
+- `packages/coding-agent/src/core/session-manager.ts`: both blob-directory releases (the stale clear in `_setSessionFile` and `dispose()`) go through `_releaseBlobsDirUnlessShared()`, which keeps the directory while another live manager owns the same session file. The app-server loads a thread that is already open (`modes/app-server/threads/registry.ts` disposes the duplicate `AgentSession`), and without this the duplicate's teardown took the live manager's cache, costing it a full JSONL recovery per evicted string.

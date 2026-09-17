@@ -1,5 +1,202 @@
 # senpi-codemode fork changes
 
+## 2026-09-17 - Reject cell declarations that would replace kernel globals (senpi#1784)
+
+### What changed
+
+- `src/kernels/js/worker-shadow-guard.js` (new) lazily snapshots `globalThis` own names at the first guard call — the first cell's transform, when prelude globals exist but no cell-created global does — and reports the first binding that would replace a protected global.
+- `src/kernels/js/worker-indirect-eval.js` calls the guard from `rewriteDeclaration` before emitting `globalThis[...]` assignments; a colliding top-level `const`/`let`/`var` (plain or destructured) now fails the cell with an error naming the identifier, the rename remedy, and the explicit `globalThis.<name>` escape hatch.
+- `test/kernel-js-persistence.test.ts` covers plain/let/var/destructured rejection, native-global survival in the next cell, prelude-global protection, re-declaration of cell-created globals, and explicit `globalThis` assignments staying untouched.
+- `scripts/qa-js-shadow-guard.ts` (new) drives the real kernel end to end: guard error text, native-global survival, destructured rejection, and re-declaration.
+
+### Why
+
+- Hoisting a declaration named after an existing global (`const fetch = ...`, `const [fetch] = ...`) silently replaced the platform or prelude global for every later cell; sessions wedged with confusing TypeErrors far from the cause and only a kernel reset recovered. The guard rejects the declaration before execution, so the failure is loud, local, and actionable.
+
+## 2026-09-16 - Bind kernel-tools types to the host declaration (senpi#1731)
+
+### What changed
+
+- `src/kernels/js/kernel-tools-types.ts` aliases `KernelToolsInvokeOptions` / `KernelToolsInvokeScope` / `KernelToolsHostScope` from `@code-yeongyu/senpi`'s `KernelToolInvokeOptions` / `KernelToolInvokeScope`, types `KernelToolsCapability` as `ExtensionKernelTools`, and `KERNEL_TOOLS_CAPABILITIES satisfies ExtensionKernelTools["capabilities"]`.
+- `src/tool/run-eval-cell.ts` types the cell capability object with `satisfies ExtensionKernelTools`.
+
+### Why
+
+- Coding-agent owns the public `ExtensionContext.kernelTools` declaration; this package implements it. Importing the host types here is the drift check (#1731).
+
+### Why an extension could not handle it
+
+- The capability object is constructed by the codemode kernel and published onto the host `kernelToolsStorage`; only this package can bind that object to the host type.
+
+### Expected merge conflict zones
+
+- LOW: `src/kernels/js/kernel-tools-types.ts`, `src/tool/run-eval-cell.ts`.
+
+## 2026-09-16 - Call-scoped host-tool policy for kernel-tool invoke (#1731)
+
+### What changed
+
+- `src/kernels/js/kernel-tools-types.ts` adds `KernelToolsInvokeScope`/`KernelToolsHostScope`/`KernelToolsInvokeOptions`, the `KERNEL_TOOLS_CAPABILITIES` marker (`invokeScope: true`) and widens `KernelToolsCapability.invoke` to `(request, options?: AbortSignal | KernelToolsInvokeOptions)`.
+- `src/kernels/js/kernel-tools-host.ts` normalizes the second argument, copies the caller's lists onto the `kernel-tool-invoke` frame only when the call names host tools, and rebuilds the typed refusal (`kernel_tool_host_denied` plus its `details`) from the reply.
+- `src/bridge/kernel-tools-protocol.ts` carries the optional `scope` on `kernel-tool-invoke` and the optional `details` payload on kernel-tool errors.
+- `src/kernels/js/kernel-tools-scope.js` holds the policy (deny wins, allow list refuses everything it does not name, malformed list fails closed) and the refusal factory; `src/kernels/js/kernel-tools-pump.js` puts the scope in the call-scoped bridge store and serializes `details`; `src/kernels/js/worker-core.js` refuses a scoped nested host call before it reaches the bridge.
+- `src/tool/run-eval-cell.ts` publishes `capabilities` on the cell's capability object and forwards the options through `JavaScriptKernel.invokeKernelTool`.
+
+### Why
+
+- A consumer granting a parent's kernel tool to a child with a narrower tool policy had only two options: refuse the grant, or let the closure's nested `tool.<host>()` calls run with the parent's full permissions (#1731). The scope is per call, so the parent's own cells and queue are untouched.
+
+### Why an extension could not handle it
+
+- The refusal must happen inside the JS worker's call-scoped bridge context, between the closure and the host bridge, which only the codemode kernel owns.
+
+### Expected merge conflict zones
+
+- LOW: `src/kernels/js/kernel-tools-*`, `src/bridge/kernel-tools-protocol.ts`, `src/tool/run-eval-cell.ts`.
+
+## 2026-09-16 - Kernel-tool capability on the worker tool-call path (#1754)
+
+### What changed
+
+- `src/tool/run-eval-cell.ts` computes the cell's `kernelTools` capability before the handler exists and passes it into `CellHandler` through `CellBridgeRuntime`.
+- `src/tool/cell-handler.ts` enters `kernelToolsStorage.run(kernelTools, ...)` around each `tool-call` dispatch (reserved `agent()`/`output()` bridges, completion, and ordinary host tools), so `ExtensionContext.kernelTools` resolves for exactly the duration of every host tool call a live JS cell makes.
+
+### Why
+
+- The kernel's message callback fires from the worker's own message loop, outside the `kernelToolsStorage.run` scope that only wrapped the awaited run chain, so every host tool dispatched by a running cell saw an empty store and refused kernel-tool grants with `tools_unavailable` (#1754); the capability from #1647 was unreachable in the shipped product.
+
+### Why an extension could not handle it
+
+- The dispatch boundary between the JS worker's message loop and the host tool runtime is owned by the codemode cell handler.
+
+### Expected merge conflict zones
+
+- LOW: `src/tool/cell-handler.ts`, `src/tool/run-eval-cell.ts`.
+
+## 2026-09-16 - Live host and foreign kernel-tool name collisions (#1647)
+
+### What changed
+
+- Session manager passes live `hostToolNames` / `foreignLanguageNames` providers into the JS kernel. Foreign names come from `listKernelToolNames()` on the other kernels of the same session (py/rb/jl).
+- Worker init still carries optional name arrays. The host re-resolves providers on worker start and before each cell via `kernel-tools-names`, so MCP attach after kernel start collides at `tool()`.
+- py/rb/jl kernels expose `listKernelToolNames()` (currently empty) as the source of truth for cross-language collisions.
+
+### Why
+
+- Host names were a one-shot `listTools()` snapshot, and `foreignLanguageNames` never left session-manager, so production JS `tool()` missed Python-side names and tools attached after worker start.
+
+### Why an extension could not handle it
+
+- Collision sets live in the worker registry and session kernel map.
+
+### Expected merge conflict zones
+
+- MEDIUM: `src/extension/session-manager.ts`, `src/kernels/js/worker-startup.ts`, `src/kernels/js/context-manager.ts`, `src/bridge/kernel-tools-protocol.ts`.
+
+## 2026-09-16 - Fail-closed JS kernel-tool parser and nested interrupt (#1647)
+
+### What changed
+
+- `src/kernels/js/kernel-tools-parse.js` is the only parser (Babel `.ts` copy removed). It accepts `function name(` / `async function name(` with IdentifierName parameters, including unicode and arrow-containing bodies, and rejects trailing commas, defaults, rest, destructuring, arrows, generators, and classes.
+- Worker init carries `hostToolNames` / `foreignLanguageNames` into `createKernelToolRegistry`. JS names that would require MCP mangling are rejected rather than rewritten.
+- Parent interrupt aborts nested kernel-tool waits with `kernel_tool_stale` so the host waiter settles once.
+- py/rb/jl kernels expose describe/invoke that return `tools_unavailable`.
+
+### Why
+
+- Unit tests locked the unused Babel parser while the worker guessed trailing commas, over-rejected `=>` in bodies, skipped live collision rules, and hung nested invokes across interrupt.
+
+### Why an extension could not handle it
+
+- Worker parser, init protocol, and nested pending maps are kernel internals.
+
+### Expected merge conflict zones
+
+- MEDIUM: `src/kernels/js/kernel-tools-parse.js`, `src/kernels/js/worker-core.js`, `src/kernels/js/worker-runtime.js`, `src/bridge/protocol.ts`.
+
+## 2026-09-16 - Reentrant JS kernel tool pump (#1647)
+
+### What changed
+
+- Host/worker protocol adds correlated kernel-tool describe/invoke/cancel/reply frames serviced off the top-level run queue.
+- Nested invokes use a call-scoped pending-reply map so `read()` inside a parent tool cannot deadlock behind `agent()`.
+- Recursive `agent()`/`workpool()` from a kernel tool returns `kernel_tool_recursion`; reset/kill rejects waiters with `kernel_tool_stale`.
+- `scripts/qa/omp-item6.ts` event-gates parent-awaits-child and reset/recursion cases.
+
+### Why
+
+- A parent JS cell awaiting a child must keep pumping nested host bridges without a second top-level eval.
+
+### Why an extension could not handle it
+
+- Worker message dispatch and run-queue ownership are kernel internals.
+
+### Expected merge conflict zones
+
+- MEDIUM: `src/kernels/js/worker-core.js`, `src/kernels/js/context-manager.ts`, `src/bridge/protocol.ts`.
+
+## 2026-09-16 - Fenced JS kernel tool descriptors (#1647)
+
+### What changed
+
+- `src/kernels/js/kernel-tools-*.js` parse named functions, apply MCP naming rules, and fence descriptors by generation/revision.
+- `tool(fn, metadata?)` is callable in the JS worker while `tool.<name>()` host calls remain.
+- `src/bridges/agent-bridge.ts` accepts and forwards `tools: string[]`.
+- Bridge protocol schemas include kernel-tool describe/invoke frames; production invoke pumping is not enabled yet.
+- `vitest.config.ts` merges workspace source aliases from `vitest.base.ts` so Node-hosted Vitest can load agent-bridge tests without package dist.
+
+### Why
+
+- In-process children need live, fenced parent JS functions without persisting closures or colliding with host/reserved names.
+
+### Why an extension could not handle it
+
+- Kernel globals, bridge frames, and agent argument forwarding are owned by codemode.
+
+### Expected merge conflict zones
+
+- MEDIUM: `src/bridge/protocol.ts` host/kernel unions, `src/kernels/js/worker-runtime.js` `tool` global, `src/bridges/agent-bridge.ts` argument schema.
+
+## 2026-09-16 - Workpool aggregate QA and reset retention (#1646)
+
+### What changed
+
+- `src/bridges/agent-bridge.ts` sets `additionalProperties: true` on the task-handle schema so extra producer fields match the frozen contract.
+- `scripts/qa/omp-item2-plugin.mjs` subscribes to `senpi-task.workpool-aggregate` on the parent session JSONL before close and asserts `pool_id`, keyed results in input order, and no `yield_unavailable`.
+
+### Why
+
+- Happy QA hardcoded `aggregateVerified: false` and could not certify a working O2 producer; kernel-reset tests inspected a canned fixture ID that could not observe a dropped engine pool.
+
+### Why an extension could not handle it
+
+- Task-handle validation and the checked-in workpool QA runner are owned by codemode; an extension cannot change the consumer schema or the ship-gate assertion.
+
+### Expected merge conflict zones
+
+- LOW: `agent-bridge.ts` schema options and `scripts/qa/omp-item2-plugin.mjs` aggregate extraction.
+
+## 2026-09-13 - Typed task handles and host workpool sugar (#1646)
+
+### What changed
+
+- `src/bridges/agent-bridge.ts` validates structural `task_id`/`run_epoch` details and removes all final-handle prose fallback. Background failures raise `invalid_task_handle`; foreground text/schema behavior is unchanged.
+- The JS/Python/Ruby/Julia preludes forward `workpool` create/push/close/inspect/cancel through the existing host-tool surface and retain only an opaque pool ID. Task handles retain the host epoch in every language.
+- `src/bridge/http-server.ts`, `src/tool/cell-handler.ts`, and the kernel error transports preserve typed error codes. Missing workpool hosts produce `workpool_unavailable`.
+- The eval helper documentation describes engine ownership and explicit close; `scripts/qa/omp-item2.ts` exercises all kernels and the separately built local O2 plugin without paid calls.
+
+### Why
+
+- Multiple task IDs in prose must not bind the wrong task, and kernel reset must not become the owner of engine work. A convenience adapter cannot select a worker default or emulate missing aggregate support.
+
+### Why an extension could not handle it
+
+- These bridge result boundaries and embedded prelude globals are owned by codemode. The engine itself remains an external host tool; no orchestration package is imported by product code.
+
+### Expected merge conflict zones
+
+- LOW: agent result validation, prelude helper installation, typed error forwarding, and helper documentation. No kernel scheduler, reserved bridge, task polling, or isolation changes.
+
 ## 2026-09-15 - Static detached cards and self-stopping live ticker (#1696)
 
 ### What changed

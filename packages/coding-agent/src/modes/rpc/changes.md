@@ -1,3 +1,68 @@
+## 2026-09-17 - Supervisor launch routes through its own module (senpi#1781)
+
+### What changed
+
+- New `packages/coding-agent/src/modes/rpc/supervisor-route.ts` owns the internal-supervisor argument detection and launch, so `main.ts` reaches `host-lifecycle` (and the rest of the RPC host cluster) only through an `await import(...)` on the supervisor branch.
+
+### Why
+
+- `host-lifecycle`, `rpc-mode` and `multi-session-host` were static imports of `main.ts`, adding 35 modules to every interactive boot that never runs an RPC host.
+
+### Why an extension could not handle it
+
+- Mode routing happens in the host entry before extensions load.
+
+### Expected merge conflict zones
+
+- LOW: the new module; MEDIUM where `main.ts` detects supervisor arguments.
+
+## 2026-09-17 - Socket credit on queue acceptance, dead-peer stall budget, deliverable cut notice (#1774)
+
+### What changed
+
+- `session-event-writer.ts`: `waitForSessionBackpressure` now settles socket destinations through `acceptActors` (`SocketEventSinkActor.waitForAcceptance()`), i.e. the record having been ACCEPTED into each connection's bounded queue, instead of `settleActors` (drain to empty). `flush()` and `drainUntilEmpty()` keep `settleActors`, so close/shutdown still drain. The empty-fanout (stdio/embedder) path still returns `flush()` and keeps its stdout backpressure wait. The actor lookup moved into a private `sessionActors()`.
+- `socket-event-fanout.ts`: `DEFAULT_STALL_MS` 4000 -> 30000, redocumented as a dead-peer liveness budget that is independent of `SESSION_WORKER_LIMITS.controlMs`; new `waitForAcceptance()` states the credit contract at the queue that owns it. Byte overflow at `maxQueueBytes` still cuts immediately, and the stall cut is otherwise unchanged (notice + `onFailure(SocketEventQueueStallError)`).
+- `socket-sink.ts` (extracted from `multi-session-host.ts`, same behaviour for `writeRaw`/`waitForBackpressure`): `close()` half-closes with `socket.end()` and destroys only after `SOCKET_CUT_GRACE_MS` (5 s) if the peer has still not read, instead of `socket.destroy()`. `writeRaw` is a no-op after the cut (no write-after-end on a connection that is going away).
+
+### Why
+
+- Worker credit was returned only after every connection's queue had drained to the kernel (`session-worker-client.ts:224` -> `waitForSessionBackpressure` -> `actor.flush()`), so the slowest client paced the producing worker, whose thread waits at most `controlMs` (5 s). That forced the stall cut below 5 s, and a client merely busy for 4 s with >= 16 KB pending (macOS unix stream buffers are 8 KB each way) was cut as dead, releasing every session it owned. Credit at acceptance removes the coupling; the cut becomes a real liveness detector.
+- The notice that explains a cut was written to a transport the peer was not reading and then dropped by `socket.destroy()`, so clients saw an unexplained `end`. A half-close delivers it to any peer that resumes within the grace, and the grace keeps a peer that never returns bounded.
+- Accepted trade-off: the producer is no longer paced by the reader, so a session that outruns a peer fills that peer's 64 MiB queue and the peer is cut on overflow. Producer-side bounding of multi-MB bursts is #1438.
+- Tests: `test/suite/rpc-socket-credit.test.ts` (10 s stalled peer, 50 records/~200 KiB, credit due with zero clock movement, no cut, all records delivered after resume), `test/suite/rpc-socket-cut-notice.test.ts` (real unix socket pair: stall and overflow notices readable before EOF inside the grace, destroy at the grace), `test/suite/rpc-socket-stall.test.ts` (budget pinned at 30 s and above `controlMs`; credit without drain; only the dead peer cut; the stdio lane survives).
+
+### Why an extension could not handle it
+
+- Transport flow control, worker credit and socket teardown are host infrastructure below the extension boundary.
+
+### Expected merge conflict zones
+
+- LOW: the `settleActors`/`acceptActors` aggregation sites in `session-event-writer.ts`, `DEFAULT_STALL_MS` and its comment in `socket-event-fanout.ts`, and the removed `socketSink` body in `multi-session-host.ts` (now `socket-sink.ts`). Upstream has no socket fanout.
+
+## 2026-09-17 - Retain a session across its last client's disconnect (#1776)
+
+### What changed
+
+- `open_session` accepts `retain_on_disconnect?: boolean` (default false). A retained session answers a connection drop with a DETACH: `beginClose` releases the attachment but leaves the entry `open` at zero attachments instead of transitioning to `closing`, in both the worker registry (`worker-session-registry.ts`) and the in-process registry (`session-teardown.ts`, shared by `session-registry.ts`).
+- `session-command-router.ts` passes the flag as host lifecycle policy (`RpcSessionOpenOptions`), not as part of the immutable launch profile, claims a drop-release with `{ detach: true }`, and skips the streaming-defer for retained sessions - there is no teardown to defer, so the attachment is released immediately and the turn settles on its own.
+- `list_sessions` rows carry an additive `attachments` count; `get_protocol_info` advertises the host capability `retain_on_disconnect` in multi-session mode.
+- Wire and client surface: `rpc-types.ts` types the request field and the additive `attachments` row field, `custom-capability.ts` defines the `RETAIN_ON_DISCONNECT_CAPABILITY` host string (advertised only by the multi-session router, since classic mode has no attachment refcount), `rpc-client.ts` exposes both to the in-repo client (`openSession({ retain_on_disconnect })`, `listSessions()[].attachments`), and `rpc-mode.ts` carries the updated D1 normative table in its module documentation.
+- `claimClose` options are typed so `drainAttachments` and `detach` cannot be combined: draining ENDS a session (dispose, idle eviction) and must always reach zero, while only a detach may be answered by staying open.
+
+### Why
+
+- Every session owned by a dropped connection went through the refcounted close, so a client that lost its socket for one second lost every idle session it owned and its reconnect raced the teardown (see #1774 for the stall cut that produces those disconnects). A reconnecting client needs the session to outlive the socket and to be re-attached by `sessionPath`.
+- Retention is deliberately not a new lifetime: an explicit `close_session`, host shutdown and the idle-eviction window still end a retained session, and an attach may only turn retention on, never off for clients already relying on it.
+
+### Why an extension could not handle it
+
+- Attachment refcounting, teardown and capability advertisement are host lifecycle; no extension surface reaches them.
+
+### Expected merge conflict zones
+
+- LOW: `beginSessionClose()` in `session-teardown.ts`, `beginClose()`/`attach()`/`list()` in `worker-session-registry.ts`, `openSession()`/`list()` in `session-registry.ts`, and `open()`/`releaseConnection()`/`claimClose()` in `session-command-router.ts`.
+- LOW: the additive field/type lines in `rpc-types.ts`, `custom-capability.ts`, `rpc-client.ts` and the D1 table in `rpc-mode.ts`; the advertised capability set is pinned exactly by `test/rpc-multi-session.test.ts` and `test/auto-title-sessions-flag.test.ts`, so any lane adding a capability conflicts there. Does not touch `socket-event-fanout.ts`, `session-event-writer.ts` or `session-worker-client.ts`.
+
 ## 2026-09-15 - Watchdog ppid fallback: zero-spawn supervisor check (#1507)
 
 ### What changed

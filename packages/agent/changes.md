@@ -1,5 +1,25 @@
 # changes
 
+## 2026-09-16 - Ship the tree-sitter grammar assets with the package (senpi#1685)
+
+### What changed
+
+- `packages/agent/assets/tree-sitter/javascript.wasm` and `packages/agent/assets/tree-sitter/web-tree-sitter.wasm`: the vendored grammar and runtime artifacts the structural read engine loads, recorded with their upstream package, version, license and SHA-256 in `packages/agent/assets/tree-sitter/provenance.json`.
+- `packages/agent/package.json`: adds the pinned `web-tree-sitter` runtime dependency, the pinned `@vscode/tree-sitter-wasm` measurement dependency, and `assets` to the published files.
+- `packages/agent/tsconfig.build.json`: includes `src/**/*.d.ts` so the packaged asset module declaration is part of the build program.
+
+### Why
+
+- Only a language the frozen selection binds to `wasm` loads a grammar, and that grammar has to exist in both the npm package and the compiled binary. Vendoring exactly the shipped artifacts keeps the binary delta to the measured 0.6 MB instead of installing every grammar the upstream package carries, and the provenance file is what `scripts/prepare-bun-compile-assets.mjs` verifies before a compile.
+
+### Why an extension could not handle it
+
+- Package files and dependencies are resolved before any extension loads; an extension cannot add an artifact to the published tarball or to a compiled binary.
+
+### Expected merge conflict zones
+
+- LOW: the dependency and files lists in `packages/agent/package.json`.
+
 ## 2026-09-12 - Pin the chord dependency to upstream's published version
 
 ### What changed

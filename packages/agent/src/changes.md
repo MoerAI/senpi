@@ -1,3 +1,201 @@
+## 2026-09-16 - Grammar-backed fold boundaries for structural reads (senpi#1685)
+
+### What changed
+
+- `packages/agent/src/harness/utils/read-folders/tree-sitter/syntax.ts`: a pure fold rule over a parsed syntax tree. It mirrors the compiler oracle's whitelist - block, module, switch, object and array interiors plus non-documentation comments - and protects parameter lists, heritage clauses, decorators, import declarations, binding patterns, computed member names, destructuring assignment targets, type annotations, `as`/`satisfies` operands and every declaration line through the line that opens its body. Any candidate overlapping a protected interval is dropped.
+- `packages/agent/src/harness/utils/read-folders/tree-sitter/engine.ts`: loads one grammar per language on first use, parses inside a 250 ms budget, and returns the injected fallback folder's own result when the grammar is absent, the tree has an error or the budget is exhausted.
+- `packages/agent/src/harness/utils/read-folders/tree-sitter/grammar-assets.ts`: resolves the vendored grammar and runtime artifacts from the package, the compiled binary's embedded assets, or the pinned measurement dependency, in that order.
+- `packages/agent/src/harness/utils/read-folders/compose.ts`: the hierarchy and scan-to-result composition both engines share, lifted out of `packages/agent/src/harness/utils/read-folders/index.ts`.
+- `packages/agent/src/harness/utils/read-folders/prepare.ts`: resolves the folder a default read must use for a path; only a language the frozen selection binds to `wasm` loads a grammar.
+- `packages/agent/src/harness/utils/read-folders/index.ts`: the frozen selection now names `wasm` for `.js` with the measured raw reasons for TypeScript and TSX, and `isReadSummaryPath` accepts a `wasm` selection.
+- `packages/agent/src/harness/tools/read.ts`: awaits the prepared folder before composing the default summary.
+- `packages/agent/src/index.ts` and `packages/agent/src/runtime-assets.d.ts`: export the prepare seam and declare the packaged WebAssembly asset imports.
+
+### Why
+
+- After #1644 the dependency-free scan qualified only for JSON; TypeScript and JavaScript were frozen raw pending the owner's WASM decision. #1685 answered it, and the re-run bake-off measures both engines per language under the same oracle, threshold rule and frozen-selection mechanism: JavaScript reaches a 41.93% median token saving against its 35.54% bar (heuristic: 0%), while TypeScript and TSX stay raw because the minimum oracle skeleton of most of their files exceeds the view's 100 visible-line budget.
+
+### Why an extension could not handle it
+
+- The read tool's default output and its frozen per-language selection are decided inside the agent package before any extension hook observes the read; an extension cannot change which folder the tool composes, nor bind an engine to the measurement receipt.
+
+### Expected merge conflict zones
+
+- LOW: the `READ_FOLDER_SELECTION` literal and the `fold` switch in `packages/agent/src/harness/utils/read-folders/index.ts`, which the fork already owns.
+- LOW: the summary call site in `packages/agent/src/harness/tools/read.ts`, now preceded by an awaited folder resolution.
+
+## 2026-09-16 - Fork-local rate guard withdrawn; the loop bounds silence only (senpi#1759)
+
+### What changed
+
+- `packages/agent/src/agent-loop.ts`: the assistant event reader no longer measures how fast a live stream delivers, and no longer aborts the request controller on a rate verdict. It is back to the two silence bounds - the stream-start bound until the first event, and the inter-event idle bound.
+- `packages/agent/src/types.ts`: the loop-config option that carried the rate thresholds is removed.
+- `packages/agent/src/agent.ts`: the matching runtime option, its public field and its forwarding into every loop config are removed.
+- `packages/agent/src/index.ts`: the exports that published that module's surface are removed, and the module itself is deleted.
+
+### Why
+
+- The guard failed healthy turns: a normal stream measured just under the shipped floor had its request aborted mid tool call, and thinking-heavy models and gateways that batch several tokens into one delta routinely stay under it. Aborting the controller also discarded the partial answer instead of delivering it slowly. It is withdrawn rather than retuned, so these files match their pre-guard shape again.
+
+### Why an extension could not handle it
+
+- The bound lived inside the agent loop's stream reader, which no extension can observe or replace; removing it likewise has to happen here.
+
+### Expected merge conflict zones
+
+- LOW: `createAssistantEventReader` / `readNextAssistantEvent` in `packages/agent/src/agent-loop.ts` are back to the upstream shape, so an upstream edit to the start or idle bounds now applies cleanly.
+
+## 2026-09-16 - Forward thinking live in the empty-assistant recovery wrapper (#1733)
+
+### What changed
+
+- `packages/agent/src/empty-assistant-recovery.ts` commits an attempt (starts forwarding) on the first meaningful content event: non-blank `thinking_delta`, visible `text_delta`, `toolcall_start`, or a `text_end`/`thinking_end` carrying content. Previously only `toolcall_start` and visible `text_delta` committed, so a reasoning model's whole thinking phase was buffered.
+- `CommitPolicy.thinkingCommits` is false for the Kimi XTML lane (`hasKimiTextToolCallRecovery`): that thinking channel is the documented misrouting vector for text tool calls, and `wrapStreamWithKimiThinkingRecovery` forwards deltas untouched and only rewrites the finished message, so streaming it live would expose protocol fragments the recovery later removes (the #759 production incident). Kimi keeps the buffered contract until the thinking recovery sanitizes deltas and partials as they stream.
+- A committed attempt that ends as an empty stop or a `tool_use` stop without a tool call is not retried inside the wrapper. It ends as a `stopReason: "error"` message with `FORWARDED_EMPTY_RESPONSE_ERROR` / `FORWARDED_EMPTY_TOOL_USE_ERROR` (defined in pi-ai `utils/empty-response-errors.ts`), the streamed content preserved, and a `{ retries: 0, forwarded: true }` recovery diagnostic. pi-ai's retry classifier treats those two texts as retryable, so `AgentSession` drops the message from agent state and re-requests.
+- Uncommitted attempts keep the one silent retry and the terminal "twice" errors unchanged.
+
+### Why
+
+- Session data over seven days showed 79-83% of Claude and Kimi turns with thinking were held invisible for a median of 15-28 s (p90 31-52 s) until the first text delta, while the wrapper's silent retry fired 12 times in 58,801 assistant messages. oh-my-pi's `withReplaySafeStreamRetry` commits on `thinking_delta` and leaves post-commit empty stops to its session-level turn recovery; this mirrors that split with senpi's existing turn retry.
+
+### Why an extension could not handle it
+
+- The hold happens inside the agent loop's stream function wrapper, below `before_provider_request` and above every subscriber; no extension hook observes events before they are forwarded.
+
+### Rejected alternative
+
+- Replaying a retry after forwarding and splicing its events onto the first attempt's partial. A second `start` duplicates the partial message in the loop, and a message mixing attempt-one thinking with attempt-two content cannot be replayed to Anthropic, whose signed thinking blocks must be returned unmodified with the response that produced them.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/agent/src/empty-assistant-recovery.ts` forwarding gate and terminal handling; `packages/ai/src/utils/retry.ts` RETRYABLE pattern list. Preserve the split: uncommitted -> in-stream retry, committed -> retryable error.
+
+## 2026-09-15 - Do not fold fields-only class bodies (#1639)
+
+### What changed
+
+- `packages/agent/src/harness/utils/read-folders/brace-scanner.ts` no longer marks a class-body `{` foldable after `HeaderProtection.open` consumes the class header. Initializer objects, static-block bodies and method bodies inside the class remain eligible.
+- `packages/agent/src/harness/utils/read-folders/header-protection.ts` returns whether `open` closed a class header, and clears the sticky assignment-target marker on the next word token so ASI-style value objects are not over-protected.
+- The adversarial grammar adds class-field, static-block, accessor, computed getter/setter and async-generator computed-method contexts. Enumeration pins 1440 programs / 244 emitted ranges / 0 counterexamples.
+- `packages/agent/src/harness/utils/read-folders/index.ts` re-freezes the measured selection receipt hash and its measurement commit after the requalified bake-off.
+
+### Why
+
+- A class whose members are only fields or `static` blocks has no method-header intervals, so a wholesale class-body fold hid every member declaration and emitted a range the independent oracle rejects.
+
+### Why an extension could not handle it
+
+- The public folder returns these ranges below either reader's extension surface; member declarations must remain visible before rendering or qualification.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/agent/src/harness/utils/read-folders/brace-scanner.ts` class-body foldability and `header-protection.ts` `open` return. Preserve the class-body exclusion; do not whitelist `ClassBody` in the oracle.
+
+## 2026-09-14 - Computed members and assignment-pattern retention (#1639)
+
+### What changed
+
+- `packages/agent/src/harness/utils/read-folders/brace-scanner.ts` protects computed names in object literals as well as class bodies, and marks every value-position array/object so a later `=` can reclassify it.
+- `packages/agent/src/harness/utils/read-folders/header-protection.ts` gives every protected member context an interval for the overlap filter, and retrospectively protects expression-shaped assignment targets at `=`.
+- `packages/agent/src/harness/utils/read-folders/lexical-context.ts` replaces the class-only computed-name marker with that value-position marker; the brace parent now supplies member context.
+- `packages/agent/src/harness/utils/read-folders/index.ts` re-freezes the measured selection receipt hash and its measurement commit after the requalified bake-off.
+- The independent AST oracle excludes complete assignment target subtrees, and the production bake-off requires the fixed adversarial grammar to pass before freezing a receipt.
+
+### Why
+
+- Computed member names and destructuring-assignment defaults can contain executable object literals without becoming implementation bodies. Both interior and enclosing folds must retain them.
+
+### Why an extension could not handle it
+
+- The public folder returns these ranges below either reader's extension surface; safety must be proved before rendering or qualification.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/agent/src/harness/utils/read-folders/brace-scanner.ts` and `packages/agent/src/harness/utils/read-folders/header-protection.ts` delimiter state. Preserve retrospective target protection and rejection of every overlapping fold.
+
+## 2026-09-14 - Declaration-safe read qualification (#1639)
+
+### What changed
+
+- `packages/agent/src/harness/utils/read-folders/header-protection.ts` tracks class/function headers and protected parameter, binding and nested declaration intervals until a proven implementation body.
+- `packages/agent/src/harness/utils/read-folders/brace-scanner.ts` rejects every candidate range that overlaps those intervals and fails raw when a type/operator boundary cannot be proved.
+- `packages/agent/src/harness/utils/read-folders/{index,lexical-context,lexical-spans}.ts` freeze the requalified JSON-only default while retaining safe JS/TS candidates for measurement.
+
+### Why
+
+- Declaration text inside class heritage, return types or nested headers must remain visible even when a numerically valid outer body range would contain it. The conservative candidate no longer meets the JavaScript quality threshold, so JavaScript must ship raw.
+
+### Why an extension could not handle it
+
+- The shared folder and default-language registry run below extensions in both read implementations; only this layer can prevent unsafe ranges from reaching the renderer.
+
+### Expected merge conflict zones
+
+- MEDIUM: `packages/agent/src/harness/utils/read-folders/brace-scanner.ts` lexical state and `index.ts` frozen selection. Preserve overlap rejection and JSON-only enablement during upstream integration.
+
+## 2026-09-13 - Corrective production read selection (#1639)
+
+### What changed
+
+- `packages/agent/src/harness/tools/read.ts` reuses `FileError("aborted")` after fresh bytes and before folding.
+- `packages/agent/src/harness/utils/read-folders/index.ts` originally bound JS/JSON defaults; the 2026-09-14 requalification above supersedes that selection and keeps JS/TS raw.
+- `packages/agent/src/harness/utils/read-folders/brace-scanner.ts` protects arrow-return signatures and classifies definite call arguments, balanced brace-free type arguments and comparison scopes without dropping ambiguity guards.
+- `packages/agent/src/harness/utils/segmented-read-view.ts` proves renderer exhaustiveness while preserving runtime invalid-segment errors.
+
+### Why
+
+- `packages/agent/src/harness/tools/read.ts` must preserve the environment's structured cancellation code rather than throwing an untyped cancellation error.
+
+### Why an extension could not handle it
+
+- `packages/agent/src/harness/tools/read.ts` is the injectable lower-level filesystem reader below extension execution.
+
+### Expected merge conflict zones
+
+- `packages/agent/src/harness/tools/read.ts`: error imports and the post-read cancellation check; both truncators remain unchanged.
+
+## 2026-09-13 - Structural default reads with exact range fallback
+
+### What changed
+
+- `packages/agent/src/harness/tools/read.ts`: default construction injects the frozen folder and composes the shared view only after the existing truncator accepts the input. Explicit ranges and optional-folder absence preserve verbatim reads; cancellation is checked before folding.
+- `packages/agent/src/harness/utils/segmented-read-view.ts`: adds the shared default-read eligibility adapter without duplicating rendering or footer policy.
+- `packages/agent/src/harness/utils/read-folders/index.ts`: exposes eligibility from the frozen language selection so custom folders cannot bypass prose/unsupported exemptions.
+
+### Why
+
+- `packages/agent/src/harness/tools/read.ts` must match the coding-agent reader's default summary and exact offset/limit rereads without altering existing truncation inclusivity or edit anchors.
+
+### Why an extension could not handle it
+
+- `packages/agent/src/harness/tools/read.ts` is the lower-level injectable tool used without the coding-agent extension runtime; both readers must call the same pure implementation.
+
+### Expected merge conflict zones
+
+- LOW: imports, default options and the text-output branch in `packages/agent/src/harness/tools/read.ts`. Preserve the raw/truncation branches and both truncate modules unchanged.
+
+## 2026-09-13 - Measured folders and shared segmented read views
+
+### What changed
+
+- `packages/agent/src/index.ts`: exports the selected folder, immutable D4 policy and pure segmented-view contract.
+- `packages/agent/src/harness/tools/read.ts`: adds the optional `ReadToolOptions.folder` type seam only; execution is unchanged pending read integration.
+- `packages/agent/src/harness/utils/segmented-read-view.ts`: owns segment validation, FIFO breadth-first refinement, exact source rendering and offset/limit footer metadata.
+- `packages/agent/src/harness/utils/read-folders/{index,types,brace-scanner,lexical-spans}.ts`: productionizes the row-17 TS/JS/JSON scanner and frozen selection without grammar dependencies; unsupported languages and prose remain explicit fallbacks.
+
+### Why
+
+- `packages/agent/src/index.ts` exposes a single reusable contract so both read surfaces can consume identical validated views without an agent-to-coding-agent dependency.
+- `packages/agent/src/harness/tools/read.ts` reserves the folder injection seam without changing today's raw reader before parity integration is verified.
+
+### Why an extension could not handle it
+
+- `packages/agent/src/index.ts` and `packages/agent/src/harness/tools/read.ts` own the public library exports and reader options used below the coding-agent extension layer.
+
+### Expected merge conflict zones
+
+- LOW: `packages/agent/src/index.ts` utility re-exports and `packages/agent/src/harness/tools/read.ts` imports/options; no execute or truncation changes.
+
 ## 2026-09-13 - Keep the harness/session entry graph off the AI barrel
 
 ### What changed

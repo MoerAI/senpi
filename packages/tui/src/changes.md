@@ -1,5 +1,25 @@
 # TUI delta rendering fork changes
 
+## 2026-09-17 - Repeated dollar mentions and styled skill tokens (senpi#1778)
+
+### What changed
+
+- `packages/tui/src/dollar-invocation-autocomplete.ts`: `getDollarInvocationContext` completes any `$query` at a whitespace boundary regardless of earlier `$` tokens; slash commands are offered only while the token is the first thing in the prompt; an exact known-skill token closes the popup. New `findDollarSkillMentions(line, knownSkills)` and `knownSkillNames(commands)`.
+- `packages/tui/src/autocomplete.ts`: `AutocompleteProvider.getMentionRanges?(line)` and `MentionRange`; `CombinedAutocompleteProvider` implements it from its `skill:` commands.
+- `packages/tui/src/components/editor.ts`: `LayoutLine` carries `logicalLine`/`startIndex`; `EditorTheme.mention?` styles resolved mention ranges. Row composition moved to `packages/tui/src/components/editor-line-render.ts` (`renderEditorLine`), which styles the cursor grapheme and each mention fragment separately so the cursor's SGR reset cannot bleed into a mention.
+
+### Why
+
+- senpi#1778: after one `$skill` the popup no longer opened for a later `$`, and a resolved mention was indistinguishable from prose.
+
+### Why an extension could not handle it
+
+- The editor owns row composition and the popup trigger policy.
+
+### Expected merge conflict zones
+
+- MEDIUM: `editor.ts` `render()` cursor branch (replaced by `renderEditorLine`) and the `layoutText` pushes; LOW: `autocomplete.ts` interface.
+
 ## 2026-09-14 - Out-of-band tmux frame anchors (#1645)
 
 ### What changed

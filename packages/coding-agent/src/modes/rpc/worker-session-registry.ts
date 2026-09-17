@@ -10,6 +10,7 @@ import {
 	type OpenRpcSession,
 	type RpcSessionEntry,
 	type RpcSessionLaunchProfile,
+	type RpcSessionOpenOptions,
 	RpcSessionRegistryError,
 } from "./session-registry.ts";
 import { SessionWorkerClient } from "./session-worker-client.ts";
@@ -35,13 +36,13 @@ export class WorkerSessionRegistry {
 		return this.entries.size;
 	}
 
-	async openSession(profile: RpcSessionLaunchProfile): Promise<OpenRpcSession> {
+	async openSession(profile: RpcSessionLaunchProfile, options?: RpcSessionOpenOptions): Promise<OpenRpcSession> {
 		if (!isAbsolute(profile.cwd) || (profile.sessionPath !== undefined && !isAbsolute(profile.sessionPath)))
 			throw new RpcSessionRegistryError("invalid_path");
 		if (profile.sessionPath) {
 			const key = this.knownReservationKey(profile.sessionPath);
 			const owner = key ? this.reservations.owner(key) : undefined;
-			if (key && owner) return this.attach(owner, key);
+			if (key && owner) return this.attach(owner, key, options);
 		}
 		if (this.size >= SESSION_WORKER_LIMITS.workers) throw new Error("too_many_sessions");
 		const handle = `rpc-${++this.serial}`;
@@ -51,6 +52,7 @@ export class WorkerSessionRegistry {
 			profile: Object.freeze({ ...profile }),
 			cwd: profile.cwd,
 			attachments: 1,
+			retainOnDisconnect: options?.retainOnDisconnect === true,
 			lastCommandAt: this.now(),
 			lifecycleMutex: Promise.resolve(),
 		};
@@ -75,7 +77,7 @@ export class WorkerSessionRegistry {
 			const path = await worker.prepare(this.options.configuration, profile);
 			const owner = this.reservations.owner(path);
 			if (owner) {
-				const attached = this.attach(owner, path);
+				const attached = this.attach(owner, path, options);
 				entry.state = "quarantined";
 				worker.quarantine();
 				return attached;
@@ -116,7 +118,7 @@ export class WorkerSessionRegistry {
 		return entry;
 	}
 
-	beginClose(handle: string, onRole?: (finalizer: boolean) => void): RpcSessionEntry {
+	beginClose(handle: string, onRole?: (finalizer: boolean) => void, options?: { detach?: boolean }): RpcSessionEntry {
 		const entry = this.entries.get(handle);
 		if (!entry) throw new RpcSessionRegistryError("unknown_session");
 		if (entry.state === "closing" || entry.state === "quarantined") {
@@ -126,6 +128,12 @@ export class WorkerSessionRegistry {
 		if (entry.state !== "open" && entry.state !== "opening") throw new RpcSessionRegistryError("unknown_session");
 		entry.attachments--;
 		if (entry.attachments > 0) return entry;
+		// A retained session answers a client's detach by staying open at zero
+		// attachments; only an explicit close or eviction reaches the worker.
+		if (options?.detach && entry.retainOnDisconnect) {
+			entry.attachments = 0;
+			return entry;
+		}
 		entry.state = "closing";
 		entry.closeCompletion = new Promise((resolve) => {
 			entry.closeResolve = resolve;
@@ -165,6 +173,7 @@ export class WorkerSessionRegistry {
 		cwd: string;
 		name?: string;
 		status: Exclude<RpcSessionEntry["state"], "quarantined">;
+		attachments: number;
 	}> {
 		return [...this.entries].map(([sessionId, entry]) => {
 			const state = entry.worker?.snapshot?.state;
@@ -174,6 +183,8 @@ export class WorkerSessionRegistry {
 				sessionPath: state?.sessionFile ?? entry.sessionPath,
 				cwd: state?.cwd ?? entry.cwd,
 				name: state?.sessionName,
+				// A closing entry has already released its last attachment; never publish that as negative.
+				attachments: Math.max(0, entry.attachments),
 				status: entry.state === "quarantined" ? "closing" : entry.state,
 			};
 		});
@@ -197,12 +208,15 @@ export class WorkerSessionRegistry {
 		return undefined;
 	}
 
-	private attach(owner: string, path: string): OpenRpcSession {
+	private attach(owner: string, path: string, options?: RpcSessionOpenOptions): OpenRpcSession {
 		const entry = this.entries.get(owner);
 		if (entry?.state !== "open" || !entry.worker?.bindingReady || entry.worker.snapshot?.sessionPath !== path)
 			throw new RpcSessionRegistryError("session_path_in_use");
 		const result = this.openResult(owner, entry);
 		entry.attachments++;
+		// Retention is a property of the live session: any attach may ask for it, and
+		// no attach may revoke it for the clients that already rely on it.
+		if (options?.retainOnDisconnect) entry.retainOnDisconnect = true;
 		entry.lastCommandAt = this.now();
 		return { ...result, attached: true };
 	}

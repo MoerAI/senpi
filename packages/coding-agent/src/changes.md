@@ -1,5 +1,156 @@
 # changes
 
+## 2026-09-17 - The bundled entry replays exec arguments onto itself (senpi#1781)
+
+### What changed
+
+- `packages/coding-agent/src/cli.ts`: `spawnFullCli()` resolves the respawn target from `isBundledNode` - the bundle re-executes its own `import.meta.url`, an unbundled install keeps spawning the sibling `cli-main`. The bundled child carries `SENPI_CLI_ISOLATED_CHILD=1`, which `requiresIsolatedProcess()` reads first so it loads the agent in process instead of spawning again.
+
+### Why
+
+- The bundle inlines `cli-main`, so no sibling module exists beside it. Once the package build started emitting the bundle and the launcher preferred it, every launch carrying custom exec arguments (a profiler or inspector flag, anything in `NODE_OPTIONS`) failed with `Module not found .../dist/bundle/cli-main.js` before any agent code ran.
+
+### Why an extension could not handle it
+
+- Process structure is decided by the entry module before the extension host exists.
+
+### Expected merge conflict zones
+
+- LOW: `requiresIsolatedProcess()` and `spawnFullCli()` in `cli.ts`.
+
+## 2026-09-17 - Defer command and mode graphs out of main()'s import block (senpi#1781)
+
+### What changed
+
+- `packages/coding-agent/src/main.ts`: the app-server command tree, the RPC host cluster (rpc-mode, multi-session-host, host-lifecycle, interactive-host-runtime), the package-manager CLI, the `--list-tips` registry and the `--resume` session picker are `await import(...)`ed at the branch that owns them instead of at module load; the one-shot command dispatch and the supervisor launch moved into `src/cli/deferred-commands.ts` and `src/modes/rpc/supervisor-route.ts` so `main.ts` did not grow.
+- `main()` records `processStart->main` from `process.uptime()` as the first row of the PI_TIMING main table, and the `PI_STARTUP_BENCHMARK` branch exits 0 after draining stdout/stderr.
+
+### Why
+
+- Those graphs were evaluated before argv was even parsed: 92 of 2,780 resolved modules and about 147ms of import cost for code an interactive run never reaches. The pre-main phase was invisible because the timing table's clock starts inside `main()`, and a benchmark run never exited because interactive mode's terminal handles outlive its `stop()`.
+
+### Why an extension could not handle it
+
+- This is the host's own entry module; its import graph, timing instrumentation and benchmark exit all run before any extension exists.
+
+### Expected merge conflict zones
+
+- MEDIUM: the import block at the top of `main.ts`, the dispatch sequence at the start of `main()`, and the mode dispatch tail.
+
+## 2026-09-17 - Skip completed directory-scan migrations on later boots (senpi#1781)
+
+### What changed
+
+- `packages/coding-agent/src/migrations-state.ts` (new): reads and writes `<agentDir>/migrations-state.json` (schema version 1, completed scan names); the read is fail-open and the write is tmp+rename.
+- `packages/coding-agent/src/migrations.ts`: `runMigrations` skips `migrateLegacySenpiDirs` and `migrateSessionsFromAgentRoot` when the marker lists them, then records them once both complete.
+
+### Why
+
+- Those two migrations are idempotent directory scans that cost `readdirSync` work on every boot long after the legacy layouts are gone; the other migrations (auth, tools-to-bin, keybindings, extension system, brand dir) still run every start.
+
+### Why an extension could not handle it
+
+- `runMigrations` runs in `main.ts` before the extension host exists.
+
+### Expected merge conflict zones
+
+- LOW: the body of `runMigrations`.
+
+## 2026-09-16 - Type kernelTools as the shipped invoke-scope surface (senpi#1731)
+
+### What changed
+
+- `packages/coding-agent/src/index.ts` exports `ExtensionKernelTools`, `KernelToolInvokeOptions`, and `KernelToolInvokeScope` as the public shipped kernel-tools surface.
+
+### Why
+
+- `packages/coding-agent/src/index.ts` is the public `@code-yeongyu/senpi` surface; typed consumers of `kernelTools` were still on the pre-#1765 `AbortSignal`-only declaration.
+
+### Why an extension could not handle it
+
+- Package index re-exports are owned by coding-agent; an extension cannot change the published host type.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/index.ts` adjacent to the `kernelToolsStorage` export.
+
+## 2026-09-16 - Order worker output to one client scope (senpi#1676)
+
+### What changed
+
+- `packages/coding-agent/src/experimental/session-worker-manager.ts`: service events and operation responses for one attachment scope now share a single FIFO (`#forwardInScopeOrder`) instead of an async per-subscription delivery chain plus an immediately settled response. A response is handed to the presentation client only after every provider update the worker emitted before it has been forwarded, so the client observes the worker's emission order; buffering stays bounded by the transport's existing pending-byte limit, whose overflow disconnects that peer explicitly.
+- `packages/coding-agent/src/experimental/client.ts`: `runClient` keeps its transcript subscription until the prompted run's own terminal event (`run_end`/`run_suspend`) has been delivered, bounded by `RUN_TAIL_TIMEOUT_MS`, instead of unsubscribing the moment the prompt response resolves.
+
+### Why
+
+- senpi#1676: a worker emits a run's transcript updates and that run's response on one control channel in order, but the server forwarded them on two independent paths. Under a client that was slow to drain its socket, the prompt response overtook the queued updates, and the client tore its subscription down on the response - the received event list ended at `entry_added` with `run_end` missing (reproduced with a stalled peer write), and the same race could return an empty answer because the assistant `message_end` had not been delivered either.
+
+### Why an extension could not handle it
+
+- The ordering hazard is inside the host's worker-to-client forwarding and the client command's own subscription lifetime; no extension surface observes either.
+
+### Expected merge conflict zones
+
+- MEDIUM: `#handleOperationResponse` and `#handleServiceEvent` in `session-worker-manager.ts`, plus the removed `deliveryTail` field on `WorkerServiceSubscription`. LOW: the prompt block of `runClient` in `client.ts`.
+
+||||||| a07f94adb3
+
+## 2026-09-16 - Answer `--help` without booting the engine (oh-my-openagent#8371)
+
+### What changed
+
+- `packages/coding-agent/src/cli.ts`: a plain root `--help`/`-h` is answered before `cli-main` is imported when `cli/help-fast-path.ts` finds a valid flags cache for this cwd, agent dir, `--extension` set and project-trust decision; the import stays dynamic for the same reason the `cli-main` import is. `--no-extensions` is answered without any cache.
+- `packages/coding-agent/src/main.ts`: a plain `--help` stops right after CLI paths are resolved. It resolves extension flags through `cli/help-extension-flags.ts` (a `DefaultResourceLoader` with skills, prompt templates, themes and context files disabled; no `ModelRuntime`, no `SessionManager`, no `AgentSession`), prints help, writes `<agentDir>/cache/help-flags.json` through `cli/help-flags-cache.ts` and exits. Every full launch also refreshes that cache from the runtime's loaded extensions right after the late `parsed.help` branch, which now only serves `--help --mode json` / `-p --help`.
+- Project trust for the help path is `--yolo`/override → recorded `trust.json` decision → trusted when the project carries no trust-requiring resources; it never prompts and never loads untrusted project extension code.
+
+### Why
+
+- oh-my-openagent#8371: `omo --help` measured 47.8s on Windows and 790ms warm / 8.8-13.6s cold on bun here, all spent building a runtime the help screen never uses. Cached help now costs 28ms (bun) / 59ms (node); a cache miss costs the extension load only.
+
+### Why an extension could not handle it
+
+- The help screen is printed by the host before any extension is bound, and the cost being removed is the host's own runtime construction.
+
+### Expected merge conflict zones
+
+- MEDIUM: `main.ts` around the `resolveCliPaths` block and the late `if (parsed.help)` branch; LOW: `cli.ts` next to the `--version` fast path.
+
+## 2026-09-16 - Print mode explains provider stalls (senpi#1740)
+
+### What changed
+
+- `packages/coding-agent/src/modes/print-mode.ts`: the terminal `console.error` for an errored or aborted final assistant message routes `errorMessage` through `describeProviderStallForUser` first, so a headless run reports the stall in plain language and keeps every other error verbatim. The exit code and stdout path are unchanged.
+
+### Why
+
+- senpi#1740: `senpi -p` printed the stream watchdog's interpolated message as the whole failure output, which names no cause and no next step.
+
+### Why an extension could not handle it
+
+- Print mode's final output is written by the host after the session settles.
+
+### Expected merge conflict zones
+
+- LOW: one import line and the `console.error` call in the `mode === "text"` branch.
+
+## 2026-09-16 - Export kernelTools storage (senpi#1647)
+
+### What changed
+
+- packages/coding-agent/src/index.ts exports kernelToolsStorage and ExtensionKernelTools for senpi-codemode.
+
+### Why
+
+- packages/coding-agent/src/index.ts is the public `@code-yeongyu/senpi` surface the originating eval uses to bind kernel tools onto host-tool context.
+
+### Why an extension could not handle it
+
+- Package index re-exports are owned by coding-agent; an extension cannot add a host context capability type.
+
+### Expected merge conflict zones
+
+- packages/coding-agent/src/index.ts adjacent to other extension exports.
+
 ## 2026-09-14 - Clickable pending questions and capture controls (#1645)
 
 ### What changed

@@ -1,6 +1,10 @@
 import { VERSION } from "../../config.ts";
 import { buildRpcSessionState } from "./connection-handler.ts";
-import { AUTO_TITLE_SESSIONS_CAPABILITY, MEDIA_PLACEHOLDERS_CAPABILITY } from "./custom-capability.ts";
+import {
+	AUTO_TITLE_SESSIONS_CAPABILITY,
+	MEDIA_PLACEHOLDERS_CAPABILITY,
+	RETAIN_ON_DISCONNECT_CAPABILITY,
+} from "./custom-capability.ts";
 import type { RpcCommand, RpcResponse } from "./rpc-types.ts";
 import {
 	RPC_ERROR_MISSING_SESSION_ID,
@@ -39,6 +43,13 @@ export interface RpcSessionIdlePolicy {
 	 */
 	canExitWhenEmpty?: () => boolean;
 }
+
+/**
+ * How one caller claims a close. `detach` (a client going away) is the only mode a
+ * retained session may answer by staying open, so it is unrepresentable together
+ * with `drainAttachments` - draining ENDS the session and must always reach zero.
+ */
+type CloseClaimOptions = { drainAttachments: true; detach?: never } | { drainAttachments: false; detach?: boolean };
 
 function error(id: string | undefined, command: string, code: string): RpcResponse {
 	return { id, type: "response", command, success: false, error: code };
@@ -110,6 +121,9 @@ export class SessionCommandRouter {
 				"multi_session",
 				AUTO_TITLE_SESSIONS_CAPABILITY,
 				MEDIA_PLACEHOLDERS_CAPABILITY,
+				// Host capability, not a client opt-in: only a multi-session host owns the
+				// attachment refcount `open_session.retain_on_disconnect` detaches from.
+				RETAIN_ON_DISCONNECT_CAPABILITY,
 				...(this.connectionOptions?.capabilities ?? []),
 			]);
 			return {
@@ -276,16 +290,20 @@ export class SessionCommandRouter {
 	): Promise<RpcResponse | undefined> {
 		let opened: OpenRpcSession | undefined;
 		try {
-			opened = await this.registry.openSession({
-				cwd: command.cwd ?? this.defaults.cwd,
-				sessionPath: command.sessionPath,
-				permissionPreset: command.permissionPreset ?? this.defaults.permissionPreset,
-				creationModel:
-					command.provider && command.modelId
-						? { provider: command.provider, modelId: command.modelId }
-						: this.defaults.creationModel,
-				initialThinkingLevel: command.thinkingLevel ?? this.defaults.initialThinkingLevel,
-			});
+			opened = await this.registry.openSession(
+				{
+					cwd: command.cwd ?? this.defaults.cwd,
+					sessionPath: command.sessionPath,
+					permissionPreset: command.permissionPreset ?? this.defaults.permissionPreset,
+					creationModel:
+						command.provider && command.modelId
+							? { provider: command.provider, modelId: command.modelId }
+							: this.defaults.creationModel,
+					initialThinkingLevel: command.thinkingLevel ?? this.defaults.initialThinkingLevel,
+				},
+				// Host lifecycle policy, deliberately outside the immutable launch profile.
+				{ retainOnDisconnect: command.retain_on_disconnect === true },
+			);
 			const openedSession = opened;
 			const entry = this.registry.getForCommand(openedSession.sessionId, "open_session");
 			if (owner !== undefined) {
@@ -421,9 +439,14 @@ export class SessionCommandRouter {
 					// lifecycle observer, leaking the busy counter so the host never
 					// idle-exits. Defer - never skip - the release until the turn settles,
 					// so the dropped owner's reservation still frees afterwards.
+					//
+					// A retained session is never closed by a drop, so it has nothing to defer:
+					// release the attachment now - the client is already gone and must not keep
+					// counting - and let the turn run to settlement on its own.
 					const live = this.registry.peek(sessionId);
+					const retained = live?.retainOnDisconnect === true;
 					const session = live?.state === "open" ? live.runtime?.session : undefined;
-					if (live?.state === "open" && live.worker?.snapshot?.streaming) {
+					if (!retained && live?.state === "open" && live.worker?.snapshot?.streaming) {
 						const unsubscribe = live.worker.subscribeSettled(() => {
 							unsubscribe();
 							void this.releaseOwnedSession(sessionId).catch((cause: unknown) => {
@@ -434,7 +457,7 @@ export class SessionCommandRouter {
 						});
 						continue;
 					}
-					if (session?.isStreaming) {
+					if (!retained && session?.isStreaming) {
 						let released = false;
 						const unsubscribe = session.subscribe((event) => {
 							if (event.type !== "agent_settled" && event.type !== "agent_idle") return;
@@ -460,14 +483,18 @@ export class SessionCommandRouter {
 	/**
 	 * One owned handle's refcounted close: the same sequence as an explicit
 	 * close_session, tolerant of races with other lifecycle paths (an entry
-	 * already closed or claimed elsewhere is simply skipped). Disposal, pending
+	 * already closed or claimed elsewhere is simply skipped), except that it claims
+	 * a DETACH: a retained entry keeps running at zero attachments instead of
+	 * closing, so this path releases the client's claim without ending the session.
+	 * Disposal, pending
 	 * extension-UI cancellation and binding removal happen only when this was the
 	 * LAST attachment (the entry transitioned to "closing"): surviving
 	 * attachments keep the shared binding and their event stream.
 	 */
 	private async releaseOwnedSession(sessionId: string): Promise<void> {
 		// A failed claim means the entry is already closed or owned by another path.
-		const claim = this.tryClaimClose(sessionId, { drainAttachments: false });
+		// A retained entry answers the detach by staying open: no finalizer, nothing to join.
+		const claim = this.tryClaimClose(sessionId, { drainAttachments: false, detach: true });
 		if (!claim) return;
 		if (!claim.finalizer) {
 			await this.finalizations.get(sessionId)?.promise;
@@ -489,23 +516,20 @@ export class SessionCommandRouter {
 	 * claim and finalizeClose() always finds a token to wait on instead of
 	 * answering ahead of the terminal records.
 	 */
-	private claimClose(sessionId: string, options: { drainAttachments: boolean }): { finalizer: boolean } {
+	private claimClose(sessionId: string, options: CloseClaimOptions): { finalizer: boolean } {
 		let finalizer = true;
 		const onRole = (isFinalizer: boolean): void => {
 			finalizer = isFinalizer;
 			if (isFinalizer && !this.finalizations.has(sessionId))
 				this.finalizations.set(sessionId, this.createFinalization());
 		};
-		let entry = this.registry.beginClose(sessionId, onRole);
+		let entry = this.registry.beginClose(sessionId, onRole, { detach: options.detach });
 		while (options.drainAttachments && entry.state === "open") entry = this.registry.beginClose(sessionId, onRole);
 		return { finalizer: finalizer && entry.state === "closing" };
 	}
 
 	/** claimClose() for lifecycle paths that treat a lost race as "nothing to do". */
-	private tryClaimClose(
-		sessionId: string,
-		options: { drainAttachments: boolean },
-	): { finalizer: boolean } | undefined {
+	private tryClaimClose(sessionId: string, options: CloseClaimOptions): { finalizer: boolean } | undefined {
 		try {
 			return this.claimClose(sessionId, options);
 		} catch {

@@ -12,6 +12,83 @@
 
 - The eval schema now explains that runs require an explicit language, and invalid language values produce a distinct error from an omitted language; `peek` and `stop` remain language-free ([#1395](https://github.com/code-yeongyu/senpi/issues/1395)).
 
+- JS eval kernel: a cell whose top-level declaration (`const`/`let`/`var`, plain or destructured) names an existing platform or prelude global (for example `const fetch = ...`) is now rejected before execution with an error naming the identifier and the rename remedy, instead of silently replacing that global for every later cell and wedging the session until a kernel reset. Cell-created globals stay re-declarable across cells, and explicit `globalThis.<name> = ...` assignments remain untouched as the deliberate escape hatch. (#1784)
+
+### Removed
+
+## [2026.9.17] - 2026-09-17
+
+### Breaking Changes
+
+### Added
+
+- `kernelTools.invoke(request, options?)` accepts a per-call execution scope for the nested host calls the invoked closure makes: `{ scope: { tools: { allow?: string[], deny?: string[] } } }`. While that invocation is active, a `tool.<name>()` outside the scope is refused inside the worker with `kernel_tool_host_denied` carrying `{ tool, call_id, reason: "allow" | "deny" }`: the closure sees a rejected promise, the refusal never reaches the host bridge, and the parent's own cells and queue keep the parent's full tool surface. `deny` wins over `allow`, an `allow` list refuses every host tool it does not name, a malformed list fails closed, and the scope lives only for that call — it is dropped when the call settles (including interrupt and reset) and is never persisted. The second argument still accepts a bare `AbortSignal`, and a call without a scope posts exactly the message it always did. Consumers detect the feature through `kernelTools.capabilities.invokeScope === true`; `KERNEL_TOOLS_CAPABILITIES`, `KernelToolsCapabilities`, `KernelToolsInvokeOptions`, `KernelToolsInvokeScope`, `KernelToolsHostScope`, `KernelToolHostDenial` and `KernelToolHostDenialReason` are exported ([#1731](https://github.com/code-yeongyu/senpi/issues/1731)).
+
+### Changed
+
+- Kernel-tools types bind to coding-agent's `ExtensionKernelTools` / `KernelToolInvokeOptions` / `KernelToolInvokeScope` (`KERNEL_TOOLS_CAPABILITIES satisfies ExtensionKernelTools["capabilities"]`) so the implementation cannot drift from the host declaration ([#1731](https://github.com/code-yeongyu/senpi/issues/1731)).
+
+### Fixed
+
+### Removed
+
+## [2026.9.16-3] - 2026-09-16
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.16-2] - 2026-09-16
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- The JavaScript kernel-tool capability now reaches host tools called from inside a running eval cell. A cell that registers `tool(fn)` can hand those functions to its in-process children through `task`/`agent`/`workpool`, because `ExtensionContext.kernelTools` resolves for the duration of each host tool call the cell makes. It was undefined at the dispatch point — the worker's message loop ran outside the `kernelToolsStorage` scope that only covered the awaited run chain — so every grant was refused with `tools_unavailable` and the capability shipped in the previous release could not be used ([#1754](https://github.com/code-yeongyu/senpi/issues/1754)).
+
+### Removed
+
+## [2026.9.16] - 2026-09-16
+
+### Breaking Changes
+
+- Background `agent(..., handle=true)` now requires the host task tool to return structured `details.task_id` (`st_` plus lowercase hex) and an integer `details.run_epoch >= 0`. The result gains a `run_epoch` field next to `id` and `handle`, in every kernel language. A host that returns an error, or only a prose task id in its text, raises `invalid_task_handle`; the old regex scrape of the text is gone. Extra producer fields in `details` are accepted. Foreground text and JSON results are unchanged ([#1646](https://github.com/code-yeongyu/senpi/issues/1646)).
+
+### Added
+
+- Added `workpool(agent, name, mode?)` to the JS, Python, Ruby and Julia preludes as a thin adapter over the host `workpool` tool. `agent` is a plain-data spec with one of `category` or `subagent_type` plus `prompt` and optional `model`; `mode` is `fresh` or `keep_alive` and is forwarded only when given. The adapter exposes `pool_id`, `push(items)`, `close()`, `inspect()` and `cancel()`, each returning the same `{text, details, images?, hasError?}` envelope as a direct tool call, and holds no worker, queue or admission state, so a kernel reset drops only the variable and the pool survives. A missing or inactive host tool raises `workpool_unavailable`; a host error at creation is raised instead of returning a broken adapter. Kernel tools may not call `workpool()` (`kernel_tool_recursion`) ([#1646](https://github.com/code-yeongyu/senpi/issues/1646)).
+- Added JavaScript kernel tools. `tool(fn, metadata?)` registers a named `function` or `async function` declaration as a fenced tool for in-process children while `tool.<name>(args)` host calls keep working. The parser reads only the declaration head: anonymous functions, classes, generators, native functions and non-identifier parameters are rejected with `invalid_tool_definition`; unicode identifiers are kept as written. Names must already fit the MCP grammar (`[A-Za-z0-9_-]`, at most 64 characters) and are checked against reserved bridge names, live host tools (including tools attached after the worker started) and tools registered by the session's Python, Ruby or Julia kernels, raising `reserved_tool_name` or `tool_name_collision`. Each descriptor carries `name`, a JSON input schema, `kernel_generation` and `definition_revision`; a stale generation or revision is refused with `kernel_tool_stale`, redefining a function bumps its revision, and a kernel reset clears every registered tool and bumps the generation. `agent()` accepts `tools: string[]` to hand a child those tool names. Kernel-tool requests against Python, Ruby or Julia kernels fail with `tools_unavailable` ([#1647](https://github.com/code-yeongyu/senpi/issues/1647)).
+- The JS worker answers kernel-tool `describe` and `invoke` requests on a separate pump from the top-level run queue, so a parent cell can stay pending on `agent()` while an in-process child calls one of the parent's registered functions. Interrupting the parent settles every nested invoke, and a worker reset, crash or close rejects the pending ones with `kernel_tool_stale` ([#1647](https://github.com/code-yeongyu/senpi/issues/1647)).
+- `CodemodeExtensionAPI.kernelTools` exposes the parent cell's kernel-tool `describe`/`invoke` capability to extensions while a JavaScript eval is live; `KernelToolDescriptor`, `KernelToolsCapability`, `KernelToolsDescribeResult`, `KernelToolsInvokeRequest` and `KERNEL_TOOLS_UNSUPPORTED` are exported. Kernels may implement `EvalKernel.listKernelToolNames()` so the session manager can detect cross-language name collisions ([#1647](https://github.com/code-yeongyu/senpi/issues/1647)).
+
+### Changed
+
+- The eval prompt documents `workpool()` and the `run_epoch` field on background `agent()` handles, and the JS prelude describes `tool(fn, metadata?)` and `workpool()` ([#1646](https://github.com/code-yeongyu/senpi/issues/1646), [#1647](https://github.com/code-yeongyu/senpi/issues/1647)).
+
+### Fixed
+
+### Removed
+
+## [2026.9.15-2] - 2026-09-15
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
 - Detached eval result cards no longer arm the 1 Hz repaint ticker (they render static with frozen elapsed time), and a live ticker whose row stops rendering now stops itself after 60 idle ticks and rearms on the next render, so transcript rebuilds and session switches cannot accumulate intervals on idle sessions ([#1696](https://github.com/code-yeongyu/senpi/issues/1696)).
 - Bounded three unbounded retentions that grew long-lived session heaps without limit: settled eval cells now leave the live registry into a 32-entry terminal snapshot LRU, the JS kernel's unconsumed tool-call queue is capped at 256 and cleared on interrupt/reset/close/crash (mirroring the subprocess kernel), and per-cell display buffers cap at 8 images / 24 MB / 64 JSON outputs with elision notes ([#1695](https://github.com/code-yeongyu/senpi/issues/1695)).
 
@@ -28,6 +105,7 @@
 ### Fixed
 
 - Eval cells no longer abandon the processes they spawn. When a JavaScript cell settles, is interrupted, or times out, its `Bun.spawn`/`node:child_process` children and their descendants are terminated (SIGTERM then SIGKILL after a grace), unless the cell asked for a detached process; a child whose worker is lost while blocked is retired by the host instead. Python kernels sweep their process group when they close gracefully, and a parent-death watchdog takes the kernel and its subprocesses down when the host dies mid-cell ([#1697](https://github.com/code-yeongyu/senpi/issues/1697)).
+
 ### Removed
 
 ## [2026.9.13-2] - 2026-09-13

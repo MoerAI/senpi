@@ -1,5 +1,23 @@
 # core/tools changes
 
+## Default reads consult the frozen fold engine for their language (2026-09-16)
+
+### What changed
+
+- `packages/coding-agent/src/core/tools/read.ts`: the default summary path awaits `prepareReadFolder` for the resolved absolute path before composing the summary, and re-checks the abort flag afterwards. Explicit offset/limit rereads, truncated reads and unselected languages are unaffected: the prepared folder is the injected folder itself unless the frozen selection binds that language to the grammar engine.
+
+### Why
+
+- #1685 freezes JavaScript structural reads on a grammar the engine loads lazily, on the first structural read for that language. The read tool is the only place that knows the path being read, so it is where the grammar load belongs; a missing or unusable grammar returns the same folder the tool already had.
+
+### Why an extension could not handle it
+
+- The builtin read tool composes its own output, and no extension hook runs between reading the file and composing the default summary.
+
+### Expected merge conflict zones
+
+- LOW: the `createDefaultReadSummary` call site inside `createReadToolDefinition` in `packages/coding-agent/src/core/tools/read.ts`, already fork-owned since the structural read delivery.
+
 ## Bash keeps its process group until the last descendant exits (2026-09-15)
 
 ### What changed
@@ -17,6 +35,28 @@
 ### Expected merge conflict zones
 
 - LOW: the exec `finally` block in `createLocalShellOperations` inside `packages/coding-agent/src/core/tools/bash.ts`, which the fork already diverges in for the abort/kill-grace tracking (2026-07-18 entry below).
+
+## Structural default reads with exact range fallback (2026-09-13)
+
+### What changed
+
+- `packages/coding-agent/src/core/tools/read.ts`: adds optional folder injection and uses the agent-layer pure view only for supported, non-prose default reads accepted by the unchanged truncator. Explicit offset/limit rereads remain verbatim; aborted reads never enter the folder.
+- `packages/coding-agent/src/core/tools/index.ts`: injects the frozen selected folder when constructing the session, coding and read-only tool sets, preserving image/policy options and explicit folder overrides.
+
+### Why
+
+- `packages/coding-agent/src/core/tools/read.ts`: structural defaults reduce code output without hiding exact source from edit consumers or changing continuation/large-line footers.
+- `packages/coding-agent/src/core/tools/index.ts`: normal sessions already supply image and policy options, so composition must inject the same folder without overwriting those settings.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/tools/read.ts`: exact raw-range and truncation composition belongs inside the existing builtin; replacing it would diverge from the independent harness reader.
+- `packages/coding-agent/src/core/tools/index.ts`: these factories own the built-in tool sets before extension execution.
+
+### Expected merge conflict zones
+
+- LOW: `packages/coding-agent/src/core/tools/read.ts` imports, options and text-output branch. Keep both truncate modules and existing edit matching unchanged.
+- LOW: `packages/coding-agent/src/core/tools/index.ts` selected-folder import and read option construction in the three factories.
 
 ## Re-export the grep tool from its engine-backed module (2026-09-14)
 

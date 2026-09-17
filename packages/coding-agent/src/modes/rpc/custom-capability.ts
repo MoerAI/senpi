@@ -31,6 +31,13 @@ export const MEDIA_PLACEHOLDERS_CAPABILITY = "media_placeholders";
 export const QUESTION_CAPABILITY = "question";
 
 /**
+ * HOST capability (advertised in `get_protocol_info`, never sent by a client):
+ * this host honors `open_session.retain_on_disconnect`, so a session opened with
+ * that flag survives its last client's disconnect instead of being closed with it.
+ */
+export const RETAIN_ON_DISCONNECT_CAPABILITY = "retain_on_disconnect";
+
+/**
  * Env var carrying client capabilities to a single-connection stdio RPC host
  * (comma-separated). A launcher may set it from a client handshake; a plain
  * stdio client leaves it unset and sees byte-identical default behavior.

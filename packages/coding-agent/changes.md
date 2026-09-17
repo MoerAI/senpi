@@ -1,5 +1,65 @@
 # Local fork changes
 
+## 2026-09-17 - Build the bundled CLI the package declares as bin.pi, and skip completed scan migrations (senpi#1781)
+
+### What changed
+
+- `packages/coding-agent/package.json`: adds `build:bundle` (`node ../../scripts/build-coding-agent-bundle.mjs`) and chains it as the last step of `build`, so `dist/bundle/` is produced by every build of this package - root `bun run build:bun`, root `npm run build` (the release/publish path), `build:binary`, and this package's `prepublishOnly`. `build:unbundled` stays the bundle-free fast path.
+- `packages/coding-agent/test/package-distribution.test.ts`: pins that contract - `build:bundle` invokes the bundler script, `build` chains it, and `files` still ships `dist`.
+- `packages/coding-agent/src/migrations-state.ts` (new) plus `packages/coding-agent/src/migrations.ts`: a per-agent-directory `migrations-state.json` (schema version 1, fail-open read, atomic tmp+rename write) records the completed directory-scan migrations so later boots skip them.
+
+### Why
+
+- `bin.pi` points at `dist/bundle/cli.js` and nothing in the release build produced that tree: the bundler ran only inside `scripts/node-bundle-smoke.test.ts`, so a published tarball carried a `pi` bin with no target. `prepublishOnly` starts with `clean`, so producing the bundle anywhere other than this package's own `build` script would let a publish wipe it.
+- A profiled boot spent `runMigrations` on `migrateSessionsFromAgentRoot` (`readdirSync`) and `migrateLegacySenpiDirs` every start, including boots where those one-time layouts were already gone.
+
+### Why an extension could not handle it
+
+- Which files a build emits and a tarball packs is decided before any runtime exists, and `runMigrations` runs in `main.ts` before the extension host exists.
+
+### Expected merge conflict zones
+
+- LOW: the `scripts.build` string in `packages/coding-agent/package.json`; the body of `runMigrations`; `test/package-distribution.test.ts` if the bin layout changes upstream.
+
+## 2026-09-16 - Declare the grammar runtime the bundled agent needs (senpi#1685)
+
+### What changed
+
+- `packages/coding-agent/package.json`: declares the pinned `web-tree-sitter` dependency at the same exact version `packages/agent/package.json` requires.
+
+### Why
+
+- The agent workspace is bundled into the published package, so every external dependency it needs at runtime has to be declared here too, or an npm install resolves the bundled copy against nothing. The structural read's grammar engine loads that runtime on the first JavaScript read; without the declared edge the published CLI would silently fall back to the heuristic scan. `packages/coding-agent/test/workspace-dependencies.test.ts` is the policy that requires it.
+
+### Why an extension could not handle it
+
+- Published dependency edges are resolved at install time, before any extension exists.
+
+### Expected merge conflict zones
+
+- LOW: the `dependencies` block in `packages/coding-agent/package.json`.
+
+## 2026-09-16 - Transient kernelTools on ExtensionContext (#1647)
+
+### What changed
+
+- packages/coding-agent/src/index.ts exports kernelToolsStorage and ExtensionKernelTools.
+- packages/coding-agent/src/core/extensions/types.ts adds optional ExtensionContext.kernelTools.
+- packages/coding-agent/src/core/extensions/runner.ts createContext reads the AsyncLocalStorage binder.
+- packages/coding-agent/src/core/extensions/kernel-tools-context.ts holds that binder.
+
+### Why
+
+- In-process task children need the parent kernel-tool capability on the host-tool execution context.
+
+### Why an extension could not handle it
+
+- ExtensionContext and the runner createContext path are owned by coding-agent.
+
+### Expected merge conflict zones
+
+- LOW: `src/core/extensions/types.ts` optional field after `steeringSignal`; `src/core/extensions/runner.ts` createContext getters.
+
 ## 2026-09-14 - Align Cursor grep frames with the engine contract (#1678)
 
 ### What changed

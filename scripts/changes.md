@@ -1,5 +1,236 @@
 # changes
 
+## 2026-09-17 - Smoke the bundled entry under custom exec arguments (senpi#1781)
+
+### What changed
+
+- `scripts/node-bundle-smoke.test.ts`: a scenario per runtime launches the bundle with a profiler flag and asserts the agent ran (it rejects the unknown model) instead of failing to resolve its own entry.
+
+### Why
+
+- The bundle inlines `cli-main`, so the sibling the respawn path used to resolve does not exist; nothing covered that path until it broke.
+
+### Why an extension could not handle it
+
+- Packaging and process-structure coverage runs before any runtime exists.
+
+### Expected merge conflict zones
+
+- LOW: the scenario list in `node-bundle-smoke.test.ts`.
+
+## 2026-09-17 - Smoke the shipped bundle under both runtimes (senpi#1781)
+
+### What changed
+
+- `scripts/node-bundle-smoke.test.ts` runs as a runtime matrix (node and bun) over the bundle it builds: `--version` equals the package version, `--help` exits 0, an external TypeScript extension in a temp directory is loaded with `--extension` and its flag appears in help, and an RPC `--multi-session` host opens, reports state for, and closes a session.
+- `scripts/AGENTS.md` documents `build-coding-agent-bundle.mjs` as a build entry point and its ordering rule.
+
+### Why
+
+- The bundle is now produced by the package build and shipped, so its runtime behavior needs coverage on both runtimes rather than a single node smoke.
+
+### Why an extension could not handle it
+
+- Build and packaging scripts run before any runtime or extension exists.
+
+### Expected merge conflict zones
+
+- LOW: the scenario list in `node-bundle-smoke.test.ts`.
+
+## 2026-09-16 - Verify and externalize the grammar engine's assets (#1685)
+
+### What changed
+
+- `scripts/prepare-bun-compile-assets.mjs`: `verifyTreeSitterGrammarAssets` checks every artifact named by the vendored provenance file against its recorded SHA-256 and fails asset preparation with a machine code when one is missing or drifted; `main` runs it alongside the imagegen skill staging.
+- `scripts/check-browser-smoke.mjs`: the browser bundles externalize the single lazy dynamic import of the Node-only grammar engine and fail if that module still enters the treeshake graph.
+- `scripts/qa/omp-item1.ts`: the compiled-parity and packaging runners now require the gate receipt's WASM answer and its declared candidate dependencies to agree, instead of asserting the pre-decision heuristic-only selection.
+
+### Why
+
+- The compiled binary embeds the grammar through a file import, so a missing or drifted artifact must fail the build rather than ship a binary that silently falls back to the heuristic scan. The browser smoke would otherwise hard-error on the engine's `node:fs`/`node:module` reads, which no browser bundle ever executes.
+
+### Why an extension could not handle it
+
+- Asset preparation and bundle guards run in the build, before any runtime exists.
+
+### Expected merge conflict zones
+
+- LOW: `main()` in `scripts/prepare-bun-compile-assets.mjs` and the plugin list in `scripts/check-browser-smoke.mjs`.
+
+## 2026-09-16 - Type-check the qa scripts
+
+### What changed
+
+- `scripts/tsconfig.json` extends the root config and includes `qa/**/*.ts` (plus `packages/**/*.d.ts` so ambient modules the qa import graph needs stay in program).
+- `scripts/qa/read-summary-build.d.mts`, `scripts/qa/read-summary-packaging.d.mts`, `scripts/qa/read-summary-parity.d.mts`, and `scripts/qa/omp-item2-plugin.d.mts` type the local `.mjs` modules those runners import.
+
+### Why
+
+- Untyped `.mjs` imports were TS7016, and a scripts-only program dropped coding-agent ambient declarations (`*.md`, `bun:sqlite`, turndown), so qa type errors never failed `tsc`.
+
+### Why an extension could not handle it
+
+- Script tsconfig membership and `.d.mts` shims are compile-time inputs; extensions cannot enroll files in `tsc`.
+
+### Expected merge conflict zones
+
+- LOW: `scripts/tsconfig.json` include list; the four `scripts/qa/*.d.mts` shims if those `.mjs` export surfaces change.
+
+## 2026-09-15 - Follow the current publishing compile recipe (#1639)
+
+### What changed
+
+- `scripts/read-summary-release-contract.test.mjs` still binds QA to the workflow's `build-binaries.sh` compile argv, including `--compile-autoload-package-json` now present on both publishing platforms after origin/main.
+
+### Why
+
+- The previous negative autoload assertion described an older publishing recipe. After merging origin/main the recipe includes that flag on both platforms; forbidding it made the contract test fail against its own authority.
+
+### Why an extension could not handle it
+
+- Compile argv is fixed before startup.
+
+### Expected merge conflict zones
+
+- LOW: `scripts/read-summary-release-contract.test.mjs` publishing argv equality. Keep the workflow shell recipe as the authority.
+
+## 2026-09-15 - Do not fold fields-only class bodies (#1639)
+
+### What changed
+
+- The production brace scanner no longer folds a class body wholesale when the body contains only fields, static blocks or accessors; initializer and static-block interiors remain foldable.
+- Adversarial grammar and the 143-line fields-only class regression cover that hole. Enumeration is 1440 programs with 0 counterexamples.
+
+### Why
+
+- Member declarations must stay visible. The project's own oracle does not certify `ClassBody` ranges, and widening the oracle would bless hiding fields.
+
+### Why an extension could not handle it
+
+- Fold ranges are produced below either reader and before any extension can rewrite output.
+
+### Expected merge conflict zones
+
+- LOW: tracker-only. Keep the class-body exclusion in the scanner; do not add `ClassBody` to the oracle whitelist.
+
+## 2026-09-14 - Exercise the selected compiled parser failure (#1639)
+
+### What changed
+
+- `scripts/qa/read-summary-packaging.mjs` feeds malformed selected JSON through the actual relocated reader alongside the unsupported-language control, retaining the rebuilt missing-theme initialization failure.
+- The redundant self-derived release-argv comparison is removed; the independent workflow/shell contract and quoted-argv fixture remain the release authority.
+
+### Why
+
+- An excluded JavaScript file cannot reach the shipped JSON parser and therefore cannot establish compiled parse-failure fallback.
+
+### Why an extension could not handle it
+
+- `scripts/qa/read-summary-packaging.mjs` tests the real compiled reader and initialization behavior, not an extension-provided replacement.
+
+### Expected merge conflict zones
+
+- LOW: `scripts/qa/read-summary-packaging.mjs` malformed-source fixture and raw-result assertions; preserve the missing-theme and byte-budget negatives.
+
+## 2026-09-14 - Bind read QA to publishing compile behavior (#1639)
+
+### What changed
+
+- `scripts/qa/read-summary-build.mjs` parses both compile commands from `scripts/build-binaries.sh`, requires their platform-neutral flags and entries to agree, and relocates only target/output arguments.
+- `scripts/qa/read-summary-{parity,smoke}.mjs` exercise the requalified JSON default and explicit JavaScript raw control through source and relocated executables.
+
+### Why
+
+- The publishing workflow invokes the shell recipe without runtime package.json autoload. QA must measure and execute those shipping flags rather than the separate package convenience recipe.
+
+### Why an extension could not handle it
+
+- Compile entrypoints and autoload flags are fixed before startup; runtime extensions cannot establish binary parity.
+
+### Expected merge conflict zones
+
+- MEDIUM: `scripts/qa/read-summary-build.mjs` release argv extraction. Keep `scripts/build-binaries.sh` as the authority reached by `.github/workflows/build-binaries.yml`.
+
+## 2026-09-13 - Reconcile read QA with the release graph (#1639)
+
+### What changed
+
+- `scripts/prepare-bun-compile-assets.mjs` removes the self-declared empty read asset accessor/output; transitive feature bundle inputs now establish dependency isolation.
+- `scripts/qa/read-summary-build.mjs` originally derived compile argv from the package convenience script; the 2026-09-14 correction above now consumes the publishing shell recipe.
+- `scripts/qa/omp-item1.ts` runs the production folder/view bake-off, recording potential candidate output separately from the actual selected default-read output. The raw comparator explicitly omits a folder.
+- `scripts/qa/read-summary-smoke.mjs` records final-HEAD JS/TS raw and JSON summary behavior on the source and relocated binary. The real rebuilt missing-theme binary remains the initialization-failure proof.
+- `scripts/qa/read-summary-rpc.mjs` awaits the exact source-process exit with a 60-second kill fence, avoiding a timing-luck failure on loaded CI filesystems without polling.
+
+### Why
+
+- `scripts/prepare-bun-compile-assets.mjs` must not claim dependency isolation from a constant unrelated to the compiler's input graph. Release-graph parity must include every actual worker and flag.
+
+### Why an extension could not handle it
+
+- `scripts/prepare-bun-compile-assets.mjs` is build-time packaging; runtime extensions cannot select or verify the shipped entry graph.
+
+### Expected merge conflict zones
+
+- `scripts/prepare-bun-compile-assets.mjs`: removal of read-only reporting; existing asset preparation and binary budget validation remain intact.
+
+## 2026-09-13 - Size-gated standalone read parity (#1639)
+
+### What changed
+
+- `scripts/prepare-bun-compile-assets.mjs` reports the immutable empty read-parser asset set and exposes the inclusive incremental-byte budget check. No parser assets or dependencies are installed.
+- `scripts/qa/omp-item1.ts` adds compiled/source parity and missing-asset/budget cases. The read-summary QA modules compile identical-flags baseline/candidate binaries for all six release targets and use a provider-only extension to invoke the actual registered read tool over frozen corpus bytes.
+- `scripts/qa/read-summary-smoke.mjs` supplies the same real-session check to the cross-platform PR workflow. Runtime directories carry only the relocated executable, existing package/theme data, fixture and corpus copies, never a workspace node_modules or grammar tree.
+
+### Why
+
+- `scripts/prepare-bun-compile-assets.mjs` makes the heuristic-only selection explicit rather than allowing an installed parser to change output.
+- `scripts/qa/omp-item1.ts` verifies output bytes, folder identity, omitted coordinates and range rereads instead of counting help/version or metadata as read proof. It deliberately rebuilds a negative binary from a corrupted generated required-theme lookup, requires initialization failure, then distinguishes malformed source's normal raw fallback.
+
+### Why an extension could not handle it
+
+- `scripts/prepare-bun-compile-assets.mjs` and `scripts/qa/omp-item1.ts` own build-time packaging and artifact validation. The QA extension supplies deterministic provider events only; it neither implements nor replaces read.
+
+### Expected merge conflict zones
+
+- `scripts/prepare-bun-compile-assets.mjs`: compile preparation reporting. `scripts/qa/omp-item1.ts`: enumerated QA cases. Existing reader, truncation and native fallback implementations are untouched.
+
+## 2026-09-13 - Read-summary measurement gate (#1639)
+
+### What changed
+
+- `scripts/qa/omp-item1.ts`: adds actual-read bake-off and invalid-measurement entry points backed by test-only adapters in `packages/agent/test/harness/fixtures/read-summary/`. Candidate-only reruns validate frozen raw/omp captures and oracle hashes, cite the OQ1 receipt, and report actual balanced-brace/indent folding separately from per-file fallbacks.
+
+### Why
+
+- `scripts/qa/omp-item1.ts` records source identity, independent boundary checks, exact token savings and prototype binary deltas before any production read-engine selection.
+
+### Why an extension could not handle it
+
+- `scripts/qa/omp-item1.ts` is offline QA orchestration, not a runtime feature. It deliberately makes no production reader or dependency changes.
+
+### Expected merge conflict zones
+
+- `scripts/qa/omp-item1.ts` is a new fork-only measurement script. Existing build and reader code is unchanged.
+
+## 2026-09-15 - Retry the Windows release-directory rename on transient sharing violations
+
+### What changed
+
+- `scripts/rename-sync-retry.mjs` (new) owns `renameSyncRetry`: `renameSync` retried only on `EPERM`/`EBUSY`/`ENOTEMPTY` with capped exponential backoff until a hard deadline, then a loud `RenameSyncRetryError` carrying the original errno as `cause`/`code`. Clock, sleep and rename are injectable so the unit tests never wait on wall time.
+- `scripts/compiled-extension-load.test.ts` renames the freshly built release directory through that helper and surfaces `spawnSync` launch errors instead of only the exit status.
+
+### Why
+
+- `Compiled extensions (Windows)` intermittently failed with `EPERM: operation not permitted, rename '...\release\windows-x64' -> '...\relocated # % binary'` right after the build finished, on `main` and on pure `main` merges alike: Windows still held a handle on the just-written tree for a short window, so the immediate `renameSync` raced the OS (Fixes #1725).
+
+### Why an extension could not handle it
+
+- The rename happens inside the repository's own release-relocation test harness before any extension loads.
+
+### Expected merge conflict zones
+
+- `scripts/compiled-extension-load.test.ts`: the `beforeAll` build-and-relocate block.
+
 ## 2026-09-14 - Restore the Node worker bundle builder
 
 ### What changed

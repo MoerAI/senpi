@@ -1,4 +1,4 @@
-import type { AutocompleteProvider, AutocompleteSuggestions } from "../autocomplete.ts";
+import type { AutocompleteProvider, AutocompleteSuggestions, MentionRange } from "../autocomplete.ts";
 import {
 	type EditorImageState,
 	formatImageMarker,
@@ -37,6 +37,7 @@ import {
 	visibleWidth,
 } from "../utils.ts";
 import { findWordBackward, findWordForward } from "../word-navigation.ts";
+import { renderEditorLine } from "./editor-line-render.ts";
 import { SelectList, type SelectListLayoutOptions, type SelectListTheme } from "./select-list.ts";
 
 const graphemeSegmenter = getGraphemeSegmenter();
@@ -253,10 +254,14 @@ interface LayoutLine {
 	text: string;
 	hasCursor: boolean;
 	cursorPos?: number;
+	logicalLine: number;
+	startIndex: number;
 }
 
 export interface EditorTheme {
 	borderColor: (str: string) => string;
+	/** Style for resolved mention tokens (for example a known `$skill`); omit to render them plain. */
+	mention?: (str: string) => string;
 	/**
 	 * Theme for the autocomplete/slash SelectList built by
 	 * createAutocompleteList(). May carry the optional `renderRow` seam (see
@@ -704,39 +709,43 @@ export class Editor implements Component, Focusable {
 		const emitCursorMarker = this.focused;
 		const drawFakeCursor = !this.tui.getShowHardwareCursor();
 
+		const mentionStyle = this.theme.mention;
+		const mentionRangesByLine = new Map<number, readonly MentionRange[]>();
+		const mentionRangesFor = (layoutLine: LayoutLine): readonly MentionRange[] => {
+			if (!mentionStyle || !this.autocompleteProvider?.getMentionRanges) return [];
+			let ranges = mentionRangesByLine.get(layoutLine.logicalLine);
+			if (ranges === undefined) {
+				ranges = this.autocompleteProvider.getMentionRanges(this.state.lines[layoutLine.logicalLine] ?? "");
+				mentionRangesByLine.set(layoutLine.logicalLine, ranges);
+			}
+			return ranges.map((range) => ({
+				start: range.start - layoutLine.startIndex,
+				end: range.end - layoutLine.startIndex,
+			}));
+		};
+
 		for (const layoutLine of visibleLines) {
-			let displayText = layoutLine.text;
 			let lineVisibleWidth = visibleWidth(layoutLine.text);
 			let cursorInPadding = false;
 
-			// Add cursor if this line has it
-			if (layoutLine.hasCursor && layoutLine.cursorPos !== undefined) {
-				const before = displayText.slice(0, layoutLine.cursorPos);
-				const after = displayText.slice(layoutLine.cursorPos);
-
-				// Hardware cursor marker (zero-width, emitted before fake cursor for IME positioning)
-				const marker = emitCursorMarker ? CURSOR_MARKER : "";
-
-				if (!drawFakeCursor) {
-					displayText = before + marker + after;
-				} else if (after.length > 0) {
-					// Cursor is on a character (grapheme) - replace it with highlighted version
-					// Get the first grapheme from 'after'
-					const afterGraphemes = [...this.segment(after, "grapheme")];
-					const firstGrapheme = afterGraphemes[0]?.segment || "";
-					const restAfter = after.slice(firstGrapheme.length);
-					const cursor = `\x1b[7m${firstGrapheme}\x1b[0m`;
-					displayText = before + marker + cursor + restAfter;
-					// lineVisibleWidth stays the same - we're replacing, not adding
-				} else {
-					// Cursor is at the end - add highlighted space
-					const cursor = "\x1b[7m \x1b[0m";
-					displayText = before + marker + cursor;
-					lineVisibleWidth = lineVisibleWidth + 1;
-					// If cursor overflows content width into the padding, flag it
-					if (lineVisibleWidth > contentWidth && paddingX > 0) {
-						cursorInPadding = true;
-					}
+			// Hardware cursor marker (zero-width, emitted before fake cursor for IME positioning)
+			const cursor =
+				layoutLine.hasCursor && layoutLine.cursorPos !== undefined
+					? { pos: layoutLine.cursorPos, marker: emitCursorMarker ? CURSOR_MARKER : "", drawFakeCursor }
+					: undefined;
+			const rendered = renderEditorLine({
+				text: layoutLine.text,
+				mentions: mentionRangesFor(layoutLine),
+				mentionStyle: mentionStyle ?? ((text) => text),
+				cursor,
+				firstGrapheme: (text) => [...this.segment(text, "grapheme")][0]?.segment ?? "",
+			});
+			const displayText = rendered.text;
+			if (rendered.cursorAppended) {
+				lineVisibleWidth = lineVisibleWidth + 1;
+				// If cursor overflows content width into the padding, flag it
+				if (lineVisibleWidth > contentWidth && paddingX > 0) {
+					cursorInPadding = true;
 				}
 			}
 
@@ -1148,6 +1157,8 @@ export class Editor implements Component, Focusable {
 				text: "",
 				hasCursor: true,
 				cursorPos: 0,
+				logicalLine: 0,
+				startIndex: 0,
 			});
 			return layoutLines;
 		}
@@ -1165,11 +1176,15 @@ export class Editor implements Component, Focusable {
 						text: line,
 						hasCursor: true,
 						cursorPos: this.state.cursorCol,
+						logicalLine: i,
+						startIndex: 0,
 					});
 				} else {
 					layoutLines.push({
 						text: line,
 						hasCursor: false,
+						logicalLine: i,
+						startIndex: 0,
 					});
 				}
 			} else {
@@ -1213,11 +1228,15 @@ export class Editor implements Component, Focusable {
 							text: chunk.text,
 							hasCursor: true,
 							cursorPos: adjustedCursorPos,
+							logicalLine: i,
+							startIndex: chunk.startIndex,
 						});
 					} else {
 						layoutLines.push({
 							text: chunk.text,
 							hasCursor: false,
+							logicalLine: i,
+							startIndex: chunk.startIndex,
 						});
 					}
 				}

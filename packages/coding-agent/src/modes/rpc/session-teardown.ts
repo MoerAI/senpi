@@ -17,6 +17,7 @@ export function beginSessionClose(
 	host: SessionTeardownHost,
 	handle: string,
 	onRole?: (finalizer: boolean) => void,
+	options?: { detach?: boolean },
 ): RpcSessionEntry {
 	const entry = host.get(handle);
 	if (!entry) throw new RpcSessionRegistryError("unknown_session");
@@ -27,6 +28,14 @@ export function beginSessionClose(
 	if (entry.state !== "open") throw new RpcSessionRegistryError("unknown_session");
 	entry.attachments -= 1;
 	if (entry.attachments > 0) return entry;
+	// Retention splits "the last client left" from "the session ends". A detach of a
+	// retained session releases the attachment and stops there: the entry stays open
+	// with zero attachments, keeps its runtime, its in-flight turn and its path
+	// reservation, and is torn down only by an explicit close or the idle window.
+	if (options?.detach && entry.retainOnDisconnect) {
+		entry.attachments = 0;
+		return entry;
+	}
 	entry.state = "closing";
 	onRole?.(true);
 	entry.closeCompletion = new Promise<void>((resolve) => {

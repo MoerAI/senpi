@@ -1,5 +1,41 @@
 # changes
 
+## 2026-09-17 - One-shot command dispatch owns its own module (senpi#1781)
+
+### What changed
+
+- New `packages/coding-agent/src/cli/deferred-commands.ts` holds the dispatch for the commands that exit before a session exists (package manager, config, app-server, list-models, list-tips, credential print, export), each loading its implementation with `await import(...)` at its own branch.
+
+### Why
+
+- `main.ts` imported every one of those trees at module load, so an interactive run paid for command code it never reached; extracting the dispatch also keeps `main.ts` from growing while the imports move.
+
+### Why an extension could not handle it
+
+- Command dispatch happens before the extension host is constructed.
+
+### Expected merge conflict zones
+
+- LOW: the new module; MEDIUM where `main.ts` calls into it.
+
+## 2026-09-16 - Startup spinner draws its first frame synchronously (oh-my-openagent#8371)
+
+### What changed
+
+- `packages/coding-agent/src/cli/startup-loading-indicator.ts`: `start()` writes the first frame itself (hidden cursor + label + phase) and the 120ms grace delay now gates only the animation interval; `resume()` redraws the same way before its grace timer. `setPhase()` therefore renders before any timer fires.
+
+### Why
+
+- The work the indicator covers is synchronous module loading (extension imports through jiti), which starves every timer until it finishes. Measured on a real pty during oh-my-openagent#8371: first spinner byte at 2.27s, a single frame before the TUI replaced it, the whole extension load on a blank terminal. A timer-driven first frame announces work that already ended.
+
+### Why an extension could not handle it
+
+- The indicator runs in the host before any extension is loaded; it is the thing extensions' own load time hides.
+
+### Expected merge conflict zones
+
+- LOW: `start()`, `resume()` and `beginAnimation()` bodies plus the class docstring; `test/startup-loading-indicator.test.ts` grace-delay cases.
+
 ## 2026-09-10 - VENICE_API_KEY in the help output
 
 ### What changed

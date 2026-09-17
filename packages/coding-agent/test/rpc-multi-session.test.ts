@@ -49,7 +49,7 @@ describe("multi-session RPC routing", () => {
 			data: {
 				protocolVersion: 1,
 				serverVersion: VERSION,
-				capabilities: ["multi_session", "auto_title_sessions", "media_placeholders"],
+				capabilities: ["multi_session", "auto_title_sessions", "media_placeholders", "retain_on_disconnect"],
 				mode: "multi",
 			},
 		});

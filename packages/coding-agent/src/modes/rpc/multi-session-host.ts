@@ -1,5 +1,5 @@
 import { access, chmod, mkdir, unlink } from "node:fs/promises";
-import { createConnection, createServer, type Server, type Socket } from "node:net";
+import { createConnection, createServer, type Server } from "node:net";
 import { dirname, join } from "node:path";
 import type { CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import { envValue } from "../../core/brand.ts";
@@ -30,6 +30,7 @@ import {
 	unlinkOwnedSocket,
 	waitForSocketIdentityFile,
 } from "./socket-ownership.ts";
+import { socketSink } from "./socket-sink.ts";
 import {
 	authenticateSocket,
 	ensureSocketSecret,
@@ -395,31 +396,6 @@ function resolveSocketPath(value: string, agentDir: string): string {
 
 function formatSocketAddress(socketPath: string): string {
 	return socketPath.startsWith("\0") ? `unix://@${socketPath.slice(1)}` : `unix://${socketPath}`;
-}
-
-function socketSink(socket: Socket): RpcConnectionSink {
-	let needsDrain = false;
-	return {
-		writeRaw(chunk) {
-			if (!socket.destroyed) needsDrain = !socket.write(chunk);
-		},
-		close() {
-			socket.destroy();
-		},
-		waitForBackpressure() {
-			if (socket.destroyed || !needsDrain) return Promise.resolve();
-			needsDrain = false;
-			return new Promise<void>((resolve) => {
-				const done = () => {
-					socket.off("drain", done);
-					socket.off("close", done);
-					resolve();
-				};
-				socket.once("drain", done);
-				socket.once("close", done);
-			});
-		},
-	};
 }
 
 async function prepareSocketPath(socketPath: string): Promise<void> {

@@ -10,13 +10,138 @@
 
 ### Fixed
 
-- RPC `close_session` acknowledgements and `session_closed` events, including worker-failure terminals, are published only after the session registry has removed the entry, so an immediate `list_sessions` never returns the closed session. Filesystem watchers are cancelled atomically with shutdown, every disposer is joined before process exit, reentrant RPC shutdown shares that join and keeps a failure exit code, and nonpersistent RPC probes do not start watchers ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+### Removed
 
+## [2026.9.17] - 2026-09-17
+
+### Breaking Changes
+
+### Added
+
+- `$skill` mentions in the prompt editor now behave like Codex mentions. A `$name` or `$skill:name` token at a whitespace boundary that names a loaded skill is rendered bold in the new `skillMention` theme color (falls back to `mdLink`) whether it came from the popup, typing, or a paste; `$HOME`, `$1`, and unknown names stay plain. The `$` popup opens for any boundary token however many mentions precede it, so one prompt can carry several skills (mid-prompt it offers skills only, and an exact known-skill token closes it so `enter` submits). On submit every mentioned skill is expanded, including inline `$name` mentions that used to reach the model as literal text, and the transcript's `[skill]` block and the HTML export list every invoked skill with each body expandable. The explicit `$skill:name` form and the RPC `skill_invocation` metadata are unchanged. ([#1778](https://github.com/code-yeongyu/senpi/issues/1778))
+
+- Shared RPC hosts (`--mode rpc --multi-session`) accept `open_session { retain_on_disconnect: true }`: the session then survives its last client's disconnect instead of being closed with it. The dropped connection only releases its attachment — the session stays in `list_sessions` (now with an `attachments` count, `0` when no client is attached), finishes any in-flight turn, and a later `open_session` with the same `sessionPath` re-attaches to the same routing handle (`attached: true`). An explicit `close_session`, host shutdown and the idle-eviction window still end it, and a session opened without the flag behaves exactly as before. Hosts advertise the capability `retain_on_disconnect` in `get_protocol_info` so a client can probe for it. ([#1776](https://github.com/code-yeongyu/senpi/issues/1776))
+
+- Default reads of `.js` files now return a structural summary instead of the whole file. A tree-sitter grammar, loaded lazily on the first JavaScript read and bounded by a 250ms parse budget, finds the implementation bodies that are safe to omit; the file's declarations, signatures and headers always stay visible, and every omitted range is reported with the `offset`/`limit` needed to reread it. Measured on the frozen bake-off corpus against the same signature-safety oracle and the same 90%-of-reference threshold the JSON selection uses: 41.9% median token saving for JavaScript against a 35.5% bar, where the previous dependency-free scan reached 0%. TypeScript and TSX stay raw - their grammar candidate is safe but most of their files cannot fit the summary's 100 visible-line budget - and JSON keeps its existing scan. A grammar that is missing, fails to parse or runs out of budget falls back to the previous behaviour for that read. The grammar and runtime artifacts add 607KB to the package and 693KB to the compiled binary (75,040,242 → 75,750,258 bytes on darwin-arm64), 5.6% of the 12MiB budget the release gate enforces, and the first JavaScript structural read costs 11.9ms more than before (13.6ms vs 1.7ms, median of 11 cold processes). ([#1685](https://github.com/code-yeongyu/senpi/issues/1685))
+
+### Changed
+- The MCP SDK is loaded when a run connects, attaches or authenticates instead of at every CLI start. `@modelcontextprotocol/sdk` is 210 files and about 1.16 MB, and the mcp builtin is statically reachable from the builtin barrel, so every boot parsed and evaluated all of it even though attach is already deferred; the transports, client, auth flow and request-handler registration now load behind memoized loaders on the async paths that use them, and the subscribed notification schemas are declared locally. The startup graph drops 213 modules, and MCP behavior, logging, token-storage permissions and error messages are unchanged (the full `test/mcp` suite passes). ([#1781](https://github.com/code-yeongyu/senpi/issues/1781))
+
+- Startup no longer evaluates the module graphs of commands and modes a run does not use. `main()` used to import the app-server command tree, the RPC host cluster (rpc-mode, multi-session-host, host-lifecycle, interactive-host-runtime), the package-manager CLI, the `--list-tips` registry and the `--resume` session picker before argv was read; each is now imported at the branch that owns it, which removes 92 of 2,780 resolved modules (app-server alone is 70) and about 147ms of the import cost. `PI_TIMING`'s main table also opens with a `processStart->main` row, so the pre-main phase (runtime boot, `cli.js` and that import graph) is finally accounted for, and a `PI_STARTUP_BENCHMARK` run exits 0 after its output drains instead of parking on interactive mode's still-active terminal handles. ([#1781](https://github.com/code-yeongyu/senpi/issues/1781))
+
+- Extensions are imported through Bun's native transpiler on every bun runtime, not only inside the compiled binary. A bun-global install used to hand the bundled codemode extension (136 TypeScript files) and every user `.ts` extension to jiti + Babel on each boot; the loader now uses `Bun.Transpiler`/`Bun.resolveSync`/`Bun.plugin` whenever `process.versions.bun` is set, which is the path compiled binaries already shipped. Measured with `PI_TIMING=1` on bun (median of 3): the codemode module import drops from 482ms to 56ms and the extensions startup table from 537ms to 123ms. Node installs keep the jiti path with their existing virtual-module, alias and tsconfig-path options. ([#1781](https://github.com/code-yeongyu/senpi/issues/1781))
+
+- CLI startup no longer evaluates `@earendil-works/pi-pty` or `@xterm/headless`. The terminal builtin loads them when it creates its first session instead of at engine import, where xterm's module initialization alone spent about 458ms in `RegExp.prototype.test` on every boot. Measured on bun `import("dist/main.js")` (median of 5): 672ms to 575ms, with 19 fewer modules in the startup graph. ([#1781](https://github.com/code-yeongyu/senpi/issues/1781))
+
+- Startup no longer re-scans the agent directory and the legacy `.pi` layouts on every boot. Once `migrateSessionsFromAgentRoot` and `migrateLegacySenpiDirs` have finished, `<agentDir>/migrations-state.json` records them (schema version 1, written atomically) and later boots skip those scans; a missing, unreadable or malformed marker fails open and runs every scan as before, and the auth, tools-to-bin, keybindings, extension-system and brand-dir migrations still run every start. Measured on a persistent agent directory: 1.9ms to 0.09ms from the second boot on. ([#1781](https://github.com/code-yeongyu/senpi/issues/1781))
+
+- Skill discovery reads only the YAML frontmatter prefix of each `SKILL.md` (the first 8 KiB, falling back to the rest of the file when the closing `---` is not in that prefix) and skips `node_modules` and `.git` while walking. Discovered skill names, descriptions and order are unchanged. ([#1781](https://github.com/code-yeongyu/senpi/issues/1781))
+
+
+- `ExtensionContext.kernelTools` is typed as the shipped kernel-tools surface: `invoke(request, options?)` accepts `{ signal?, scope? }` (a bare `AbortSignal` still works) and `capabilities.invokeScope` is present. Coding-agent owns `ExtensionKernelTools`, `KernelToolInvokeOptions`, and `KernelToolInvokeScope`; senpi-codemode binds its implementation to those types so they cannot drift ([#1731](https://github.com/code-yeongyu/senpi/issues/1731)).
+
+### Fixed
+- The bundled CLI entry runs under custom exec arguments again. A launch carrying a profiler or inspector flag (or anything in `NODE_OPTIONS`) replays those arguments onto a fresh process, and the entry resolved a sibling `cli-main` module for it - but the bundle inlines that module, so every such launch died with `Module not found .../dist/bundle/cli-main.js` the moment the bundle became the shipped entry. The bundled entry now replays the arguments onto a copy of itself and marks the child so it loads the agent in process instead of spawning again; an unbundled install still spawns its sibling exactly as before. ([#1781](https://github.com/code-yeongyu/senpi/issues/1781))
+
+- A models.json `!command` API key is classified at startup without executing the helper, including when a keyless stored credential exists for the same provider. The command still runs on the first auth path that needs the secret; before this, an interactive boot paid the helper's full runtime (`execSync` through `resolveBaseAuth`) before the first frame. ([#1781](https://github.com/code-yeongyu/senpi/issues/1781))
+
+- The published package now contains the bundled CLI its `pi` command points at. `bin.pi` resolves to `dist/bundle/cli.js`, but no build produced that file - only a test script did - so a release tarball packed a `pi` entry with no target (`bin.senpi`, on the unbundled `dist/cli.js`, was unaffected). The coding-agent build now runs the esbuild bundler as its last step, so every build that ships the package emits `dist/bundle/`, and the smoke exercises that bundle under both Node and Bun: `--version`, `--help`, an external TypeScript extension loaded with `--extension`, and an RPC `--multi-session` session lifecycle. The bundled entry also starts faster than the unbundled one: `--version` 19.5ms against 23.6ms on Bun and 47.1ms against 52.5ms on Node, and a full startup through model resolution 295ms against 946ms on Bun and 360ms against 877ms on Node (median of 5). ([#1781](https://github.com/code-yeongyu/senpi/issues/1781))
+
+
+- A shared RPC host no longer disconnects a client that is merely busy. The host used to return a session worker's output credit only after every connected client had drained that record to the kernel, so the slowest client paced the producing session and the stall cut had to fire before the worker's 5-second credit deadline: a client that stopped reading its socket for 4 seconds with as little as 16 KB pending was treated as dead, cut, and had all of its sessions released (observed 12 times in 35 minutes against one desktop client on a loaded machine). Credit is now returned as soon as each connection has accepted the record into its own 64 MiB queue, the dead-peer cut is a 30-second transport liveness budget that no longer depends on the worker deadline, and a cut connection is half-closed instead of destroyed, so a client that resumes reading within 5 seconds finally receives the `overflow` notice - and the records already queued for it - before EOF. A client that outruns its own reading still overflows its queue and is cut, and a client that never reads again is still disconnected. ([#1774](https://github.com/code-yeongyu/senpi/issues/1774))
+- Compaction no longer gives up on a summarizer that answers with a normal stop and no text when the request had pinned a reasoning override. Some OpenAI-completions relays answer a summarization request that carries an explicit reasoning effort with an empty 200 stream (seen on z-ai/glm-5.3-flash behind a custom relay: only the role prelude, 7 completion tokens), while the same model answers ordinary agent traffic without the pin. Each empty answer used to throw the terminal "summarization response contained no text (stopReason: stop)" error at once, so every route that re-triggered compaction (the pre-prompt check before each turn, the idle warm-up and its retries, the breaker reopening after its cooldown) paid a full summarization request for nothing, and on routes without the deterministic checkpoint the session kept reporting "Compaction rejected". An empty stop now earns one retry of the same request without the reasoning override before the terminal error, and only when the first attempt carried one: a non-reasoning model still fails on the first empty answer instead of replaying an identical prompt. Persistent emptiness keeps the deterministic fallback contract.
+
+- The experimental server no longer lets a Session worker's operation response overtake the provider updates the worker emitted before it. A worker writes a run's transcript updates and that run's response to one control channel in order, but the server forwarded updates through a delivery chain that awaits the client socket write while it settled responses the moment they arrived, so a client that was slow to drain received the prompt response ahead of the run's trailing `run_end` and tore its transcript subscription down on top of the undelivered events (the event stream ended at `entry_added`, and the same race could return an empty answer). Both now share one FIFO per attachment, so a slow drain delays the response instead of dropping events, bounded by the connection's existing pending-byte limit and its explicit disconnect. The experimental client also keeps its transcript subscription until the prompted run's own terminal event arrives, rather than until the response resolves. ([#1676](https://github.com/code-yeongyu/senpi/issues/1676))
+
+### Removed
+
+## [2026.9.16-3] - 2026-09-16
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- The stream guard now interrupts a message that keeps restating itself in different words, not only one that repeats a paragraph verbatim. A paragraph counts as an echo when its normalized word set overlaps an earlier paragraph of the same message by half, and the guard acts only once at least 8 of the last 12 paragraphs are echoes, so a repeated sentence, a callback, or a closing summary is left alone while a narration loop is cut within a few thousand characters. Paragraphs inside fenced code blocks are ignored, and the earlier text is kept - only the repeated run is dropped before the retry. Measured against 12,499 real assistant messages, the rule matched nothing except two known runaway generations. ([#1330](https://github.com/code-yeongyu/senpi/issues/1330))
+
+- `--help` no longer boots the engine to print a help screen. The usage text and the flags extensions register are answered from a cache of the last launch's flag set (`<agentDir>/cache/help-flags.json`, validated against the engine version and the mtime/size of every extension, settings and trust input, so an upgrade or an edited extension refreshes it); a cache miss loads extensions for their flags only and skips the model runtime, the session and every other resource class. Measured warm on an Apple M4 Pro: 790ms → 28ms on bun and 959ms → 59ms on node for `--help`; a help screen never prompts for project trust and never runs project-local extension code that is not already trusted. ([oh-my-openagent#8371](https://github.com/code-yeongyu/oh-my-openagent/issues/8371))
+
+### Fixed
+
+- The startup spinner is drawn the moment interactive startup begins instead of after a 120ms grace timer. That timer could not fire while the synchronous extension imports it was meant to cover were running, so on a real terminal the first frame appeared only once the whole load was done (measured: first byte at 2.27s, one frame before the TUI took over) and the load ran on a blank screen. ([oh-my-openagent#8371](https://github.com/code-yeongyu/oh-my-openagent/issues/8371))
+
+### Removed
+
+## [2026.9.16-2] - 2026-09-16
+
+### Breaking Changes
+
+### Added
+
+- Added `/rename [name]` to rename the current session from the TUI: with an argument it sets the name immediately, without one it opens an inline editor prefilled with the current name (Enter commits, Esc cancels, empty names are rejected). `/name` remains as an alias, and the new unbound `app.session.renameCurrent` keybinding action opens the same editor. ([#1738](https://github.com/code-yeongyu/senpi/issues/1738))
+
+### Changed
+
+- Large tool-result strings evicted from the resident store persist to a per-session blob backing and hydrate on read instead of forcing a full session-JSONL reparse. Blob names are the SHA-256 of the text, so a string that is hydrated and externalized again maps to the same file, and two processes sharing a session directory can only ever write identical bytes under one name. Blobs are integrity-checked envelopes: a corrupt file is deleted on read and the entry falls back to JSONL recovery. `--no-session` never writes blobs ([#1746](https://github.com/code-yeongyu/senpi/issues/1746)).
+- Idle sessions release the memoized entry views and tokenize the runtime message state only once the store has evicted something; `session.messages` and the compaction estimators hydrate those tokens before returning, so readers never see resident tokens. The blob directory is removed when the session manager is disposed, when the session is switched or branched, and stale blobs are cleared when a persisted session is reopened ([#1746](https://github.com/code-yeongyu/senpi/issues/1746)).
+- Compaction spills resident strings to the blob backing instead of dropping them, keeping post-compaction reads on the per-string hydration path.
+- Branched sessions materialize entry content before the previous backing is released, so resident tokens can no longer be written into a new branched session file.
+
+### Fixed
+
+- Moving the model selector off a Claude model and back no longer re-sends the whole conversation. Leaving the `claude-sdk-oauth` provider now closes the live SDK session but keeps its continuity binding - the same thing a thinking-level change already did - so returning to the same Claude model re-attaches to the existing session and sends only the messages added while you were away, instead of paying for the full history again. Switching to a different Claude model, a restart with no usable transcript, a diverged conversation and an unacknowledged session id all still start fresh exactly as before. When a binding really was discarded, the transcript notice now names the recorded cause (`model_selected`, `tainted_compaction`, `branch_diverged`, `extensions_removed`, ...) instead of the generic `registry_miss`, which from now on means only "no record was ever found" ([#1747](https://github.com/code-yeongyu/senpi/issues/1747)).
+
+- A provider that accepts a request and never starts streaming no longer ends the turn with the watchdog's own message (`Provider stream start timed out after 180000ms ...`). The stall is still retried on the same model with the configured stream-start bound, and still hands the turn to the next model in a configured `retry.fallbackChains` entry whose answer becomes the turn result. What changed is what you read: the transcript (and `senpi -p`) describes the stall in plain language, and when nothing can take the turn over the final line names the stalled model, the attempts spent and the next step - `/fallback`, resending, or raising `retry.provider.streamStartTimeoutMs` (`0` disables). The wording on the assistant message is unchanged, so retry classification and fallback routing behave exactly as before ([#1740](https://github.com/code-yeongyu/senpi/issues/1740)).
+
+- A session no longer dead-ends when the compaction summarizer is killed by a provider or credential failure. Such a stream used to end required compaction with the raw internal `senpi:no-turn-retry:` marker, which also disabled auto-retry and model fallback; because compaction never applied, the context stayed above the threshold and every following prompt failed identically. Those failures now apply the deterministic compaction checkpoint (retained-suffix safety checks unchanged) and the turn continues, with one plain warning saying a provider summary could not be completed, that a checkpoint was applied and older detail was dropped, and that it is safe to continue. Provider refusals, missing credentials and user aborts still surface loudly instead of reducing context. One compaction is also bounded at 15 minutes total across every attempt and retry regardless of input size (an explicit `compaction.summarizationMaxDurationMs` above that still wins), and the summary stream's final settlement now happens inside the watchdog, so a provider whose stream ends without a terminal event can no longer park compaction with no timer armed ([#1741](https://github.com/code-yeongyu/senpi/issues/1741)).
+
+### Removed
+
+## [2026.9.16] - 2026-09-16
+
+### Breaking Changes
+
+### Added
+
+- Extensions receive a per-handler `signal` on the `session_shutdown` event. The host aborts it when that handler exceeds its budget, so long shutdown work can stop cleanly instead of being left behind ([#1732](https://github.com/code-yeongyu/senpi/issues/1732)).
+
+- Added the optional `ExtensionContext.kernelTools` capability with `describe(names)` and `invoke(request, signal?)`. It is present only while a JavaScript eval cell owns the host-tool context, so an extension tool called from inside that cell can reach the functions the cell registered with `tool(fn)`; on older runtimes and outside such a cell it is `undefined`. The package exports `kernelToolsStorage` and the `ExtensionKernelTools` type for hosts that install the capability ([#1647](https://github.com/code-yeongyu/senpi/issues/1647)).
+
+### Changed
+
+- Default `read` calls on eligible `.json` files now return the agent package's structural view, with the same declaration-safe folding and numeric `offset`/`limit` rereads, so edits after a read still target real lines. TypeScript and JavaScript stay raw because the measured candidate missed their quality thresholds. Prose, explicit ranges and the existing size-limit continuations produce the same output as before. `ReadToolOptions.folder` selects the folder; `createReadToolDefinition`, `createCodingTools` and `createReadOnlyTools` default it to `selectedReadFolder`, and an options object without `folder` keeps reads verbatim. Compiled binaries produce byte-identical read output to the source build, and no parser dependency is added ([#1639](https://github.com/code-yeongyu/senpi/issues/1639)).
+
+### Fixed
+
+- One extension can no longer hold quit, `/reload`, `/new`, `/resume` or a fork hostage: senpi now bounds every `session_shutdown` handler itself. A handler still running after `sessionShutdownHandlerWarnMs` (default 2000) logs one warning naming the extension, and at `sessionShutdownHandlerTimeoutMs` (default 10000) senpi aborts that handler's `event.signal`, reports an extension error naming it, and continues teardown with the remaining handlers. Set either setting to `0` to disable that half. Handlers that finish under the warning threshold are unaffected, and every other extension event keeps its uncapped wait (ask-user and approval dialogs may legitimately block for minutes) ([#1732](https://github.com/code-yeongyu/senpi/issues/1732)).
+
+### Removed
+
+## [2026.9.15-2] - 2026-09-15
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- Standalone binaries load codemode from the staged on-disk package instead of embedding a second copy; the sidecar includes its JS parser dependency and retains the bun-1-4 skill ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
+### Fixed
+
+- RPC `close_session` acknowledgements and `session_closed` events, including worker-failure terminals, are published only after the session registry has removed the entry, so an immediate `list_sessions` never returns the closed session. Filesystem watchers are cancelled atomically with shutdown, every disposer is joined before process exit, reentrant RPC shutdown shares that join and keeps a failure exit code, and nonpersistent RPC probes do not start watchers ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
 
 - The RPC host watchdog's ppid fallback no longer spawns `ps -o lstart=` every 250ms while the supervisor is alive: a dead supervisor is reaped by its own parent and the host is then reparented, so the free `kill(pid, 0)` + ppid comparison observes the loss without any child process. Long-lived shared hosts no longer accumulate thousands of `ps` children (zombies on runtimes that fail to reap them) ([#1507](https://github.com/code-yeongyu/senpi/issues/1507)).
 
+- Terminal monitors no longer burn CPU while paused: a paused file watch clears its 250ms poll timer entirely (no stat/SHA-256 digest work) and resume runs one immediate check, so a change made during the pause still fires. Session-output line buffers are now capped at 64KiB, so a newline-less stream can no longer grow a monitor's retained tail without bound ([#1698](https://github.com/code-yeongyu/senpi/issues/1698)).
 
-- Terminal monitors no longer burn CPU while paused: a paused file watch clears its 250ms poll timer entirely (no stat/SHA-256 digest work) and resume runs one immediate check, so a change made during the pause still fires. Session-output line buffers are now capped at 64KiB, so a newline-less stream can no longer grow a monitor's retained tail without bound ([#1698](https://github.com/code-yeongyu/senpi/issues/1698)).### Removed
+- Long, compaction-trimmed sessions no longer re-parse the entire session file every time the working/retry status animation cadence is decided (which periodically froze the UI on multi-day sessions): the cadence reads an O(1) maintained entry count, `SessionManager#getEntryCount()`; explicit full-history retrieval is unchanged ([#1699](https://github.com/code-yeongyu/senpi/issues/1699)).
+
+
+- The Cursor CLI OAuth lane no longer spawns `cursor-agent models` on every senpi start. The startup catalog probe runs only when the lane is usable (not disabled, `cursor-agent` installed, at least one account bound), inside that account's HOME, and every `cursor-agent` spawn (turn, `models`, `--version`) now receives the same explicit environment allowlist instead of the inherited `process.env`. Hermetic or SSH-launched senpi processes therefore never trigger the CLI's macOS keychain preflight, which used to surface as a blocking "Keychain Not Found" dialog for `cursor-keychain-probe` on the logged-in console ([#1722](https://github.com/code-yeongyu/senpi/issues/1722)).
+
+### Removed
 
 ## [2026.9.15] - 2026-09-15
 
@@ -42,11 +167,10 @@
 
 - `generate_image` is registered as a deferred (search-exposed) tool: it no longer ships its ~1K-token schema on every request and activates on the first by-name call; the bundled imagegen skill names it ([#1682](https://github.com/code-yeongyu/senpi/issues/1682)).
 
-- Standalone binaries load codemode from the staged on-disk package instead of embedding a second copy; the sidecar includes its JS parser dependency and retains the bun-1-4 skill ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
-
 - Replaced webfetch's browser-emulation dependency with inert LinkeDOM parsing, preserving reader output and omitted document tags while resolving relative article links and images against the final response URL and retiring CSS/XHR compile assets ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
 
 - Compiled Bun binaries load TypeScript extensions through native runtime modules instead of embedding jiti, preserving host-module identity and fresh dependency graphs on reload. Computed imports and requires share their generation, unused graphs can be reclaimed, native data imports keep Bun's loaders, and parser errors retain source locations. Node runtimes retain their existing jiti options and load only their own importer when needed ([#1656](https://github.com/code-yeongyu/senpi/issues/1656)).
+
 
 ### Fixed
 

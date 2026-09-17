@@ -15,6 +15,10 @@ export { RENDERED_COMPONENT_RECORD, type SessionEventWriterConnection } from "./
 const settleActors = (actors: readonly SocketEventSinkActor[]): Promise<void> =>
 	Promise.all(actors.map((actor) => actor.flush().catch(() => undefined))).then(() => undefined);
 
+/** Await every actor's ACCEPTANCE of what it was given; never the peer's kernel drain. */
+const acceptActors = (actors: readonly SocketEventSinkActor[]): Promise<void> =>
+	Promise.all(actors.map((actor) => actor.waitForAcceptance())).then(() => undefined);
+
 type RawWriter = (chunk: string) => void;
 type BackpressureWaiter = () => Promise<void>;
 type FlushScheduler = (flush: () => Promise<void>) => void;
@@ -255,23 +259,30 @@ export class SessionEventWriter {
 	}
 
 	/**
-	 * Return worker credit only after this session's destinations consumed their
-	 * queues. A destination that failed (byte overflow or stall) was already cut
-	 * and closed by the fanout's onFailure; it must not withhold the session's
-	 * credit, or one bad peer kills the producing worker (session_worker_credit_timeout).
+	 * Return worker credit once this session's destinations have ACCEPTED the record
+	 * into their bounded queues - never when the slowest peer's kernel has drained it.
+	 * A client that is merely busy would otherwise pace the producing worker into
+	 * session_worker_credit_timeout and force the dead-peer budget under
+	 * SESSION_WORKER_LIMITS.controlMs (#1774). Delivery stays bounded by each queue's
+	 * maxQueueBytes and its dead-peer cut. A destination that failed (byte overflow or
+	 * stall) was already cut and closed by the fanout's onFailure; it is a cut peer,
+	 * not a writer failure. The shared stdio lane keeps its stdout backpressure wait.
 	 */
 	waitForSessionBackpressure(sessionId: string): Promise<void> {
 		if (this.fanout.isEmpty()) return this.flush();
+		return acceptActors(this.sessionActors(sessionId));
+	}
+
+	/** Registered actors this session's records are delivered to, plus the caller's own. */
+	private sessionActors(sessionId: string): SocketEventSinkActor[] {
 		const targets = new Set([
 			...this.fanout.targets(sessionId, this.currentConnection(), false, false, undefined),
 			this.currentConnection(),
 		]);
-		return settleActors(
-			[...targets].flatMap((target) => {
-				const registered = target === undefined ? undefined : this.fanout.get(target);
-				return registered ? [registered.actor] : [];
-			}),
-		);
+		return [...targets].flatMap((target) => {
+			const registered = target === undefined ? undefined : this.fanout.get(target);
+			return registered ? [registered.actor] : [];
+		});
 	}
 
 	/** Queue one untagged host-control response for the current connection. */

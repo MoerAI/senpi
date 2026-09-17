@@ -55,6 +55,7 @@ import type {
 import {
 	cleanupSessionResources,
 	cursorOverflowCompactionSettings,
+	describeProviderStallForUser,
 	isClassifierRefusal,
 	isContextOverflow,
 	isCursorPayloadResourceExhausted,
@@ -228,6 +229,15 @@ import {
 import { generateSessionTitle, sessionTitleRetryPolicy, shouldSkipSessionTitle } from "./session-title-generator.ts";
 import { SessionWorkBarrier } from "./session-work-barrier.ts";
 import type { SettingsManager, SettingsSourceSelection } from "./settings-manager.ts";
+import {
+	formatSkillInvocationPrompt,
+	MAX_SKILL_EXPANSIONS_PER_PROMPT,
+	parseSkillInvocationTokens,
+	removeSkillInvocationTokens,
+	type SkillInvocationPromptSkill,
+	type SkillInvocationSyntax,
+	type SkillInvocationToken,
+} from "./skill-invocation.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { getSupportedThinkingLevels, supportsMax, supportsXhigh } from "./thinking-levels.ts";
@@ -253,176 +263,26 @@ const TURN_RETRY_SUPPRESSION_PREFIX = "senpi:no-turn-retry:";
 const DEFERRED_RETRY_QUEUE_OWNERS = new WeakSet<object>();
 
 // ============================================================================
-// Skill Invocation Formatting and Parsing
+// Skill Invocation Formatting and Parsing (see ./skill-invocation.ts)
 // ============================================================================
 
-export interface SkillInvocationPromptSkill {
-	name: string;
-	filePath: string;
-	baseDir: string;
-	body: string;
-}
-
-/** Format the user-attributed payload for one or more explicit skill invocations. */
-export function formatSkillInvocationPrompt(
-	skills: readonly SkillInvocationPromptSkill[],
-	userRequest?: string,
-): string {
-	const skillBlocks = skills.map(
-		(skill) =>
-			`The user explicitly invoked the "${skill.name}" skill. Follow the instructions in <skill-instruction> as binding for this request, while respecting higher-priority instructions.\n\n<skill-instruction name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${skill.body}\n</skill-instruction>`,
-	);
-	const expandedSkills = skillBlocks.join("\n\n");
-	return userRequest && /\S/.test(userRequest)
-		? `${expandedSkills}\n\n<user-request>\n${userRequest}\n</user-request>`
-		: expandedSkills;
-}
-
-/** Parsed skill block from a user message */
-export interface ParsedSkillBlock {
-	name: string;
-	location: string;
-	content: string;
-	userMessage: string | undefined;
-}
-
-/**
- * Parse a skill block from message text.
- * Returns null if the text doesn't contain a skill block.
- */
-export function parseSkillBlock(text: string): ParsedSkillBlock | null {
-	const instructionPattern =
-		/^The user explicitly invoked the "([^"]+)" skill\. Follow the instructions in <skill-instruction> as binding for this request, while respecting higher-priority instructions\.\n\n<skill-instruction name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill-instruction>/;
-	const instructionMatch = text.match(instructionPattern);
-	if (instructionMatch) {
-		if (instructionMatch[1] !== instructionMatch[2]) return null;
-		let remainder = text.slice(instructionMatch[0].length);
-		while (remainder.startsWith("\n\nThe user explicitly invoked the ")) {
-			const chainedMatch = remainder.slice(2).match(instructionPattern);
-			if (!chainedMatch || chainedMatch[1] !== chainedMatch[2]) return null;
-			remainder = remainder.slice(chainedMatch[0].length + 2);
-		}
-		const requestMatch = remainder.match(/^\n\n<user-request>\n([\s\S]*?)\n<\/user-request>$/);
-		if (remainder && !requestMatch) return null;
-		return {
-			name: instructionMatch[1],
-			location: instructionMatch[3],
-			content: instructionMatch[4],
-			userMessage: requestMatch?.[1].trim() || undefined,
-		};
-	}
-
-	const legacyMatch = text.match(
-		/^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/,
-	);
-	if (!legacyMatch) return null;
-	return {
-		name: legacyMatch[1],
-		location: legacyMatch[2],
-		content: legacyMatch[3],
-		userMessage: legacyMatch[4]?.trim() || undefined,
-	};
-}
-
-export type SkillInvocationSyntax = "dollar" | "slash";
+export {
+	formatSkillInvocationPrompt,
+	MAX_SKILL_EXPANSIONS_PER_PROMPT,
+	MAX_SKILL_INVOCATION_TOKENS_PER_PROMPT,
+	type ParsedSkillBlock,
+	parseSkillBlock,
+	parseSkillInvocationTokens,
+	type SkillInvocationPromptSkill,
+	type SkillInvocationSyntax,
+	type SkillInvocationToken,
+} from "./skill-invocation.ts";
 
 export interface CommandInvocation {
 	name: string;
 	source: "extension" | "prompt";
 	sourceInfo: SourceInfo;
 	syntax: "slash";
-}
-
-export interface SkillInvocationToken {
-	name: string;
-	syntax: SkillInvocationSyntax;
-	start: number;
-	end: number;
-	position: "inline" | "leading";
-}
-
-export const MAX_SKILL_INVOCATION_TOKENS_PER_PROMPT = 64;
-
-const LEADING_SKILL_INVOCATION_PATTERN = /^(?:\/skill:([a-zA-Z][a-zA-Z0-9:_-]*)|\$([a-zA-Z][a-zA-Z0-9:_-]*))(?=\s|$)/;
-const INLINE_DOLLAR_SKILL_INVOCATION_PATTERN = /(^|\s)\$skill:([a-zA-Z][a-zA-Z0-9:_-]*)(?=\s|$)/g;
-
-/**
- * Find explicit skill invocation tokens without treating ordinary inline dollar
- * prose (for example `$HOME`) as executable.
- *
- * Leading runs accept `/skill:name`, `$name`, and `$skill:name`. Outside the
- * leading run only the desktop's explicit `$skill:name` token is executable.
- */
-export function parseSkillInvocationTokens(text: string): SkillInvocationToken[] {
-	const tokens: SkillInvocationToken[] = [];
-	let cursor = 0;
-
-	while (cursor < text.length) {
-		while (cursor < text.length && /\s/.test(text[cursor]!)) cursor++;
-		const match = text.slice(cursor).match(LEADING_SKILL_INVOCATION_PATTERN);
-		if (!match) break;
-		const syntax: SkillInvocationSyntax = match[1] ? "slash" : "dollar";
-		const dollarName = match[2];
-		const name = match[1] ?? (dollarName?.startsWith("skill:") ? dollarName.slice("skill:".length) : dollarName);
-		if (!name) break;
-		tokens.push({
-			name,
-			syntax,
-			start: cursor,
-			end: cursor + match[0].length,
-			position: "leading",
-		});
-		if (tokens.length >= MAX_SKILL_INVOCATION_TOKENS_PER_PROMPT) return tokens;
-		cursor += match[0].length;
-	}
-
-	INLINE_DOLLAR_SKILL_INVOCATION_PATTERN.lastIndex = cursor;
-	for (const match of text.matchAll(INLINE_DOLLAR_SKILL_INVOCATION_PATTERN)) {
-		const start = (match.index ?? 0) + match[1].length;
-		tokens.push({
-			name: match[2],
-			syntax: "dollar",
-			start,
-			end: start + `$skill:${match[2]}`.length,
-			position: "inline",
-		});
-		if (tokens.length >= MAX_SKILL_INVOCATION_TOKENS_PER_PROMPT) break;
-	}
-
-	return tokens;
-}
-
-function stripLeadingInvocationSeparators(text: string): string {
-	let cursor = 0;
-	while (text[cursor] === " " || text[cursor] === "\t") cursor++;
-	while (text[cursor] === "\n" || (text[cursor] === "\r" && text[cursor + 1] === "\n")) {
-		cursor += text[cursor] === "\r" ? 2 : 1;
-		const lineStart = cursor;
-		while (text[cursor] === " " || text[cursor] === "\t") cursor++;
-		if (text[cursor] !== "\n" && !(text[cursor] === "\r" && text[cursor + 1] === "\n")) {
-			return text.slice(lineStart);
-		}
-	}
-	return text.slice(cursor);
-}
-
-function removeSkillInvocationTokens(text: string, tokens: readonly SkillInvocationToken[]): string {
-	let cursor = 0;
-	let result = "";
-	for (const token of tokens) {
-		result += text.slice(cursor, token.start);
-		if (token.position === "inline") result += `[skill: ${token.name}]`;
-		cursor = token.end;
-		if (
-			token.position === "inline" &&
-			(result.endsWith(" ") || result.endsWith("\t")) &&
-			(text[cursor] === " " || text[cursor] === "\t")
-		) {
-			cursor++;
-		}
-	}
-	result += text.slice(cursor);
-	return tokens.some((token) => token.position === "leading") ? stripLeadingInvocationSeparators(result) : result;
 }
 
 /** Session-specific events that extend the core AgentEvent */
@@ -952,9 +812,6 @@ function isSameOverflowSource(
 /** Thinking levels including native max (Opus 4.6 legacy / Opus 4.7 native). */
 const THINKING_LEVELS_WITH_MAX: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-/** Caps explicit skill expansion so one prompt cannot consume unbounded context. */
-export const MAX_SKILL_EXPANSIONS_PER_PROMPT = 5;
-
 /**
  * Cursor admission lives in its own module; the names stay exported here so
  * existing importers keep resolving them.
@@ -1005,6 +862,8 @@ export class AgentSession {
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 	private _settlementEpoch = 0;
+	/** Set by the idle release; every runtime read re-hydrates before handing the array out. */
+	private _runtimeMessagesTokenized = false;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
@@ -1546,6 +1405,9 @@ export class AgentSession {
 				: undefined);
 		const previousTransformContext = this.agent.transformContext;
 		this.agent.transformContext = async (messages, signal) => {
+			// The idle path tokenizes agent.state.messages in place; every provider
+			// request re-hydrates here so tokens can never reach a model.
+			this.sessionManager.getResidentStore().materializeInPlace(messages);
 			const transformed = previousTransformContext ? await previousTransformContext(messages, signal) : messages;
 			const model = this.model;
 			if (model?.provider !== "cursor" && model?.provider !== "cursor-cli-oauth") return transformed;
@@ -1576,6 +1438,10 @@ export class AgentSession {
 		};
 
 		this.agent.prepareNextTurnWithContext = async (turn, signal) => {
+			// A settled turn leaves tokens in agent.state.messages (idle release); make
+			// them readable again before any consumer (compaction admission, context
+			// refresh, admission estimation) reads them this turn.
+			this._runtimeMessages();
 			// Enforce compaction only when this prepare precedes an actual provider
 			// admission: a tool continuation or queued steer/follow-up messages. A
 			// completed turn with no continuation keeps pre-PR timing, while the
@@ -1794,7 +1660,7 @@ export class AgentSession {
 	private _estimateCompactionLogTokens(source: "active" | "persisted"): number | undefined {
 		try {
 			const messages =
-				source === "active" ? this.agent.state.messages : this.sessionManager.buildSessionContext().messages;
+				source === "active" ? this._runtimeMessages() : this.sessionManager.buildSessionContext().messages;
 			return estimateMessagesTokens(filterContextExcludedMessages(messages));
 		} catch {
 			return undefined;
@@ -1842,9 +1708,23 @@ export class AgentSession {
 		this._releaseBlockedPostCompactionAdmissionIfReduced();
 	}
 
+	/**
+	 * `agent.state.messages` with resident tokens hydrated, same array identity.
+	 * The idle release tokenizes the runtime messages in place to let the resident
+	 * store drop its hydrated copies; every reader that can run between two turns
+	 * goes through here so a sentinel never reaches a consumer.
+	 */
+	private _runtimeMessages(): AgentMessage[] {
+		if (this._runtimeMessagesTokenized) {
+			this._runtimeMessagesTokenized = false;
+			this.sessionManager.getResidentStore().materializeInPlace(this.agent.state.messages);
+		}
+		return this.agent.state.messages;
+	}
+
 	/** Byte-derived size of the context an admission decision would carry. */
 	private _blockedAdmissionContentTokens(): number {
-		return estimateMessagesTokens(filterContextExcludedMessages(this.agent.state.messages));
+		return estimateMessagesTokens(filterContextExcludedMessages(this._runtimeMessages()));
 	}
 
 	/** A compaction that genuinely reduced the context clears the blocked state. */
@@ -1985,6 +1865,20 @@ export class AgentSession {
 		}
 		if (settlementEpoch !== this._settlementEpoch) return;
 		if (this._isAgentRunActive || this._sessionWorkBarrier.hasActiveWork) return;
+		// Releasing frees memory only for strings the store already spilled to its blob
+		// backing: a resident string is shared with the store, so tokenizing it hands
+		// back nothing while costing every settled-time reader a re-materialization.
+		if ((this.sessionManager.getResidentStoreStats().evictedCount ?? 0) > 0) {
+			// Settling idle: release the memoized materialized session views. Materialized
+			// entries pin the full persisted strings, so keeping the views between turns
+			// holds the whole session text in resident memory while nothing runs.
+			this.sessionManager.dropMaterializedCaches();
+			// agent.state.messages holds the runtime copies of the same large strings the
+			// views pinned. Tokenize them in place while idle; the next read re-materializes
+			// them through _runtimeMessages(), and the next turn through the hooks above.
+			this.sessionManager.getResidentStore().externalizeInPlace(this.agent.state.messages);
+			this._runtimeMessagesTokenized = true;
+		}
 		this._emit({ type: "agent_idle" });
 	}
 
@@ -2180,7 +2074,7 @@ export class AgentSession {
 	 * and that small figure must not hide a transcript already past the window.
 	 */
 	private _resolveThresholdContextTokens(directContextTokens: number): number {
-		const messages = filterContextExcludedMessages(this.agent.state.messages);
+		const messages = filterContextExcludedMessages(this._runtimeMessages());
 		return resolveThresholdContextTokens(directContextTokens, estimateMessagesTokens(messages));
 	}
 
@@ -2229,7 +2123,7 @@ export class AgentSession {
 		if (message.stopReason !== "error" && directContextTokens !== 0) {
 			contextTokens = this._resolveThresholdContextTokens(directContextTokens);
 		} else {
-			const messages = filterContextExcludedMessages(this.agent.state.messages);
+			const messages = filterContextExcludedMessages(this._runtimeMessages());
 			const estimate = estimateContextTokens(messages);
 			if (estimate.lastUsageIndex === null) {
 				if (!this._isRequiredCompactionError(message)) return undefined;
@@ -2264,7 +2158,7 @@ export class AgentSession {
 		const model = this.model;
 		if (!model) return false;
 		const settings = this._getCompactionSettings();
-		const contextTokens = estimateMessagesTokens(filterContextExcludedMessages(this.agent.state.messages));
+		const contextTokens = estimateMessagesTokens(filterContextExcludedMessages(this._runtimeMessages()));
 		return shouldCompact(contextTokens, model.contextWindow, settings);
 	}
 
@@ -2993,6 +2887,9 @@ export class AgentSession {
 		this._unsubscribeWakeSources = undefined;
 		this._eventListeners = [];
 		cleanupSessionResources(this.sessionId);
+		// Nothing reads or writes this manager once its session is gone: it releases
+		// its writer grant and its disposable blob directory here.
+		this.sessionManager.dispose();
 	}
 
 	/** Live in-session activity signals; see `session-activity.ts` for the contract. */
@@ -3428,7 +3325,7 @@ export class AgentSession {
 
 	/** All messages including custom types like BashExecutionMessage */
 	get messages(): AgentMessage[] {
-		return this.agent.state.messages;
+		return this._runtimeMessages();
 	}
 
 	/** Current steering mode */
@@ -4155,14 +4052,16 @@ export class AgentSession {
 
 	/**
 	 * Expand explicit skill invocations to their full content.
-	 * Leading runs accept slash and dollar syntax; inline expansion is limited to
-	 * the desktop's explicit `$skill:name` token so ordinary dollar prose stays literal.
+	 * Leading runs accept slash and dollar syntax; inline `$name` expands only when
+	 * it names a loaded skill, so ordinary dollar prose such as `$HOME` stays literal.
 	 */
 	private _expandSkillCommand(text: string): string {
-		const invocationTokens = parseSkillInvocationTokens(text);
+		const skills = this.resourceLoader.getSkills().skills;
+		const invocationTokens = parseSkillInvocationTokens(text, {
+			knownSkillNames: new Set(skills.map((skill) => skill.name)),
+		});
 		if (invocationTokens.length === 0) return text;
 
-		const skills = this.resourceLoader.getSkills().skills;
 		const expandedSkillNames = new Set<string>();
 		const skillBlocks: SkillInvocationPromptSkill[] = [];
 		const invocationMetadata: Array<{
@@ -8008,6 +7907,24 @@ export class AgentSession {
 	}
 
 	/**
+	 * User-facing text for a turn that is really over. A provider-stream stall
+	 * carries the watchdog's own wording (`Provider stream start timed out after
+	 * 180000ms ...`), which the retry classifier needs on the message but which
+	 * explains nothing to the person reading the transcript and names no next
+	 * step (senpi#1740). Anything that is not a stall keeps its error verbatim.
+	 */
+	private _terminalFailureText(message: AssistantMessage, attempts: number): string | undefined {
+		const model = this.model ? `${this.model.provider}/${this.model.id}` : undefined;
+		return (
+			describeProviderStallForUser(message.errorMessage, {
+				attempts,
+				model,
+				recovery: this._retryFallback.hasConfiguredChain() ? "chain-exhausted" : "no-fallback-configured",
+			}) ?? message.errorMessage
+		);
+	}
+
+	/**
 	 * A 429-class failure with no usable fallback candidate must not fail the
 	 * turn with zero attempts: a provider answering 429 is asking for a retry.
 	 * No-hint and tier2 waits degrade to same-model in-turn retries under the
@@ -8397,7 +8314,7 @@ export class AgentSession {
 						type: "auto_retry_end",
 						success: false,
 						attempt: this._retryAttempt - 1,
-						finalError: message.errorMessage,
+						finalError: this._terminalFailureText(message, this._retryAttempt - 1),
 					});
 					this._retryAttempt = 0;
 					this._resetHintTierState();

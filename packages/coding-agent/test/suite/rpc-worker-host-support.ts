@@ -24,7 +24,14 @@ const recordSchema = z
 				attached: z.boolean().optional(),
 				state: z.object({ sessionId: z.string(), sessionFile: z.string().optional() }).passthrough().optional(),
 				sessions: z
-					.array(z.object({ sessionId: z.string(), status: z.string(), sessionPath: z.string().optional() }))
+					.array(
+						z.object({
+							sessionId: z.string(),
+							status: z.string(),
+							sessionPath: z.string().optional(),
+							attachments: z.number().optional(),
+						}),
+					)
 					.optional(),
 			})
 			.passthrough()
