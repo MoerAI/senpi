@@ -7,8 +7,10 @@ import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionRuntime,
 } from "../../core/agent-session-runtime.ts";
-import type { SessionStartEvent } from "../../core/extensions/types.ts";
+import type { SessionContext, SessionKind, SessionStartEvent } from "../../core/extensions/types.ts";
+import { EMPTY_SESSION_CONTEXT } from "../../core/extensions/types.ts";
 import { SessionManager } from "../../core/session-manager.ts";
+import { SESSION_PATH_RETRY_AFTER_MS, type SessionPathReservations } from "./host-reservations.ts";
 import { beginSessionClose, closeMarkedSession, closeSession, type SessionTeardownHost } from "./session-teardown.ts";
 import type { SessionWorkerClient } from "./session-worker-client.ts";
 
@@ -24,6 +26,10 @@ export interface RpcSessionEntry {
 	state: RpcSessionState;
 	runtime?: SessionRuntime;
 	worker?: SessionWorkerClient;
+	/** Visibility class chosen by the open, frozen for the entry's life. */
+	readonly kind: SessionKind;
+	/** Frozen opaque labels the open attached; `{}` when it attached none. */
+	readonly context: SessionContext;
 	/** Resolves replacement against the runtime currently owned by this entry. */
 	switchSession?: SessionRuntime["switchSession"];
 	/** Rebind callback installed by the shared RPC connection handler. */
@@ -63,11 +69,14 @@ export class RpcSessionRegistryError extends Error {
 		| "session_reservation_limit"
 		| "invalid_path"
 		| "open_failed";
+	/** Machine-readable context for the wire (`errorData`): who holds a path, when to retry. */
+	readonly detail?: Readonly<Record<string, unknown>>;
 
-	constructor(code: RpcSessionRegistryError["code"], reason?: string) {
+	constructor(code: RpcSessionRegistryError["code"], reason?: string, detail?: Readonly<Record<string, unknown>>) {
 		super(code === "open_failed" && reason ? `${code}: ${reason}` : code);
 		this.code = code;
 		this.name = "RpcSessionRegistryError";
+		if (detail) this.detail = detail;
 	}
 }
 
@@ -78,12 +87,31 @@ export interface RpcSessionRegistryOptions {
 	now?: () => number;
 	/** Maximum time to wait for graceful runtime teardown before forced release. */
 	closeGraceMs?: number;
+	/**
+	 * Cross-GENERATION path claims. During a handoff two hosts are alive at once, and only a
+	 * claim outside either process can keep them off one JSONL. Absent for an embedded registry
+	 * that is the only host of its agent directory.
+	 */
+	pathReservations?: SessionPathReservations;
 }
 
 /** Host-side lifecycle policy for one `open_session`, distinct from the session's launch profile. */
 export interface RpcSessionOpenOptions {
 	/** Keep the session alive when its last client disconnects (`open_session.retain_on_disconnect`). */
 	retainOnDisconnect?: boolean;
+}
+
+/** One `list_sessions` row. `context` is published only to a listing that asked for workers. */
+export interface RpcSessionRow {
+	sessionId: string;
+	durableSessionId?: string;
+	sessionPath?: string;
+	cwd: string;
+	name?: string;
+	status: Exclude<RpcSessionState, "quarantined">;
+	attachments: number;
+	kind: SessionKind;
+	context: SessionContext;
 }
 
 export interface OpenRpcSession {
@@ -100,11 +128,25 @@ function canonicalPath(path: string): string {
 	return `${realpathSync(dirname(absolutePath))}/${basename(absolutePath)}`;
 }
 
-function frozenProfile(profile: RpcSessionLaunchProfile): Readonly<RpcSessionLaunchProfile> {
+/** Freezes an open's launch inputs, including the nested objects a client supplied. */
+export function frozenProfile(profile: RpcSessionLaunchProfile): Readonly<RpcSessionLaunchProfile> {
 	return Object.freeze({
 		...profile,
 		...(profile.creationModel ? { creationModel: Object.freeze({ ...profile.creationModel }) } : {}),
+		...(profile.sessionContext ? { sessionContext: Object.freeze({ ...profile.sessionContext }) } : {}),
 	});
+}
+
+/**
+ * The visibility class and labels an entry keeps for its life, normalized once here so no
+ * lifecycle, listing or delivery decision has to re-apply the defaults. Reads the already
+ * frozen profile, so the entry and the runtime share one frozen context object.
+ */
+export function sessionIdentity(profile: Readonly<RpcSessionLaunchProfile>): {
+	readonly kind: SessionKind;
+	readonly context: SessionContext;
+} {
+	return { kind: profile.sessionKind ?? "interactive", context: profile.sessionContext ?? EMPTY_SESSION_CONTEXT };
 }
 
 /** Process-local lifecycle owner for multi-session RPC runtimes. */
@@ -125,7 +167,10 @@ export class RpcSessionRegistry {
 			closeGraceMs: this.closeGraceMs,
 			get: (handle) => this.entries.get(handle),
 			delete: (handle) => this.entries.delete(handle),
-			releaseReservation: (key) => this.reservations.delete(key),
+			releaseReservation: (key) => {
+				this.reservations.delete(key);
+				this.options.pathReservations?.release(key);
+			},
 			sync: () => this.syncRuntimeMetadata(),
 		};
 	}
@@ -139,11 +184,12 @@ export class RpcSessionRegistry {
 		this.validateProfile(profile);
 		this.syncRuntimeMetadata();
 		const sessionPath = profile.sessionPath ? canonicalPath(profile.sessionPath) : undefined;
+		if (sessionPath) await this.settleClosingReservation(sessionPath);
 		if (sessionPath && this.reservations.has(sessionPath)) {
 			// Attach-on-open: a live session outlives individual client attachments, so a
 			// resume (or a second surface) for an already-hosted path joins the existing
-			// runtime instead of failing. Entries still opening or closing keep the
-			// exclusive reservation and reject as before.
+			// runtime instead of failing. An entry still opening keeps the exclusive
+			// reservation and rejects as before.
 			const existing = [...this.entries].find(
 				([, entry]) => entry.reservationKey === sessionPath && entry.state === "open",
 			);
@@ -162,7 +208,26 @@ export class RpcSessionRegistry {
 				attached: true,
 			};
 		}
-		if (sessionPath) this.reservations.add(sessionPath);
+		if (sessionPath) {
+			// Taken SYNCHRONOUSLY, before any await: a concurrent open for the same path must find the
+			// reservation already held, not a window between the decision and the record of it.
+			this.reservations.add(sessionPath);
+			// Another generation of this daemon may still be writing this file. Its claim is the only
+			// thing this process can see across a handoff, and a live one means "retry", not "gone".
+			// Only AWAIT when there is a cross-generation claim to take: `await undefined` still costs a
+			// microtask, and an embedded registry (no second generation) must reach the "opening" entry
+			// in the same tick a caller that raced it would look, exactly as it did before generations.
+			const holder = this.options.pathReservations
+				? await this.options.pathReservations.claim(sessionPath)
+				: undefined;
+			if (holder) {
+				this.reservations.delete(sessionPath);
+				throw new RpcSessionRegistryError("session_path_in_use", undefined, {
+					owner: holder,
+					retry_after_ms: SESSION_PATH_RETRY_AFTER_MS,
+				});
+			}
+		}
 
 		// Resume vs create parity (D1 + omo SenpiSessionRuntime.ts:198-200):
 		// Create-only launch semantics mirror classic startup flags. A resumed
@@ -187,6 +252,7 @@ export class RpcSessionRegistry {
 			state: "opening",
 			scope: new ProviderScope(),
 			profile: storedProfile,
+			...sessionIdentity(storedProfile),
 			sessionPath,
 			reservationKey: sessionPath,
 			cwd: storedProfile.cwd,
@@ -261,11 +327,44 @@ export class RpcSessionRegistry {
 					await entry.scope.close?.();
 				} finally {
 					this.entries.delete(handle);
-					if (sessionPath) this.reservations.delete(sessionPath);
+					if (sessionPath) {
+						this.reservations.delete(sessionPath);
+						this.options.pathReservations?.release(sessionPath);
+					}
 				}
 			}
 			if (error instanceof RpcSessionRegistryError) throw error;
 			throw new RpcSessionRegistryError("open_failed", error instanceof Error ? error.message : undefined);
+		}
+	}
+
+	/**
+	 * Waits out a teardown already in flight for this path before the open decides.
+	 *
+	 * A close FREES the path, but the entry keeps its reservation until its runtime is
+	 * disposed, so an open landing inside that window used to be refused with
+	 * `session_path_in_use` for a session that no longer exists - making "reopen the
+	 * path I just closed" a race against disposal latency, which no client can time.
+	 * The open now waits for the teardown it would have been refused by and then opens
+	 * the file fresh. Bounded by the same grace window that bounds the teardown itself
+	 * (`closeMarkedSession` force-releases at that deadline), so a wedged disposal
+	 * still ends in the ordinary refusal instead of an open that never answers.
+	 */
+	private async settleClosingReservation(sessionPath: string): Promise<void> {
+		const closing = [...this.entries.values()].find(
+			(entry) => entry.reservationKey === sessionPath && entry.state === "closing",
+		);
+		if (!closing?.closeCompletion) return;
+		let deadline: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				closing.closeCompletion,
+				new Promise<void>((resolve) => {
+					deadline = setTimeout(resolve, this.closeGraceMs);
+				}),
+			]);
+		} finally {
+			if (deadline) clearTimeout(deadline);
 		}
 	}
 
@@ -313,15 +412,7 @@ export class RpcSessionRegistry {
 		return closeMarkedSession(this.teardownHost, handle);
 	}
 
-	list(): Array<{
-		sessionId: string;
-		durableSessionId?: string;
-		sessionPath?: string;
-		cwd: string;
-		name?: string;
-		status: Exclude<RpcSessionState, "quarantined">;
-		attachments: number;
-	}> {
+	list(): RpcSessionRow[] {
 		this.syncRuntimeMetadata();
 		return [...this.entries].map(([sessionId, entry]) => ({
 			sessionId,
@@ -329,6 +420,8 @@ export class RpcSessionRegistry {
 			sessionPath: entry.sessionPath,
 			cwd: entry.cwd,
 			name: entry.runtime?.session.sessionManager.getSessionName(),
+			kind: entry.kind,
+			context: entry.context,
 			// A closing entry has already released its last attachment; never publish that as negative.
 			attachments: Math.max(0, entry.attachments),
 			status: entry.state === "quarantined" ? "closing" : entry.state,
@@ -347,8 +440,16 @@ export class RpcSessionRegistry {
 			// break ordinary attach-on-open aliases.
 			if (currentPath !== entry.sessionPath) {
 				const currentKey = currentPath ? canonicalPath(currentPath) : undefined;
-				if (entry.reservationKey) this.reservations.delete(entry.reservationKey);
-				if (currentKey) this.reservations.add(currentKey);
+				if (entry.reservationKey) {
+					this.reservations.delete(entry.reservationKey);
+					this.options.pathReservations?.release(entry.reservationKey);
+				}
+				if (currentKey) {
+					this.reservations.add(currentKey);
+					// A replacement moved this session to another file; the claim follows it. A file a
+					// live foreign generation holds is left alone by claim() itself.
+					void this.options.pathReservations?.claim(currentKey);
+				}
 				entry.reservationKey = currentKey;
 				entry.sessionPath = currentPath;
 			}

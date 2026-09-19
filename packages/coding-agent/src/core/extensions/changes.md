@@ -1,5 +1,110 @@
 # Core Extensions Changes
 
+## 2026-09-19 - CommonJS dependencies evaluate with Node's module semantics (#1838)
+
+### What changed
+
+- `bun-extension-importer.ts`: a CommonJS module is wrapped in Node's module function wrapper — `export default <meta>.commonJs(function (exports, module) { ... });` — instead of the previous `const module = { exports: {} }; const exports = module.exports;` prologue. `exports` and `module` are parameters again, so a dependency may reassign either; the body still runs in strict mode because the wrapper lives inside an ES module.
+- `bun-extension-importer.ts`: `graph.evaluateCommonJs()` registers the live `module` object of a CommonJS file before its body runs, and `graph.require()` answers from that registry before falling back to Bun's native require. A require issued inside a cycle therefore receives the partially built exports, as in Node, and a repeated require returns the same object. A body that throws is evicted from the registry, so a later require re-throws instead of returning a half-built module.
+- `bun-extension-registry.ts`: the per-file `require` handed to extension code is a function object carrying `resolve`, which returns the absolute path of a graph-resolved file (and the id itself for builtins and virtual modules); the metadata gains `commonJs(body)` and `ExtensionGraph` gains `evaluateCommonJs(filename, body)`.
+- `bun-extension-importer.ts`: files with a `.mjs` or `.mts` extension stay on the ESM path even when they carry no import or export statement, so top-level `await` in such a file keeps parsing. The shebang strip now runs on the transpiled source before any prologue is prepended; Bun's transpiler already removes a hashbang, so this is a tidy-up rather than a behavior change.
+
+### Why
+
+- `const exports` made every CommonJS file that reassigns `exports` a parse-time failure under Bun: `module.exports = exports = { ... }` is the published shape of `whatwg-url/lib/utils.js` and `jsdom/lib/generated/idl/utils.js`, and Bun rejects the wrapped module with `This assignment will throw because "exports" is a constant`. The rejection is not contained to that module: the whole extension graph fails to load, which is how it surfaced (an extension that pulls in jsdom through its dependency graph could not load at all).
+- With that prologue gone the same graph hit the next two gaps. `jsdom/lib/jsdom/living/xhr/XMLHttpRequest-impl.js` calls `require.resolve("./xhr-sync-worker.js")`, and `resolve` only existed as a sibling key of the metadata object, so `require.resolve` was undefined. `@acemir/cssom` requires `CSSStyleDeclaration` and `CSSStyleRule` mutually; a CommonJS module reached through the graph exposed its exports only through `export default module.exports`, which is assigned after the body finishes, so the inner require of a cycle saw `undefined`.
+- Node evaluates a CommonJS module inside a function whose `exports` and `module` are parameters, hands out the module object from its cache as soon as evaluation starts, and gives every module a `require.resolve`. Matching those three points is what lets a published CommonJS dependency load here the way it does under `node` and under plain `bun` for the shapes jsdom and whatwg-url use; the jsdom probe extension and pi-webfetch load on the rebuilt engine. One difference stays: the body runs in strict mode, so a dependency that relies on sloppy-mode behavior (assigning an implicit global, writing a read-only property) still throws here.
+
+### Why an extension could not handle it
+
+- This is the loader that evaluates extension source; it runs before any extension exists.
+
+### Expected merge conflict zones
+
+- LOW: the `!hasModuleSyntax` branch and the runtime-prologue template at the end of `graph.load()`, `graph.require()` and the new `graph.evaluateCommonJs()` in `bun-extension-importer.ts`; `metadata()` and the `ExtensionGraph` interface in `bun-extension-registry.ts`.
+
+## 2026-09-18 — The extension runtime shim resolves to a file, not a Bun virtual module (omo#8427)
+
+### What changed
+
+- `bun-extension-registry.ts`: `"runtime"` resolves to `extension-runtime-module.js` on disk instead of a `builder.module()` virtual module; the metadata factory is published through `Symbol.for("senpi.extension.runtime.metadata")` and read back by that file.
+- `extension-runtime-module.ts` (new): the shim the namespace resolves to when it exists on disk. Inside a `bun build --compile` binary `import.meta.url` is a `$bunfs` URL with no real file behind it, so the compiled binary keeps the virtual-module route (which never failed there) and only the on-disk case takes the file route.
+- Module ids are parsed by one `splitModuleId()` helper that requires a real `<generation>/<encoded filename>` shape and raises `ExtensionModuleIdError` otherwise, replacing two open-coded `indexOf("/")` slices.
+
+### Why
+
+- On `windows-latest` under `bun test --parallel`, a `builder.module()` registration is intermittently invisible to Bun's resolver while the hooks keep working. Measured on the shard (omo run 35329245740): `onResolve` fired for `"runtime"` and returned `{ path: "runtime", namespace }` with the registration still listed (`hasModuleReg: ["runtime"]`), and Bun answered `Cannot find package 'runtime'` anyway — generation 0 on its only resolve, generation 1 on its **41st** after 40 successes in the same worker. An independent plugin's virtual module resolved fine in that worker, so this is not a Bun-wide outage. Every agent-dir extension in the affected worker then failed to load, which is what made omo's two marker tests red on every `windows 2/2` shard across three releases.
+- The `indexOf("/")` slices produced `Cannot find package '1'` (the generation number) for an id whose encoded half holds no literal slash — a second defect the first one had been masking.
+
+### Why an extension could not handle it
+
+- This is the loader that runs before any extension exists.
+
+### Expected merge conflict zones
+
+- MEDIUM: the `setup(builder)` body in `bun-extension-registry.ts`.
+
+## 2026-09-18 - The extension reference publishes the session identity and what the config-reload watcher costs (senpi#1782)
+
+### What changed
+
+- `packages/coding-agent/docs/extensions.md` gains "pi.sessionKind / pi.sessionContext / pi.sharedHostEnabled" at the head of the ExtensionAPI section: the property table, a factory-time gating example, the fact that the engine never interprets `sessionContext` (no auth, model or resource decision reads it), the boundary caps an extension therefore receives pre-validated, and a link to the wire side in `docs/rpc.md`.
+- `packages/coding-agent/docs/extensions.md` "Config reload" gains a measured cost callout: the watcher is per session and lazily spawns one `node:worker_threads` Worker each, so a shared host carries about one extra OS thread and ~5 MB per session (senpi#1794), and a host with the builtin disabled adds no thread per session.
+
+### Why
+
+- `sessionKind`/`sessionContext` shipped on `ExtensionAPI` and are the mechanism the shared daemon offers instead of per-session extension paths, but an extension author had no documentation for them at all - the only description lived in the RPC protocol reference, which extension authors do not read.
+- The config-reload watcher is the dominant per-session cost of a shared daemon and is invisible from the extension docs, where the builtin is described purely as a convenience. An operator sizing a host, and any author writing a similar watcher, needs the number and the cause in the same place as the feature.
+
+### Why an extension could not handle it
+
+- Documentation of the `ExtensionAPI` contract and of a default-on builtin; both are engine surfaces an extension consumes rather than defines.
+
+### Expected merge conflict zones
+
+- LOW: the head of the "ExtensionAPI Methods" section and the first paragraphs of "Config reload" in `docs/extensions.md`.
+
+
+## 2026-09-18 - Named imports from CommonJS packages link through the extension graph (senpi#1807)
+
+### What changed
+
+- `bun-extension-importer.ts`: `load()` resolves each static import to its real path and, when the target has no module syntax (or is `.cjs`), replaces the whole import statement with a `default` import plus destructuring instead of only rewriting the specifier. `resolve()` now delegates to a `resolveTarget` helper that returns both the graph id and the real path.
+- `bun-extension-commonjs.ts` (new): `isCommonJsFile` (cached lexer probe, `.cjs`/`.mjs`/TypeScript short-circuits) and `rewriteCommonJsImport` / `parseImportClause`, which turn `import { A, B as C } from "x"`, `import * as ns`, and `import d` into bindings off `module.exports`.
+
+### Why
+
+- A CommonJS module in the graph is wrapped to expose only `export default module.exports`, so Bun's ESM linker rejected `import { Readability } from "@mozilla/readability"` with `Export named 'Readability' not found in module 'senpi-extension:...'`, while the same import works in plain Bun and Node (they synthesize named exports with cjs-module-lexer). CommonJS has no live bindings, so `default` plus destructuring is exactly Node's interop semantics, with no new dependency.
+
+### Why an extension could not handle it
+
+- The failure happens while the loader links the extension's own module graph, before any extension code runs.
+
+### Expected merge conflict zones
+
+- MEDIUM: the import-edge loop inside `load()` and the `resolve` member of `graph` in `bun-extension-importer.ts`. `bun-extension-commonjs.ts` is fork-only.
+
+## 2026-09-17 - ExtensionAPI publishes the session's kind and opaque context (senpi#1782)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/types.ts` adds the session-identity vocabulary next to the extension API: `SessionKind` (`"interactive" | "worker"`), `SessionContext` (`Readonly<Record<string,string>>`), the shared frozen `EMPTY_SESSION_CONTEXT`, the `ExtensionSessionProfile` value object (shared-host flag + kind + context) and its `DEFAULT_EXTENSION_SESSION_PROFILE`. `ExtensionAPI` gains the read-only `sessionKind` and `sessionContext` beside `sharedHostEnabled`; both are `interactive`/`{}` for classic launches and for every open that omits them.
+- `packages/coding-agent/src/core/extensions/loader.ts` carries ONE `ExtensionSessionProfile` where it previously carried a bare `sharedHostEnabled` boolean (`createExtensionAPI`, `initializeExtension`, `loadExtension`, `loadExtensionFromFactory`), so the parameter count is unchanged while three per-session facts travel. The public `loadExtensions` options bag gains `sessionKind`/`sessionContext` beside `sharedHostEnabled` (all optional, `ExtensionSessionOptions`), and `sessionProfile()` applies the defaults once.
+- `packages/coding-agent/src/core/extensions/index.ts` re-exports `SessionKind`, `SessionContext` and `EMPTY_SESSION_CONTEXT`.
+
+### Why
+
+- A shared RPC host loads ONE extension set and serves every session of the machine, including machine-driven worker sessions. `pi.sessionContext` is how a single extension instance recognizes the session it was loaded for (senpi#1782: the omo plugin gates itself per session by `role`) without the host accepting per-session extension paths or CLI flags on the wire.
+- The values are inert by construction: they are read-only on the API, frozen by the RPC registry, and never consulted by auth, model or resource resolution.
+
+### Why an extension could not handle it
+
+- `types.ts` owns the published `ExtensionAPI` contract and `loader.ts` is the only place that constructs it; an extension cannot add a field that other extensions receive, nor learn a per-session identity the host never gave it.
+
+### Expected merge conflict zones
+
+- LOW: the `ExtensionAPI` header block after `sharedHostEnabled` in `types.ts`, and the `sharedHostEnabled` parameter of the four loader functions in `loader.ts`.
+
 ## 2026-09-17 - Native Bun extension imports on every bun runtime (senpi#1781)
 
 ### What changed

@@ -1,5 +1,111 @@
 # changes
 
+## 2026-09-18 - Every daemon surface this fork added is documented where its client reads (senpi#1782)
+
+### What changed
+
+- `packages/coding-agent/docs/rpc.md`: the in-process session runtime with its measured per-session cost, the occupancy section rewritten so nothing implies the daemon caps sessions, invariants I3/I4 beside I1/I2, the no-sync rule, the `session_opened`/`session_closed`/`session_parked`/`session_replaced` event rows, and the two live QA drivers that verify a daemon build.
+- `packages/coding-agent/docs/extensions.md`: `pi.sessionKind` / `pi.sessionContext` / `pi.sharedHostEnabled` with a gating example, and the measured per-session cost of the `config-reload` watcher (senpi#1794).
+- `packages/coding-agent/src/modes/rpc/AGENTS.md`: host-lifecycle and daemon-state modules in the structure block, the I1-I4 and no-sync sections, daemon suites, the fixture-reaper receipt and the QA drivers.
+
+### Why
+
+- The daemon work of this plan (in-process runtime, session kind/context, retention, generation handoff, `senpi host`, the stall guard) landed across four increments; each documented its own slice, and the result described a host with a session cap it no longer has. One pass makes the public reference match the shipped behaviour, including the cost it is honest about.
+
+### Why an extension could not handle it
+
+- Documentation of engine process lifecycle, wire protocol and the extension contract itself.
+
+### Expected merge conflict zones
+
+- LOW: docs prose in sections upstream rarely edits, plus this fork's own `AGENTS.md`.
+
+## 2026-09-17 - `senpi host` is routed before argument parsing and exported for launchers (senpi#1782)
+
+### What changed
+
+- `packages/coding-agent/src/main.ts`: `dispatchHostCommand(args)` runs beside the app-server route, BEFORE `parseArgs`, and exits with the code it returns. The route is one argv[0] comparison in `cli/deferred-commands.ts` with the implementation behind an `await import(...)`, so `dist/main.js` still does not statically reach the RPC host graph - and `senpi host ...` never falls through into argument parsing, the print path or the interactive TUI.
+- `packages/coding-agent/src/modes/index.ts`: re-exports the new host surface - `runHostRequest` with `HostRequest`/`HostOutcome`/`HostTarget` and the `HOST_EXIT_*` codes, `readHostStatus` with its report types, and `loadHostLaunchSpec`/`parseHostLaunchSpec`/`HostLaunchSpecError` with `HostLaunchSpec`/`ResolvedHostLaunchSpec`.
+- `packages/coding-agent/src/index.ts`: the package barrel adds `runHostCommand` (from `cli/host-command.ts`) plus everything `modes/index.ts` now publishes, so the omo launcher and the desktop drive the same command without a shell.
+
+### Why
+
+- Every client of the machine-wide daemon needs one answer to "is there a host, may I use it, may I replace it", and the invariants behind it (never signal a host you did not start; compatibility is protocol plus capabilities) must not be re-derived per client. The command is that one answer, so it has to be reachable both as a process and as a function.
+- The dispatch sits before `parseArgs` because `host` is a command, not a prompt: reaching argument parsing would make a stray `senpi host status` open a session instead of answering.
+
+### Why an extension could not handle it
+
+- Command routing, process exit codes and the package barrel all run before any extension is loaded.
+
+### Expected merge conflict zones
+
+- LOW: one import block and one dispatch branch in `main.ts`, and the additive export lists in `modes/index.ts` and `index.ts`.
+
+
+## 2026-09-17 - The host-daemon surface is what the modes barrel re-exports (#1782)
+
+### What changed
+
+- `index.ts` and `modes/index.ts`: re-export the host-daemon surface a client needs - `ensureHost`, `probeHost`, `stopHost`, `handoffHost`, `decideHostAction`, `engineBuildIdentity` and the host identity/decision types - beside the existing `RpcClient` surface, so nothing outside `modes/rpc/` reaches into that directory.
+
+### Why
+
+A client - omo's task runner, the desktop server, a terminal attach - has to decide what to do with a host it finds on a socket. That decision belongs to the engine (protocol version, capabilities, build ordinal, launch profile), not to each client's guesswork, so the engine must export it. One barrel is also what lets a client duck-type these symbols and fail closed against an older engine that lacks them.
+
+### Why an extension could not handle it
+
+An extension runs inside a session; both of these are process-level surfaces that exist before any session does - the module barrel a client imports to decide what to do with a host it found, and the compile step that stamps the binary. Neither is reachable from extension code.
+
+### Expected merge conflict zones
+
+Upstream edits to the same export list, and upstream edits to the `bun build --compile` argument list in the release script.
+
+
+
+### What changed
+
+`src/modes/index.ts` now re-exports the pieces a client needs to talk to a machine-wide host, so nothing outside `src/modes/rpc/` has to reach into that directory: `ensureHost`, `probeHost`, `stopHost`, `handoffHost`, `decideHostAction` and the host identity/decision types, alongside the `RpcClient` surface that was already there.
+
+### Why
+
+A client - omo's task runner, the desktop server, a terminal attach - decides what to do with a host it found on a socket. That decision belongs to the engine (protocol version, capabilities, build ordinal, launch profile), not to each client's own guesswork, so the engine has to export it. Keeping the export list in one barrel is also what lets a client duck-type the symbols and fail closed when it is running against an older engine that does not have them.
+
+## 2026-09-17 - Per-session kind and context reach the session's resources only (senpi#1782)
+
+### What changed
+
+- `packages/coding-agent/src/main.ts`: the runtime factory forwards `launchProfile.sessionKind` and `launchProfile.sessionContext` into `resourceLoaderOptions`, beside `sharedHostEnabled`. The `runtimeParsed` override block is untouched, so neither value enters `CliRuntimeConfiguration.parsed`.
+
+### Why
+
+- A shared host's `open_session` selects those two per-session values, and the only thing that may observe them is the session's own extension set (`pi.sessionKind` / `pi.sessionContext`). Routing them through `parsed` would let a client's opaque labels reach model, auth and flag resolution, which is exactly what the field must never do.
+
+### Why an extension could not handle it
+
+- The factory runs before any extension of that session exists; it is where the per-session resource loader is configured.
+
+### Expected merge conflict zones
+
+- LOW: the `resourceLoaderOptions` literal inside `createCliRuntimeFactory`.
+
+## 2026-09-17 - Socket RPC hosts stop allocating a worker per session (senpi#1782)
+
+### What changed
+
+- `packages/coding-agent/src/main.ts`: the `appMode === "rpc" && parsed.multiSession` branch resolves `resolveSessionRuntime(parsed)` and passes `workerConfiguration` to `runMultiSessionHost` only for the `worker` runtime; the runtime factory is still built from the same configuration on both paths. `main.ts` is the only producer of that option, and `createHostCore` selects `WorkerSessionRegistry` exactly when it is present, so withholding it selects the uncapped in-process `RpcSessionRegistry`.
+
+### Why
+
+- A `--listen` socket host is the shared daemon every client attaches to; the worker registry caps admission at 20 and answers `too_many_sessions` beyond it, which a daemon may never do. Nothing was removed from the worker path - `--session-runtime worker` still reaches the same code with the same cap.
+
+### Why an extension could not handle it
+
+- Host construction happens before extensions load, and no extension surface selects the session registry.
+
+### Expected merge conflict zones
+
+- LOW: the ~10 lines of the multi-session host launch block.
+
 ## 2026-09-17 - The bundled entry replays exec arguments onto itself (senpi#1781)
 
 ### What changed
@@ -92,8 +198,6 @@
 ### Expected merge conflict zones
 
 - MEDIUM: `#handleOperationResponse` and `#handleServiceEvent` in `session-worker-manager.ts`, plus the removed `deliveryTail` field on `WorkerServiceSubscription`. LOW: the prompt block of `runClient` in `client.ts`.
-
-||||||| a07f94adb3
 
 ## 2026-09-16 - Answer `--help` without booting the engine (oh-my-openagent#8371)
 

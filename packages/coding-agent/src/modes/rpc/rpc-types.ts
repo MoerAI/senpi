@@ -7,16 +7,19 @@
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model, ThinkingSelection } from "@earendil-works/pi-ai";
+import type { SessionRuntimeKind } from "../../cli/args.ts";
 import type { AgentAbortSource } from "../../core/agent-abort-provenance.ts";
 import type { PromptDisposition, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { EngineOrdinal } from "../../core/engine-build-identity.ts";
 import type { ServiceTier } from "../../core/extensions/builtin/service-tier.ts";
-import type { ContextUsage } from "../../core/extensions/types.ts";
+import type { ContextUsage, SessionKind } from "../../core/extensions/types.ts";
 import type { SessionEntry, SessionMessageEntry, SessionTreeNode, UsageTotals } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import type { RpcSlashCommand } from "./rpc-command-surface.ts";
 
+export type { SessionContext, SessionKind } from "../../core/extensions/types.ts";
 export type { RpcCommandInvocationEvent } from "./rpc-command-invocation.ts";
 export type { RpcCommandsChangedEvent, RpcSlashCommand } from "./rpc-command-surface.ts";
 
@@ -181,6 +184,12 @@ export const RPC_ERROR_MULTI_SESSION_DISABLED = "multi_session_disabled";
 export const RPC_ERROR_INVALID_PATH = "invalid_path";
 export const RPC_ERROR_OPEN_FAILED = "open_failed";
 export const RPC_ERROR_MEDIA_NOT_FOUND = "media_not_found";
+/** `open_session.context` broke a documented cap (key count, key syntax, value or total bytes). */
+export const RPC_ERROR_INVALID_SESSION_CONTEXT = "invalid_session_context";
+/** `open_session.kind` was neither `interactive` nor `worker`; an unknown kind is never downgraded. */
+export const RPC_ERROR_INVALID_SESSION_KIND = "invalid_session_kind";
+/** A launch-profile field on `open_session` (currently `auto_title`) was the wrong type. */
+export const RPC_ERROR_INVALID_LAUNCH_PROFILE = "invalid_launch_profile";
 // edit_assistant_message failures (mirror AssistantEditError.code / SessionStreamingError.code)
 export const RPC_ERROR_STREAMING = "streaming";
 export const RPC_ERROR_ENTRY_NOT_FOUND = "not_found";
@@ -198,6 +207,9 @@ export type RpcErrorCode =
 	| typeof RPC_ERROR_INVALID_PATH
 	| typeof RPC_ERROR_OPEN_FAILED
 	| typeof RPC_ERROR_MEDIA_NOT_FOUND
+	| typeof RPC_ERROR_INVALID_SESSION_CONTEXT
+	| typeof RPC_ERROR_INVALID_SESSION_KIND
+	| typeof RPC_ERROR_INVALID_LAUNCH_PROFILE
 	| typeof RPC_ERROR_STREAMING
 	| typeof RPC_ERROR_ENTRY_NOT_FOUND
 	| typeof RPC_ERROR_NOT_ASSISTANT
@@ -225,9 +237,39 @@ export type RpcCommand =
 			 * `retain_on_disconnect`; older hosts ignore the field and close as before.
 			 */
 			retain_on_disconnect?: boolean;
+			/**
+			 * Visibility class of this session (default `interactive`). A `worker` session is
+			 * machine-driven work: it is omitted from `list_sessions` unless the caller asks
+			 * for workers, and its lifecycle records reach only connections attached to it.
+			 * Requires the host capability `session_kind`.
+			 */
+			kind?: SessionKind;
+			/**
+			 * Opaque labels for this session, readable by its own extensions as
+			 * `pi.sessionContext` and republished on `list_sessions { include_workers: true }`.
+			 * At most 32 keys matching `^[a-z][a-z0-9_]*$`, each value at most 16 KiB, at most
+			 * 32 KiB of JSON in total; anything else is refused with `invalid_session_context`.
+			 * The host never interprets them. Requires the host capability `session_context`.
+			 */
+			context?: Record<string, string>;
+			/**
+			 * Whether THIS session auto-generates a title from its first prompt (default:
+			 * the host's `--auto-title-sessions` / appMode decision). Requires the host
+			 * capability `auto_title_per_session`. A non-boolean is refused with
+			 * `invalid_launch_profile`.
+			 */
+			auto_title?: boolean;
 	  }
 	| { id?: string; type: "close_session"; sessionId: string }
-	| { id?: string; type: "list_sessions" };
+	| {
+			id?: string;
+			type: "list_sessions";
+			/**
+			 * Include `kind: "worker"` rows, each with its `context` (default false). A
+			 * default listing publishes interactive sessions only and carries no `context`.
+			 */
+			include_workers?: boolean;
+	  };
 
 // ============================================================================
 // Auth provider info (get_auth_providers response)
@@ -365,6 +407,48 @@ export interface RpcSessionState {
 // RPC Responses (stdout)
 // ============================================================================
 
+/**
+ * What a host was launched with. `extensions` are absolute roots, deduplicated and
+ * sorted, so two hosts that loaded the same set produce the same bytes regardless of
+ * the order their launchers passed them.
+ */
+export interface RpcLaunchProfileCore {
+	readonly extensions: readonly string[];
+	readonly multi_session: boolean;
+	readonly session_runtime: SessionRuntimeKind;
+}
+
+/** `profile_id` = sha256 of the canonical JSON of `core` (keys sorted); any client can recompute it. */
+export interface RpcLaunchProfile {
+	readonly profile_id: string;
+	readonly core: RpcLaunchProfileCore;
+}
+
+/**
+ * Host identity. Compatibility and upgrade decisions are made from these fields -
+ * `protocolVersion`, `capabilities` and `engineOrdinal` - NEVER from `serverVersion`,
+ * which is informational only.
+ */
+export interface RpcProtocolIdentity {
+	/** UUID minted at host boot; it changes when the host process does, including on a handoff. */
+	readonly instanceId: string;
+	/** Generation of this host within its daemon directory; 0 when nobody ensured it. */
+	readonly generation: number;
+	/** Engine build text: the package version plus `+<buildEpoch>.<sha7>` when the build defined them. */
+	readonly engineVersion: string;
+	/** `[year, month, day, postRelease, buildEpoch]`, compared with `compareEngineOrdinal`. */
+	readonly engineOrdinal: EngineOrdinal;
+	readonly launch_profile: RpcLaunchProfile;
+}
+
+export interface RpcProtocolInfo extends RpcProtocolIdentity {
+	readonly protocolVersion: 1;
+	/** Informational engine version. Never compare it for compatibility - use the fields above. */
+	readonly serverVersion: string;
+	readonly capabilities: string[];
+	readonly mode: "classic" | "multi";
+}
+
 // Success responses with data
 export type RpcResponse =
 	| {
@@ -372,12 +456,7 @@ export type RpcResponse =
 			type: "response";
 			command: "get_protocol_info";
 			success: true;
-			data: {
-				protocolVersion: 1;
-				serverVersion: string;
-				capabilities: string[];
-				mode: "classic" | "multi";
-			};
+			data: RpcProtocolInfo;
 	  }
 	| {
 			id?: string;
@@ -866,6 +945,55 @@ export interface RpcSessionReplacedEvent {
 	sessionName?: string;
 }
 
+/**
+ * Emitted when a shared host PARKS a session instead of closing it: the idle window
+ * elapsed for a session opened with `retain_on_disconnect`, so the host released the
+ * routing handle while the session itself stays on disk.
+ *
+ * It replaces `session_closed` for that handle - a parked session was not ended, and
+ * `open_session { sessionPath }` reopens it (as a NEW routing handle). Additive: a
+ * client that does not know the type filters it out and learns the handle is gone
+ * from its next command's `unknown_session`.
+ */
+export type RpcSessionParkedEvent = {
+	type: "session_parked";
+	/** Routing handle that was released; it never resolves again. */
+	sessionId: string;
+	/** Session file to reopen this session by. */
+	sessionPath: string;
+};
+
+/**
+ * Why a `session_closed` record was emitted, when the host names a reason.
+ *
+ * Optional on the wire and open to new members: a client that does not recognise a reason, or
+ * receives a record with no `reason` field, treats it exactly as it treated a reason-less one.
+ * Never required in decoders.
+ *
+ * - `client_close`: an attached client sent `close_session`.
+ * - `idle_evicted`: the idle sweep ended a session that was not retained.
+ * - `host_shutdown`: the host process is exiting (SIGTERM / idle-exit / empty-host).
+ * - `replaced`: the live session behind this handle was swapped (`session_replaced` is the
+ *   in-place identity event; this reason is for a handle that ended because of a replacement).
+ * - `handoff_parked`: a generation handoff drained this host and put the session back on disk.
+ *   The session was not ended - `open_session { sessionPath }` reopens it in the new generation.
+ * - `error`: the session failed (worker death, output overflow) and the host sealed it.
+ */
+export type RpcSessionClosedReason =
+	| "client_close"
+	| "idle_evicted"
+	| "host_shutdown"
+	| "replaced"
+	| "handoff_parked"
+	| "error";
+
+/** Terminal record of a closed routing handle. `reason` is absent on older hosts and older records. */
+export type RpcSessionClosedEvent = {
+	type: "session_closed";
+	sessionId: string;
+	reason?: RpcSessionClosedReason;
+};
+
 /** Emitted after the loaded skill, extension, or MCP inventory changes. */
 export interface RpcLoadedSurfacesChangedEvent {
 	type: "loaded_surfaces_changed";
@@ -875,6 +1003,34 @@ export interface RpcLoadedSurfacesChangedEvent {
 export interface RpcAuthAccountsChangedEvent {
 	type: "auth_accounts_changed";
 	provider: string;
+}
+
+/**
+ * Emitted when the host's event loop was blocked long enough to stall every session it
+ * serves, naming the routing handle and tool whose work held it when that can be
+ * attributed. Informational: the host never aborts or refuses anything because of it.
+ */
+export interface RpcHostStalledEvent {
+	type: "host_stalled";
+	/** How late the host's own 200ms timer was invoked, i.e. how long the loop was held. */
+	driftMs: number;
+	/** Routing handle blamed for the stall, absent when no session work was running. */
+	sessionId?: string;
+	/** Tool that session was executing, when the stall happened inside one. */
+	tool?: string;
+}
+
+/**
+ * Emitted while the host process is above its RSS warning threshold. Capacity is memory,
+ * never a refusal: the host reports the pressure and parks idle sessions sooner, and
+ * never declines or kills a session because of it.
+ */
+export interface RpcHostMemoryPressureEvent {
+	type: "host_memory_pressure";
+	/** Resident set size of the host process, in megabytes. */
+	rssMb: number;
+	/** Live sessions the host is holding, including ones opening or closing. */
+	sessions: number;
 }
 
 /** Emitted when the SDK failover engine advances to a different account slot. */

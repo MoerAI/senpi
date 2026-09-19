@@ -1,5 +1,164 @@
 # changes
 
+## 2026-09-19 - A bundled build can start its host again
+
+### What changed
+
+- `scripts/build-coding-agent-bundle.mjs` adds `host-lifecycle` to the lazy entry list, so the
+  bundle emits `chunks/host-lifecycle.js` - the name `supervisor-route`'s deferred import
+  actually resolves.
+
+### Why
+
+- `session-worker` is bundled there with splitting off, and it transitively pulls
+  `supervisor-route`, whose `import("./host-lifecycle.js")` therefore stays a relative
+  specifier resolved beside the emitted file. Only the content-hashed copy existed, so a
+  published install answered `Module not found .../chunks/host-lifecycle.js` and could not
+  start a daemon at all.
+
+### Why an extension could not handle it
+
+- The bundle layout is produced by this script; nothing outside the build can decide which
+  modules are emitted as their own entries.
+
+### Expected merge conflict zones
+
+- The `entryPoints` map of the second (`lazyResult`) build, whenever another
+  variable-specifier module is added to it.
+
+## 2026-09-18 - Seed B.AI credentials in development setup
+
+### What changed
+
+- `scripts/devenv-setup.mjs` recognizes `BAI_API_KEY` when seeding the local development environment.
+
+### Why
+
+- The native B.AI provider should work in a fresh development checkout without storing credentials in tracked
+  files.
+
+### Why an extension could not handle it
+
+- Development environment bootstrapping runs before Senpi or its extensions.
+
+### Expected merge conflict zones
+
+- LOW: one entry in the provider-key array.
+
+## 2026-09-18 - Emit the Devin and Cursor lazy modules beside the bundle (senpi#1810)
+
+### What changed
+
+- `build-coding-agent-bundle.mjs`: the second esbuild pass that writes one self-contained file per variable-specifier import now also emits `devin.js`, `cursor.js` (OAuth flows) and `devin-agent.js`, `cursor-agent.js` (provider streams).
+
+### Why
+
+- `packages/ai` reaches its Node-only modules through computed relative imports (`importOAuthModule("./devin.ts")`, `importNodeOnlyApi("./devin-agent.ts")`) so bundlers cannot follow them into browser-reachable code. The bundle compensates by emitting each target as a sibling file next to the chunk that imports it. Four targets were added to the loaders after that list was written, so `dist/bundle/chunks/devin.js` never existed and every Devin or Cursor login died with `Cannot find module`. The other seven OAuth flows and Bedrock were on the list and worked.
+
+### Why an extension could not handle it
+
+- The failure is inside the release bundler's own output layout; nothing at runtime can create a missing chunk.
+
+### Expected merge conflict zones
+
+- LOW: the `entryPoints` map of the `lazyResult` build in `build-coding-agent-bundle.mjs`.
+
+## 2026-09-18 - Guard worker_threads.markAsUncloneable in the bundle prologue (senpi#1806)
+
+### What changed
+
+- `build-coding-agent-bundle.mjs`: the esbuild banner every emitted file starts with now reads `node:worker_threads` and installs a no-op `markAsUncloneable` when the runtime has none.
+
+### Why
+
+- `undici@8.10.2` instantiates `CacheStorage` at module init, and that constructor calls `webidl.util.markAsUncloneable(this)` — bound unconditionally from `worker_threads.markAsUncloneable`, a Node >= 23 API. Bun 1.3.x has no such export, so the first `require("undici")` threw and every published senpi from `2026.9.17-3` failed to boot there, TUI and headless alike. senpi never uses `caches`; the crash was undici's own init. The banner is the one place guaranteed to run before any bundled module in every chunk, including `session-worker.js`.
+
+### Why an extension could not handle it
+
+- Extensions load after the engine has already imported undici. Only the bundle prologue runs early enough.
+
+### Expected merge conflict zones
+
+- LOW: the `banner` constant in `build-coding-agent-bundle.mjs`.
+
+## 2026-09-17 - Compiled binaries carry the build epoch and short sha (#1782)
+
+### What changed
+
+- `build-binaries.sh`: every `bun build --compile` invocation gets `--define SENPI_BUILD_EPOCH=<unix(commit date)>` and `--define SENPI_BUILD_SHA7=<sha[:7]>`, derived from the commit being built.
+
+### Why
+
+Two hosts that speak the same protocol still need a way to say which one is NEWER, and a CalVer string cannot separate two builds of the same day. The epoch is that ordinal: a successor hands off only when its epoch is strictly greater and the launch profile matches. A binary built without the defines reports no ordinal at all, which reads as "uncomparable" - it attaches, and it never initiates a handoff.
+
+### Why an extension could not handle it
+
+An extension runs inside a session; both of these are process-level surfaces that exist before any session does - the module barrel a client imports to decide what to do with a host it found, and the compile step that stamps the binary. Neither is reachable from extension code.
+
+### Expected merge conflict zones
+
+Upstream edits to the same export list, and upstream edits to the `bun build --compile` argument list in the release script.
+
+
+
+### What changed
+
+`scripts/build-binaries.sh` passes `--define SENPI_BUILD_EPOCH=<unix(commit date)>` and `--define SENPI_BUILD_SHA7=<sha[:7]>` to every `bun build --compile` invocation, derived from the commit being built.
+
+### Why
+
+Two hosts that speak the same protocol still need a way to say which is NEWER, and a CalVer version string cannot answer that for two builds of the same day. The epoch is that ordinal: a successor hands off only when its epoch is strictly greater and the launch profile matches. A binary built without the defines reports no ordinal at all, which reads as "uncomparable" - it attaches, and it never initiates a handoff.
+
+## 2026-09-17 - Keep ws's native accelerators out of the bundle
+
+### What changed
+
+- `build-coding-agent-bundle.mjs`: `bufferutil` and `utf-8-validate` are esbuild externals and members of `allowedExternalPackages`.
+
+### Why
+
+- `ws` requires those two when they are present. Their loader is `node-gyp-build`, which resolves its binding through a computed require that esbuild cannot follow; the import survives as an external named `<runtime>` and `validateExternalImports` rejects the build. They are optional accelerators with a pure-JS fallback, so they belong outside the bundle next to the other native dependencies.
+
+### Why an extension could not handle it
+
+- This is the release bundler's own external policy. Nothing outside the build script decides which packages esbuild may leave unresolved.
+
+### Expected merge conflict zones
+
+- LOW: the `external` array and the `allowedExternalPackages` set in `build-coding-agent-bundle.mjs`.
+
+## 2026-09-17 - Publish a bundled workspace's assets (senpi#1800)
+
+### What changed
+
+- `prepare-senpi-bundled-workspaces.mjs`: `shouldCopyWorkspaceFile` now copies `assets` and `assets/**` alongside `dist` and `native`; `@earendil-works/pi-agent-core` declares its two tree-sitter grammars in `requiredFiles`, so `assertSenpiPackedWorkspaceFiles` fails the release when they are missing.
+
+### Why
+
+- `pi-agent-core`'s `grammar-assets.js` embeds `import("../../../../../assets/tree-sitter/<name>.wasm", { with: { type: "file" } })`, which Bun's compiler must resolve at compile time. The staged copy omitted `assets/`, so the published tarball pointed outside itself and every `publish-platform` build in the consuming repo failed with `Could not resolve`.
+
+### Expected merge conflict zones
+
+- LOW: the `bundledWorkspaces` entry for pi-agent-core and the `shouldCopyWorkspaceFile` allowlist.
+
+## 2026-09-17 - Keep the Bun-only reaper bindings out of the release bundle (senpi#1782)
+
+### What changed
+
+- `scripts/build-coding-agent-bundle.mjs`: `bun:ffi` joins `bun:sqlite` in `external` and in `allowedExternalPackages`, so esbuild leaves the specifier unresolved instead of failing the build, and the external-import audit still refuses any specifier that is not on that list.
+
+### Why
+
+- The socket host's child reaper loads its `waitid`/`waitpid` bindings through `await import("bun:ffi")` behind a runtime gate (`loadChildReaperSyscalls` returns undefined on Node and win32 before the specifier is reached). The bundler cannot resolve a Bun builtin, so the shipped bundle build failed the moment the reaper landed beside it; externalizing the specifier is the same treatment the runtime-guarded `bun:sqlite` lock adapter already gets.
+
+### Why an extension could not handle it
+
+- Bundling runs in the build, before any runtime or extension exists.
+
+### Expected merge conflict zones
+
+- LOW: the `allowedExternalPackages` set and the `external` array in `build-coding-agent-bundle.mjs`.
+
 ## 2026-09-17 - Smoke the bundled entry under custom exec arguments (senpi#1781)
 
 ### What changed
@@ -1045,3 +1204,26 @@ The divergence lives in core wiring, package identity, or build plumbing that ex
 
 - LOW: the public-package lists and the classic-API import in these three scripts; upstream edits them only for new release tooling.
 
+## fix(rpc): a bundled build can start its daemon again
+
+### Why
+
+A published install could not start a host at all. `senpi host ensure` answered
+`RPC socket host exited with code 0 before answering get_protocol_info`, and the
+daemon's stderr log was empty because it is truncated on each generation start.
+
+### What
+
+- `packages/coding-agent/src/modes/rpc/host-launch.ts`: bundled builds re-enter the CLI
+  through `--internal-rpc-host-supervisor` instead of spawning the neighbour named
+  host-lifecycle, which is an emitted chunk in that layout and returns without listening.
+- `packages/coding-agent/src/modes/rpc/host-lifecycle.ts`: `resolveCliMainPath()` takes the
+  entry from the package's declared `bin` rather than counting `..`, which reaches the
+  package root once this module is bundled.
+- `packages/coding-agent/test/rpc-host-ensure.test.ts`: regression covering the bundled
+  layout; the pinned unbundled contract is unchanged.
+
+### Verification
+
+Unbundled 36/36. Bundled: ensure -> `start` (socket present), ensure -> `reuse` (same
+pid), stop -> `stopped` (socket removed).

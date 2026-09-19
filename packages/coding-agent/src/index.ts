@@ -2,6 +2,8 @@
 
 export { sanitizeTerminalLabel } from "@earendil-works/pi-tui";
 export { type Args, parseArgs } from "./cli/args.ts";
+// The shared-daemon command surface: one JSON line, one exit code, for launchers without a shell
+export { runHostCommand } from "./cli/host-command.ts";
 // Config paths
 export {
 	CONFIG_DIR_NAME,
@@ -49,6 +51,16 @@ export {
 	serializeConversation,
 	shouldCompact,
 } from "./core/compaction/index.ts";
+// Engine build identity: the ordinal clients compare instead of version strings
+export {
+	compareEngineOrdinal,
+	type EngineBuildIdentity,
+	type EngineBuildInput,
+	type EngineOrdinal,
+	type EngineOrdinalScheme,
+	engineBuildIdentity,
+	engineBuildIdentityFrom,
+} from "./core/engine-build-identity.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
 // Extension system
 export type {
@@ -371,17 +383,57 @@ export { type MainOptions, main } from "./main.ts";
 // Run modes for programmatic SDK usage
 export {
 	createHostDaemonPaths,
+	DEFAULT_HOST_LAUNCH_SPEC,
+	decideHostAction,
 	type EnsuredHost,
 	type EnsureHostOptions,
 	ensureHost,
+	GENERATION_HANDOFF_CAPABILITY,
+	type HandoffHostOptions,
+	type HandoffRefusal,
+	type HandoffResult,
+	HOST_EXIT_ERROR,
+	HOST_EXIT_FALLBACK,
+	HOST_EXIT_OK,
+	HOST_EXIT_REFUSED,
+	HOST_EXIT_USAGE,
+	HOST_PROTOCOL_VERSION,
+	type HostAction,
 	type HostDaemonPaths,
+	type HostDecision,
+	type HostDecisionClient,
+	type HostDecisionPolicy,
+	type HostDecisionWarning,
+	HostEnsureRefusedError,
+	type HostGenerationRow,
+	type HostLaunchSpec,
+	type HostLaunchSpecCore,
+	HostLaunchSpecError,
+	type HostLaunchSpecRefusal,
+	type HostOutcome,
+	type HostProtocolInfo,
+	type HostRefusalReason,
+	type HostRequest,
+	type HostSessionCounts,
+	type HostStatusOptions,
+	type HostStatusReport,
+	type HostTarget,
+	type HostUpgradePolicy,
+	handoffHost,
 	InteractiveMode,
 	type InteractiveModeOptions,
 	isTransportGoneError,
 	type JsonAgentSessionEvent,
+	loadHostLaunchSpec,
 	type ModelInfo,
 	PINNED_HOST_CLIENT_CAPABILITIES,
 	type PrintModeOptions,
+	type ProbeHostOptions,
+	parseHostLaunchSpec,
+	parseHostProtocolInfo,
+	probeHost,
+	REQUIRED_HOST_CAPABILITIES,
+	type ResolvedHostLaunchSpec,
 	RpcClient,
 	type RpcClientEvent,
 	RpcClientOpenInFlightError,
@@ -394,8 +446,13 @@ export {
 	type RpcResponse,
 	type RpcSessionState,
 	RpcTransportGoneError,
+	readHostStatus,
+	runHostRequest,
 	runPrintMode,
 	runRpcMode,
+	type StopHostOptions,
+	type StopHostResult,
+	stopHost,
 } from "./modes/index.ts";
 // UI components for extensions
 export {

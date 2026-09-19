@@ -10,6 +10,189 @@
 
 ### Fixed
 
+- Opening a session on a busy machine no longer fails instantly. The open deadline was fixed once when the request queue was built, so anything opened later inherited what was left of it — and after 30 seconds the next open was given a zero-length timer that expired immediately. Each open is now given its own deadline, measured from when it is sent. ([#1719](https://github.com/code-yeongyu/senpi/issues/1719))
+
+### Removed
+
+## [2026.9.19-2] - 2026-09-19
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Hidden extension-triggered turns (goal continuations, monitor wakes) now pass through `before_agent_start` like a typed prompt, so the compaction extension's proactive policy runs for them. Before this, a goal-driven session skipped that policy on every turn: nothing compacted between the proactive threshold and the hard reserve valve, and the turn that finally crossed it paid a from-scratch summarization while the screen sat on `Compacting...` for minutes ([#1329](https://github.com/code-yeongyu/senpi/issues/1329)).
+
+### Removed
+
+## [2026.9.19] - 2026-09-19
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Extensions load again when their dependency graph contains CommonJS modules that reassign `exports` (`module.exports = exports = { ... }`, the shape jsdom and whatwg-url ship), call `require.resolve`, or require each other in a cycle. The loader wrapped such a module in a prologue that declared `exports` as a constant, so Bun rejected it at parse time with `This assignment will throw because "exports" is a constant` and the entire extension graph failed to load; the per-file `require` had no `resolve`, and a module inside a require cycle received `undefined` instead of the partially built exports. CommonJS now evaluates inside Node's module function wrapper with a live module registry and a `require.resolve` that returns the file's absolute path, so an extension such as pi-webfetch (jsdom) loads.
+
+### Removed
+
+## [2026.9.18-6] - 2026-09-18
+
+- RPC host: a bundled build can start its host again. On a published install `host ensure` could not start a daemon at all: the bundler emitted no `host-lifecycle` entry, and once it did, the launcher spawned that emitted chunk instead of a program that listens, so the child exited 0 without answering `get_protocol_info`. Bundled builds now re-enter the CLI through its internal supervisor route, and the CLI entry is taken from the package's declared `bin` rather than from `..` arithmetic that lands on the package root when bundled.
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.18-5] - 2026-09-18
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.18-4] - 2026-09-18
+
+- Model catalog: a provider the fork ships by hand (`kimi-coding`, like `devin`) now survives a catalog regeneration that upstream no longer describes, instead of silently leaving the built-in catalog.
+- RPC host: an ensure no longer ends a daemon whose socket still accepts connections. A host under load that misses the protocol probe budget is refused as `host_busy` rather than replaced, so its live sessions survive.
+
+### Breaking Changes
+
+### Added
+
+- Kimi K2.8 Preview now runs on the Kimi prompt preset instead of the untuned fallback. Moonshot upgraded Kimi Code's `kimi-for-coding` model id to K2.8 in place on 2026-09-11, so the new `kimi-k2-8` preset resolves that rolling id together with the version-tagged shapes (`kimi-k2.8`, `kimi-k2p8`, `moonshotai/kimi-k2.8:thinking`, `@cf/...`, and the `Kimi K2.8 Preview` display name). It renders the Kimi K2.7 prompt verbatim - same coding family, same posture - and only the announced model name differs. `kimi-for-coding-highspeed` is still K2.7 Code HighSpeed and now resolves to `kimi-k2-7` for the same reason. `"kimi-k2-8"` joins the `promptPreset` setting ([#1826](https://github.com/code-yeongyu/senpi/issues/1826)).
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.18-3] - 2026-09-18
+
+### Breaking Changes
+
+### Added
+
+- B.AI provider support: set `BAI_API_KEY` or run `/login bai`, then `senpi update --models` to pull the
+  models your key is entitled to. `bai` defaults to `gpt-5.6-sol`.
+
+### Changed
+
+### Fixed
+
+- **Agent-dir extensions load reliably when many test workers run at once.** The runtime shim every extension imports was served as a Bun plugin virtual module, and on a loaded Windows machine that registration intermittently stopped answering while the plugin's own hooks kept running, so a worker could load 40 extensions and then fail the 41st with `Cannot find package 'runtime'`. It resolves to a real file now, which has no registration window to lose; compiled binaries, where the shim has no path on disk, keep the virtual module they never had trouble with. ([omo#8427](https://github.com/code-yeongyu/oh-my-openagent/issues/8427))
+
+### Removed
+
+## [2026.9.18-2] - 2026-09-18
+
+### Breaking Changes
+
+### Added
+
+- One command now gets you the shared RPC daemon: `senpi host ensure|status|stop|handoff`. Every invocation prints EXACTLY ONE JSON line on stdout and says what happened in its exit code, so a terminal, a desktop and a task runner all get a daemon the same way instead of each re-implementing the decision: `0` it happened, `1` it failed, `2` the command line or the launch spec is unusable, `3` refused (`{ action: "refuse", reason, host }` — including a socket nobody serves), `4` fallback (`--policy fallback` decided no host is better than the one running). `ensure` reports `{ action, socket, pid, instanceId, generation, engineVersion, engineOrdinal, capabilities, launchProfileId, reused, upgradeable }`, where `action` is `handoff` exactly when the socket was already served and the process behind it changed; `status --json [--include-workers]` reports the running host's identity, its `sessions` counts, `zombies`/`rss_mb`/`open_fds` for the daemon's whole process tree, the environment NAMES it was granted (`env_keys`, never a value) and every generation in its daemon directory; `stop` refuses with exit 3 and PRINTS the counts it refused on while another client is attached or retaining a session (`--force` overrides after printing the same counts, `--drain` is always permitted because it ends no work); `handoff` forces a generation handoff from this binary and answers exit 3 `upgrade_unsupported` against a host that cannot drain or on Windows. The endpoint is `--socket`, else `SENPI_RPC_SOCKET`, else `<agentDir>/rpc/rpc.sock`. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- `senpi host ensure|handoff --launch-spec <file>` states what a daemon should be started with — `{ spec_version: 1, core: { session_runtime, multi_session, extensions }, tunables: { idleExitMs, coldStart }, env }` — with extension paths resolved against the SPEC FILE's own directory. The spec decides which code a long-lived machine-wide daemon loads, so it is a file rather than stdin or an argv blob (neither has an owner to check) and four properties are proven before anything is started, each with exit 2 and a typed reason: `launch_spec_insecure` (not owned by this user, or group/world writable), `launch_spec_path_escape` (an extension path leaves the spec directory, lexically or through a symlink), `launch_spec_env_denied` (an `env` key outside `^(SENPI|OMO|PI)_[A-Z0-9_]+$`) and `launch_spec_missing_extension` (a listed extension does not exist — a daemon never boots with half a profile). The daemon itself no longer inherits the ensuring process's environment: it receives an allowlist of NAMES (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `TERM`, `LANG`, `LC_*`, `XDG_*`, `SENPI_*`/`OMO_*`/`PI_*`, the proxy variables, `*_API_KEY` and the provider prefixes) plus whatever the spec's `env` states, with the win32 system wiring allowed there as well — so a token exported in one terminal is no longer held for hours by a process serving every other client. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+
+### Changed
+
+### Fixed
+
+- **Devin and Cursor login work again on the bundled CLI.** Since 2026.9.17-3 both failed with `Cannot find module .../dist/bundle/chunks/devin.js`. The bundle resolves each provider's login flow through a relative import the bundler cannot see, so it ships those flows as sibling files next to the chunk that loads them; the Devin and Cursor flows, and their two provider streams, were missing from that list. They are emitted now, and the bundle smoke test starts a login for six providers under Node and Bun to keep it that way. ([#1810](https://github.com/code-yeongyu/senpi/issues/1810))
+
+
+### Removed
+
+## [2026.9.18] - 2026-09-18
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- **senpi boots again on Bun 1.3.x.** Every release since 2026.9.17-3 crashed at startup there with `webidl.util.markAsUncloneable is not a function`, TUI and headless alike. The bundled `undici` instantiates a `CacheStorage` at module init, and that constructor reaches for `worker_threads.markAsUncloneable`, an API Node added in 23 and Bun 1.3 does not have. The bundle prologue now installs a no-op when the runtime lacks it; nothing in senpi ever used `caches`. ([#1806](https://github.com/code-yeongyu/senpi/issues/1806))
+- **Extensions can import named bindings from CommonJS packages.** `import { Readability } from "@mozilla/readability"` (and `jsdom`, and anything that reached `tldts` through `tough-cookie`) failed to load with `Export named 'X' not found in module 'senpi-extension:...'`, though the same line works in plain Bun and Node. The loader wrapped CommonJS as `default`-only; it now rewrites named, aliased, and namespace imports of a CommonJS target to bind off `module.exports`, which is the semantics CommonJS has anyway. ([#1807](https://github.com/code-yeongyu/senpi/issues/1807))
+
+### Removed
+
+## [2026.9.17-4] - 2026-09-17
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+- The published bundle no longer breaks a consumer that has `ws`'s optional native accelerators installed. `bufferutil` and `utf-8-validate` load their binding through `node-gyp-build`, whose computed require esbuild cannot analyse, so bundling them left an unresolvable external and the bundle build failed with `Bundle left unexpected external imports: <runtime>`. senpi's own CI never hit it because neither package is installed there; a consumer that has them - omo's desktop runtime build - could not build at all. Both are now external, the way the other native and runtime-guarded dependencies already were.
+
+
+### Removed
+
+## [2026.9.17-3] - 2026-09-17
+
+### Breaking Changes
+
+### Added
+
+- A shared RPC host now names WHY a session closed. `session_closed` carries an optional `reason`: `client_close` when the client asked, `idle_evicted` when the idle window ended a session that was not retained, `host_shutdown` when the host process is exiting (SIGTERM of a retained session is a close, not a park), `replaced` when the handle ended because the live session was swapped, `handoff_parked` when a generation handoff parked it, and `error` when the session failed. A retained session that hits the idle window still arrives as `session_parked` rather than a close. Clients that do not know `reason` ignore the field. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- The shared RPC daemon now keeps its state in a directory of its own per socket, `<agentDir>/rpc-host-daemon/<sha256(socket)[:16]>/`, with the running generation named by a pointer file and each generation's own record, settings and scratch space under `generations/<instanceId>/`. Directories are owner-only (`0700`) and every state file is `0600`. Two sockets in one agent directory can no longer read each other's state, a handoff repoints the pointer instead of overwriting the record of a host that is still serving, and `senpi host stop` drops the stopped generation's state with it. The shared directory keeps only a `layout.json` marker — and, deliberately, NO flat `host.pid`. That flat pidfile is exactly what makes an older client kill a daemon it did not start (a desktop that finds one takes the host over; a `senpi` from before this change stops it), so an un-updated client now fails CLOSED against the new daemon: it sees no host of its own, refuses, and leaves every other client's sessions running. A flat pidfile left by a genuinely older host is never rewritten and never removed, and while the process it names is alive an ensure refuses instead of starting a second host beside it. A daemon directory that cannot be created or written fails with an error naming that exact path, and starts no host. Stopping or draining a host that had already exited on its own now reports that outcome instead of failing with a raw signal error. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- A newer engine can now take a running RPC daemon over WITHOUT ending the work it is doing. The new build starts beside the running one on `<socket>.next-<generation>`, renames itself over the shared socket only while that socket is still the one it was told to replace, and then asks the old host to DRAIN: it stops accepting connections, keeps serving every client already connected, parks each retained session as soon as its turn settles (those clients see `session_closed { reason: "handoff_parked" }` and reopen by `sessionPath`), and exits when it is empty. A connection opened before the handoff keeps working across it; a connection opened after it reaches the new host. `ensureHost` performs this only when asked (`upgrade: "if-engine-differs"`, default `"never"`), and a handoff that cannot happen attaches to the running host instead of stopping it. A host that does not advertise `generation_handoff` is never signalled — the drain signal would kill it — and Windows is attach-only (`upgrade_unsupported`), since a named pipe can be neither renamed nor drained. `ensureHost` also gains public `hostArgs` and `env`, and the engine exports `handoffHost`, `probeHost` and `stopHost` (`stopHost({ drain: true })` asks a host to finish its work and leave; a hard stop needs an empty host or `force`). While two generations overlap, each records the session files it holds under `rpc-host-daemon/reservations/`, so reopening a session the old host is still writing answers `session_path_in_use` with `{ owner, retry_after_ms }` until it is parked, instead of two hosts writing one transcript. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- A client that finds a shared RPC host on the socket now decides what to do with it from the protocol that host speaks, never from its version string. A host is usable when it answers `protocolVersion: 1` and advertises `multi_session`, `extension_events`, `session_context` and `session_kind` — so a host built from a different release of the engine is ATTACHED to, where it used to be stopped and replaced, which on a machine-wide host meant another client's sessions died whenever a second client of a different build started one. A host that cannot serve the client is refused, never replaced by a second host bound over the same socket, and a host whose pidfile was written by another process is never signalled at all: `ensureHost` stamps the pidfile with the identity of the process that wrote it and stops only the host it started itself. The decision is exported as `decideHostAction(client, host, policy)` (`start` / `reuse` / `handoff` / `refuse` / `fallback`, each with a reason and a `upgradeable` flag) together with `HostEnsureRefusedError`, so the CLI, the task runner and the desktop all answer the question identically. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- `get_protocol_info` now tells a client which host it reached, which build that host runs and what it was launched with, so clients sharing one host stop guessing from a version string. Every reply (classic and multi-session) adds `instanceId` (a UUID minted when the host process booted — it changes whenever the process does), `generation` (which generation of its daemon directory the host is; `0` when nobody ensured it), `engineVersion` (the CalVer version plus `+<buildEpoch>.<sha7>` when the binary was built with git metadata), `engineOrdinal` (`[year, month, day, postRelease, buildEpoch]`) and `launch_profile` (`{ profile_id, core: { extensions, multi_session, session_runtime } }`, where `profile_id` is the sha256 of the canonical JSON of `core`, so any client can recompute and compare it). `engineOrdinal` is the only ordering a client may use: `2026.9.16-3` ranks ABOVE `2026.9.16` because the `-N` suffix is a post-release increment here, and the build epoch breaks a tie only when both sides have one — a build whose age cannot be established compares EQUAL and is attached to rather than replaced. Release binaries carry the build epoch and commit; a build without git metadata still succeeds and simply reports no epoch. `protocolVersion`, `serverVersion`, `capabilities` and `mode` are unchanged, and older clients ignore the new fields. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- Shared RPC hosts decide session auto-titling per `open_session`. `auto_title: true` titles that session from its first prompt, `auto_title: false` leaves it untitled, and an omitted field keeps the host-wide default (`--auto-title-sessions` or the `auto_title_sessions` client capability) so existing clients stay byte-identical. A non-boolean is refused with `invalid_launch_profile`. Hosts advertise `auto_title_per_session` in `get_protocol_info`. Interactive TUI launches still auto-title by default. `--auto-title-sessions` is not removed; it is deprecated for shared hosts because a host-wide flag collides when two clients share one daemon. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- A shared RPC host now tells its clients when it PARKS a retained session instead of closing one. A session opened with `retain_on_disconnect` that reaches the idle-eviction window is released with a `session_parked { sessionId, sessionPath }` record rather than `session_closed`, so a client can reopen it with `open_session { sessionPath }` instead of forgetting it — the session itself is untouched on disk, only its routing handle ends. The teardown and the windows are unchanged: retention still never outlives idle eviction, and a parked session no longer counts as occupancy, so a host holding nothing but parked sessions still exits on its empty-host window. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- Shared RPC hosts (`--mode rpc --multi-session`) accept two additive `open_session` fields for machine-driven work. `kind: "worker"` (default `"interactive"`) marks a session as a subagent-style worker: it no longer appears in `list_sessions` unless the caller passes `include_workers: true`, and its `session_closed` record reaches only the connections attached to it, so a client that never opened it is not told about its lifecycle. `context` is an opaque `Record<string,string>` the host stores with the session and hands to that session's extensions as `pi.sessionContext` (with `pi.sessionKind`), so one host with one extension set can serve many sessions and each extension instance still knows which session it is serving; it is republished only on `list_sessions { include_workers: true }`, never on a default listing. The host never interprets `context` — it takes no part in authentication, model selection or resource loading — and refuses anything past its caps with `invalid_session_context` (at most 32 keys matching `^[a-z][a-z0-9_]*$`, each value at most 16 KiB, at most 32 KiB of JSON in total); an unrecognised `kind` is refused with `invalid_session_kind` instead of being treated as interactive. Every `list_sessions` row now carries `kind`, interactive sessions keep today's broadcast lifecycle records, and hosts advertise `session_kind` and `session_context` in `get_protocol_info` so a client can probe before relying on either. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- A shared RPC host now reports when one session freezes it. Its own 200ms timer measures how late it is invoked, and that lateness is the time the host could serve nobody: past 500ms it writes one stderr line per 10 seconds naming the drift, the session and the tool that held the loop, and past 5 seconds it also sends every connected client a `host_stalled` record (`{ driftMs, sessionId?, tool? }`) so a UI can show which conversation is blocking the rest. The host also samples its own memory every 30 seconds: above 4096 MB resident it sends `host_memory_pressure` (`{ rssMb, sessions }`), writes one stderr line per five minutes, and parks idle sessions at half the usual window until memory falls back - it still never refuses, caps, or kills a session, since capacity is memory rather than a refusal. Thresholds are tunable with `SENPI_RPC_LOOP_LAG_WARN_MS`, `SENPI_RPC_LOOP_LAG_ERROR_MS` and `SENPI_RPC_HOST_RSS_WARN_MB`; both records are additive and older clients ignore them. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- Shared RPC hosts accept `--session-runtime in-process|worker`, selecting where the host runs its sessions. A socket host (`--mode rpc --listen …`) now defaults to `in-process`: every session runs in the host process, so one shared host serves as many sessions as its memory allows and never answers `open_session` with `too_many_sessions`. Stdio hosts (`--mode rpc --multi-session`, `--listen stdio://`) and embedders keep the worker runtime, where each session owns a worker isolate and the existing 20-worker capacity applies; passing `--session-runtime worker` restores that runtime for a socket host too. The wire protocol, attachment semantics and lifecycle windows are identical on both runtimes; an in-process session shares the host event loop and has no per-session opening deadline. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+### Changed
+
+- The RPC reference now documents the shared daemon as it behaves, including what it costs. The socket host's in-process runtime has NO session limit — no admission counter, no eviction to make room, and no `too_many_sessions`, which belongs only to the worker runtime that stdio hosts and embedders use — and the price of that is published rather than implied: about one OS thread, two file descriptors and 6–8 MB of memory per open session, growing linearly with no plateau up to 1,000 sessions, where the thread comes from the per-session filesystem watcher the `config-reload` builtin spawns ([#1794](https://github.com/code-yeongyu/senpi/issues/1794)) and not from the session runtime, which allocates none. The same pass documents the rule that keeps one event loop serving everyone (no synchronous shelling out, sleeping or large synchronous reads on the session path — extensions included, where nothing can enforce it), the two shared-daemon invariants that were enforced but unwritten (only the generation that owns the daemon state writes it, everyone else reads and fails closed; worker sessions stay invisible without `include_workers: true`), the `session_opened` / `session_closed { reason }` / `session_parked` / `session_replaced` event types, the live QA drivers that verify a daemon build, and `pi.sessionKind` / `pi.sessionContext` / `pi.sharedHostEnabled` in the extension reference. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+### Fixed
+- The z.ai Coding Plan tests follow the provider's current catalog. Upstream retired `glm-4.7`, `glm-5.1`, `glm-5.2`, `glm-5.2-highspeed`, `glm-5-turbo` and `glm-5v-turbo` from `zai-coding-cn` in favour of the `glm-5.3` family, so assertions naming the retired ids stopped type-checking the moment the release regenerated the catalog, which blocked publishing. The suites now assert models both providers actually carry, and the `glm-5.3` reasoning map (`off: null`, `low: "low"`) rather than the `5.2` shape.
+
+- The published package now ships `@earendil-works/pi-agent-core`'s tree-sitter assets. Its `dist` reaches those grammars through compile-time `type: "file"` imports, but publish staging copied only `dist`, `native` and the manifest files, so the tarball carried specifiers pointing five directories above the package at files that were never published. Any consumer bundling senpi with `bun build --compile` failed to resolve them. Staging now copies a bundled workspace's `assets` as well, and the pack gate requires those two grammar files so a future drop fails the release instead of the consumer. ([#1800](https://github.com/code-yeongyu/senpi/issues/1800))
+
+
+- A shared RPC host started under its lifecycle supervisor no longer hangs when it decides to exit on its own. The host watches an inherited pipe to notice its supervisor dying, and reading that pipe through a file stream parked a thread-pool worker in a blocking read for the process's whole life — which `process.exit()` waits for, so a self-exit never completed and the host only died when something killed it. The same pipe is now watched on the event loop, so an idle exit (and the drain of a generation handoff) ends the process immediately. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- An `ensureHost` for a second socket in one agent directory no longer stops the daemon serving the first. The daemon directory holds one pidfile per agent directory, and a record naming another endpoint was read as "our host is not answering" and stopped; the pidfile now records which socket it is about, and a record for a different endpoint is left alone. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- A new session's first turn no longer goes out without an MCP server's instructions and tools. Taking attach off the first-paint path means `session_start` returns while a cold server is still booting, and the first turn's system prompt was assembled from whatever had landed by then - on a loaded machine that is an empty catalog, so the turn carried no `<mcp_instructions>` block and none of that server's tools, and the instructions stay missing for the rest of the session because they are captured once per session. The prompt build now awaits the attach's own completion signal, bounded at 5 s; a server still connecting past that no longer blocks the turn, and its catalog lands on a later turn. ([#1797](https://github.com/code-yeongyu/senpi/issues/1797))
+
 ### Removed
 
 ## [2026.9.17-2] - 2026-09-17
@@ -45,6 +228,13 @@
 
 - An `auto` theme no longer repaints on every launch. Making theme detection non-blocking meant the first frame is painted from a guess, and for `light/dark` that guess came from `COLORFGBG` alone - unset by most terminals - while the detected answer was never remembered. A user on a light terminal therefore got a dark first frame on every start, corrected one OSC round trip later. The detected terminal background is now remembered in `<agentDir>/cache/terminal-theme.json` and seeds the next launch, so the repaint happens at most once after install; the file is written atomically and a missing or malformed one simply falls back to the environment guess. ([#1781](https://github.com/code-yeongyu/senpi/issues/1781))
 
+
+- Reopening a session path right after it was closed no longer fails on a shared RPC host. `open_session { sessionPath }` was refused with `session_path_in_use` while the previous session was still being disposed, so "close this session, then open its file again" — and the same reopen after the last client of a closed session dropped — succeeded or failed depending on how long that disposal happened to take, which no client can time (measured on a loaded host: the path stayed refused for 300 ms to 1 s after the close). This is a long-standing behaviour of shared hosts, present since multi-session hosts shipped, not something introduced this release. The open now waits for a teardown already in flight and then opens the file fresh, bounded by the same close-grace window that bounds the teardown, so a wedged disposal still ends in the old refusal instead of an open that never answers. Attaching to a live session, retained sessions, parked sessions and the duplicate-open refusal while a session is still opening are all unchanged. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- A shared RPC host no longer lets one client close a session it never opened. Routing handles are published to every client through `list_sessions`, and `close_session` released an attachment for whoever asked — so a client that had never attached could release another client's attachment and tear down a single-client session it did not own. Such a close is now refused with `unknown_session` and leaves the session untouched; a connection that opened or attached to the session closes it exactly as before. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+
+- One conversation can no longer freeze a shared RPC host while a credential is fetched. A stored API key written as a `!command` (an auth broker, a keychain helper) was executed synchronously while a session started, and a repository whose HEAD needs `git` to name the branch ran that probe synchronously too - on a host that runs its sessions in one process, every other session stopped for the duration. Both now run off the event loop: measured on a live host, a credential helper that takes three seconds used to make an unrelated session's `get_state` take 15.3 seconds and now answers in 1 millisecond, with the same 10-second per-attempt deadline, the same three attempts and the same backoff as before. Two callers of the same command now share one execution instead of running it twice. In a reftable repository the footer shows `detached` for the instant it takes `git` to answer and then updates itself. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
+- A shared RPC host over a socket no longer accumulates zombie processes. When a session's worker thread is terminated while it still has running commands — the quarantine a stuck session close performs — the exited children of that thread had nobody left to wait on them and stayed in the process table for the life of the host, which on a long-running machine-wide host meant they never went away (measured: every spawn API leaks 20 of 20 such children, under the source runtime, the compiled binary and Node alike). A socket host now watches its own direct children once a second and claims only those that have been finished and unclaimed for at least 30 seconds, so a command's own exit status is never taken from the code waiting for it; commands that finish normally are unaffected, and no child of any other process is ever touched. Set `SENPI_RPC_HOST_REAPER=0` to turn it off, or `SENPI_RPC_HOST_REAPER_MIN_WAITABLE_MS` to widen the window. Hosts running under Node instead of the shipped binary log one warning at startup and keep the old behaviour. ([#1782](https://github.com/code-yeongyu/senpi/issues/1782))
 
 - Fixed `claude-sdk-oauth` re-login never refreshing the existing account: a successful login now replaces the same-name slot in place (clearing its `auth_error` block and preserving its display name) instead of appending `account-N+1` or failing on a duplicate name, so "blocked until re-login" actually lifts on re-login. A blank or headless re-login only ever targets a lone slot or the pool's one auth-blocked slot, never the newest working slot of a multi-account pool. ([#7084](https://github.com/code-yeongyu/oh-my-openagent/issues/7084))
 - Fixed the Anthropic OAuth import forking one single-use refresh token into two stores: accepting the import now moves the grant out of the `anthropic` provider. ([#7084](https://github.com/code-yeongyu/oh-my-openagent/issues/7084))
@@ -232,6 +422,7 @@
 - Fixed the `/btw` panel having no off switch: a bare `/btw` now dismisses the panel (or cancels the in-flight side query), Escape is matched through the shared key matcher so it also works under the kitty keyboard protocol (and kitty key-release events are ignored so they cannot cancel the query), and the panel footer names both.
 
 - Fixed publish staging so the packed tarball mirrors `publish-deps.lock.json` exactly regardless of how the developer's package manager laid out `node_modules`: nested manifest entries (such as `htmlparser2`'s own `entities@7`) are staged at their manifest path from a version-matched installed copy, npm's workspace-local placements keep the top-level slot with a conflicting root copy re-nested under the dependents npm resolved to it, and packages the manifest no longer lists are pruned instead of riding along. A tarball staged from a bun-hoisted install previously shipped `htmlparser2@10` next to a stale `entities@8` (compiling the engine failed with `No matching export ... for import "fromCodePoint"`), and the published tarball carried `zod@3` and `https-proxy-agent@7` under a manifest declaring `zod@4.4.3` and `https-proxy-agent@9.1.0` ([#1677](https://github.com/code-yeongyu/senpi/issues/1677)).
+
 ### Removed
 
 ## [2026.9.13-2] - 2026-09-13
@@ -737,6 +928,7 @@
 - Starting a session with a compatible `-fast` catalog variant now keeps fast mode enabled and preserves the requested thinking level when the variant is normalized to its base model; remembered service-tier behavior for ordinary base-model starts is unchanged.
 - Interactive shared-host regression tests now wait for RPC child processes to exit before removing their temporary roots, preventing teardown `ENOTEMPTY` races.
 - Make the reftable polling fallback detect content changes without relying on filesystem timestamp precision, and test the fallback with deterministic timer/event control.
+
 ### Removed
 
 ## [2026.9.4-3] - 2026-09-04
@@ -759,6 +951,7 @@
 - Image generation no longer fails with an OpenAI 401 when a placeholder API key is stored for the `openai` provider. A seeded `SK-SENTINEL-DO-NOT-LOG` value is treated as absent instead of as a credential, so resolution falls through to a configured OpenAI-compatible gateway, and image generation is reported as not configured when no gateway exists.
 - Hook trust-state reads no longer fail tool execution when the lock directory cannot be created (`EPERM`/`EACCES`/`EROFS` in sandboxed or read-only children); writers still fail closed on those errors.
 - File-backed credential, auth, and settings locks now wait through bounded contention retries; exhausted waits report an actionable transient `CredentialStoreBusyError` instead of burning the provider fallback chain.
+
 ### Removed
 
 ## [2026.9.4-2] - 2026-09-04
@@ -888,6 +1081,7 @@
 - The wait-as-subscription guidance moved from the model presets into the `eval` tool description, where it can name the reachable `tool.monitor(...)` form. Because the preset rule was gated on `monitor` being directly selectable, it would otherwise have stopped rendering entirely once monitor became eval-only.
 - Per-model system prompt presets for Claude Opus 4.5-4.8, Claude Opus 5, and GLM 5.2/5.3 are audited against their prompting guides and the dieted shared core: the Opus 5 core is rebuilt on the Fable 5.1 skeleton with the Opus 5 guide behaviors stated once each and gains the guide's outcome-first final-summary shape; Opus 4.7/4.8 keep only their documented deltas and gain the same-turn subagent fan-out direction; Opus 4.6 drops tuning text the core now carries; GLM 5.2/5.3 share one builder, gain the eval/monitor execution-tooling stance, and lose the lineage preamble, undefined-mode reference, and unconditional todo procedure. The shared core gains a conditional delegation rule and states the auto-compaction mechanism behind the context-limits rule.
 - The Kimi K3 prompt preset is rebuilt on the Fable 5.1 skeleton for Moonshot's documented K3 "excessive proactiveness": a Scope section makes the request the deliverable (pre-existing problems become follow-ups, tests are committed only where the task or repository calls for them), the ambiguity gate does the answer-independent work first and then asks one question, a bounded failure cap stops improvisation after three failed approaches, delegation propagates a stop condition to subagents, and the K2.6-era act-bias repetition that outvoted those boundaries is gone - at 11 fewer Kimi K3 tokens than before.
+
 ### Fixed
 
 - RPC logins now answer providers' mid-flow prompts over the extension UI dialog channel (`extension_ui_request` `input` for pasted codes, text, and secrets; `select` for account choices) and release an unanswered dialog when the login settles, so Anthropic Claude Pro/Max and other prompt-driven OAuth flows complete through the browser callback instead of failing with `Interactive login input is not supported over RPC` and a dead callback port ([#1316](https://github.com/code-yeongyu/senpi/issues/1316)).
@@ -1434,6 +1628,7 @@
 ### Breaking Changes
 
 - Renamed the inherited `GoogleThinkingLevel` type to `GoogleApiThinkingLevel` and added `ResolvedGoogleThinkingLevel` for normalized adapter levels.
+
 ### Fixed
 
 - Cursor token-bearing `resource_exhausted` failures now fall back to the next provider model without incorrectly triggering compaction, and terminal quota failures explain the likely usage-pool cause.
@@ -1492,6 +1687,7 @@
 - **PowerShell tool** — Use optional native PowerShell command execution on Windows. See [PowerShell Tool](docs/windows.md#powershell-tool).
 - **Safer managed updates** — Stage, verify, and atomically activate updates for installer-managed installations. See [Install and Manage](docs/packages.md#install-and-manage).
 - **Model and thinking controls** — Select thinking levels with `/thinking`, search defaults, keep selections session-scoped, and persist them explicitly with Ctrl+S. See [Models and Thinking](docs/keybindings.md#models-and-thinking).
+
 ### Changed
 
 - RPC child startup now lazy-loads the interactive TUI mode graph at mode dispatch, avoiding parsing interactive-only components for headless sessions while preserving the interactive path.
@@ -1504,6 +1700,7 @@
 - Changed the bundled Node.js runtime to load jiti only when importing an extension and Babel only when uncached source needs transformation, reducing CLI startup time and bundle size.
 - Changed syntax highlighting to initialize only twenty common languages eagerly and defer the remaining grammars until after the initial TUI render, reducing CLI startup time.
 - Changed the Node.js CLI and RPC entrypoints to load a bundled runtime, reducing startup filesystem reads while keeping the public library and legacy module paths on the modular runtime for normal dependency identity.
+
 ### Removed
 
 ## [2026.8.24] - 2026-08-24

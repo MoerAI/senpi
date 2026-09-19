@@ -1,3 +1,105 @@
+## 2026-09-19 - A fork-owned provider survives a catalog regeneration
+
+### What changed
+
+- `packages/ai/src/providers/kimi-coding.models.ts` is hand-written with inline values, the way
+  `devin.models.ts` is, instead of importing a `data/kimi-coding.json` that a generation run no
+  longer writes; the data file and its manifest entry are gone.
+- `packages/ai/src/providers/all.ts` reads a `FORK_OWNED_CATALOGS` map alongside the generated
+  `MODELS`, so `getBuiltinModel`, `getBuiltinModels` and `getBuiltinProviders` keep serving a
+  provider that can never appear in the generated aggregate.
+- `packages/ai/scripts/model-shards.ts` lists the shard as fork-owned.
+- `packages/ai/test/fork-owned-catalogs.test.ts` requires the provider to be absent from `MODELS`
+  and still readable through the catalog API.
+
+### Why
+
+- models.dev stopped describing `kimi-coding`, so a regeneration emits neither its shard nor its
+  data file and the provider silently left the generated catalog - fifteen type errors that only the
+  release job ever saw. Keeping the shard (the prune guard) and tolerating it (the aggregator gate)
+  were the first two layers; a provider the fork ships also has to stay readable.
+
+### Why an extension could not handle it
+
+- The generated aggregate and the catalog API are fork source; an extension cannot add a provider to
+  a union the generator writes, nor change what `getBuiltinModel` reads.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/providers/all.ts` around the catalog imports and `BuiltinProvider`, whenever
+  upstream reshapes the generated catalog read.
+- `packages/ai/src/providers/kimi-coding.models.ts`, if upstream ever describes the provider again
+  and the generator wants to own the shard back.
+
+## 2026-09-18 — Drop the OpenRouter Mistral overflow case that the catalog no longer carries
+
+### What changed
+
+- `test/context-overflow.test.ts`: removed the `mistralai/mistral-large-2512` OpenRouter case.
+
+### Why
+
+- The generated catalog has no `mistralai/*` ids under `openrouter` any more, so the hardcoded id stopped satisfying `ModelId` and `npm run check` failed with TS2345. Push CI does not typecheck tests, so it only surfaced inside `scripts/release.mjs` and blocked the release of senpi run 35334224253. The other backends in that block each pin one live id; Mistral simply has no OpenRouter id left to pin.
+
+### Why an extension could not handle it
+
+- Test source against a generated catalog.
+
+### Expected merge conflict zones
+
+- LOW: the OpenRouter block in `test/context-overflow.test.ts`.
+
+## Native B.AI provider with credential-scoped catalog and schema compatibility (2026-09-18)
+
+### What changed
+
+- `packages/ai/src/providers/bai.ts`: adds the built-in `bai` provider, API-key auth, credential-scoped
+  `/v1/models` discovery, generated-metadata filtering, cached catalog remapping, and mixed Responses /
+  Messages / Chat Completions dispatch. Discovery indexes the catalog under both the dot-version and
+  hyphenated spelling of every model ID, and a `success: false` model list fails the refresh instead of
+  publishing an empty catalog.
+- `packages/ai/src/providers/bai-stream.ts`: merges a union-root function schema into a single object schema
+  on the B.AI Responses payload, without mutating caller-owned payloads.
+- `packages/ai/src/providers/all.ts`: registers B.AI among built-in providers.
+- `packages/ai/src/env-api-keys.ts`: maps `bai` to `BAI_API_KEY`.
+- `packages/ai/src/types.ts`: adds `bai` to `KnownProvider`.
+
+### Why
+
+- B.AI exposes one API key and a credential-scoped `/v1/models` list across multiple compatible wire APIs.
+  IDs alone do not contain the capabilities, limits, reasoning levels, or pricing Senpi needs for selection
+  and accounting.
+- B.AI rejects union-root function schemas such as `workpool` unless the root explicitly declares
+  `type: "object"`, while the same schemas are accepted by less strict Responses backends. Only the OpenAI
+  Responses path needs the repair: `api/openai-completions.ts` re-normalizes `tool.function.parameters` after
+  `onPayload`, and `api/anthropic-messages.ts` resolves the root before building `input_schema`, so both
+  already send an object root. Restoring only the `type` keyword would satisfy B.AI's validator and still
+  leave the root without `properties`/`required`, which advertises the tool to the model as taking no
+  arguments, so the union is merged through `utils/tool-schema-compat.ts` instead.
+
+### Why an extension could not handle it
+
+- A user extension can prove the transport, but cannot add B.AI to the shipped built-in provider registry,
+  generated catalog, canonical environment-key map, or every consumer of `KnownProvider`.
+
+### Expected merge conflict zones
+
+- LOW: provider import/order additions in `packages/ai/src/providers/all.ts`.
+- LOW: one member in `KnownProvider` and one environment-key mapping.
+- NONE: `bai.ts` and `bai-stream.ts` are new fork-owned files.
+
+## 2026-09-17 - Follow the z.ai catalog to the glm-5.3 family
+
+### What changed
+
+- Regenerated `src/providers/data/` (`zai-coding-cn`, `openrouter`, `cloudflare-ai-gateway`, `.manifest.json`).
+- `test/gpt-6-astra-context-window.test.ts` adds `cloudflare-ai-gateway.json` to the covered-catalog list, which now ships Astra models.
+- `test/zai-coding-plan-models.test.ts` and `test/openai-completions-tool-choice.test.ts` assert `glm-5.3`, `glm-5.3-flash` and `glm-5.3-highspeed` instead of the retired `glm-5.1`/`glm-5.2`/`glm-5v-turbo` ids, and expect the 5.3 reasoning map.
+
+### Why
+
+- `zai-coding-cn` no longer publishes the 5.1/5.2 ids. The release script regenerates the catalog before it type-checks, so the stale assertions failed `tsc` during publish and blocked the release rather than failing in a normal CI run.
+
 ## Slow-stream classification withdrawn (2026-09-16)
 
 ### What changed
