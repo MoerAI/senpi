@@ -1,5 +1,46 @@
 # Core Extensions Changes
 
+## 2026-09-20 - Import attributes survive the CommonJS rewrite (#1864)
+
+### What changed
+
+- `bun-extension-importer.ts`: the CommonJS branch of `load()` carries the text between the specifier and the end of the statement - the `with` or legacy `assert` clause - into `rewriteCommonJsImport`.
+- `bun-extension-commonjs.ts`: `rewriteCommonJsImport` takes that clause as an optional fourth argument and appends it to the emitted import, both in the aliased form and in the bare-specifier fallback.
+- `test/extensions/bun-extension-regressions.test.ts`: the file-loader regression imports a `.json` asset instead of a `.bin` one.
+
+### Why
+
+- The CommonJS branch added in #1838 replaces the whole import statement (`edge.ss` .. `edge.se`) and rebuilds it from the binding clause and the resolved id, so everything after the specifier was dropped. Import attributes live exactly there, and they pick the loader: measured through the importer, `import value from "./helper.json" with { type: "file" }` returned `{"value":41}`, `.toml` returned the parsed table and `.txt` returned its text, while plain Bun returns the path for all three. A dynamic import was never affected, because that branch replaces only the `import` keyword.
+- The shipped regression could not catch it. Its fixture was `asset.bin`, and an unknown extension already resolves to Bun's file loader, so the assertion passed with or without the attribute - measured: the same import with no attribute at all returns the same path. A file Bun parses by default is what makes the assertion able to fail.
+
+### Why an extension could not handle it
+
+- This is the loader that evaluates extension source; it runs before any extension exists.
+
+### Expected merge conflict zones
+
+- LOW: the CommonJS branch of the edit loop in `bun-extension-importer.ts` `load()`, and the `rewriteCommonJsImport` signature in `bun-extension-commonjs.ts`.
+
+## 2026-09-20 - The extension runtime's import is built at runtime (#1862)
+
+### What changed
+
+- `bun-extension-registry.ts`: `metadata().import` now calls a module-level `importModule`, built once with `new Function("specifier", "options", "return import(specifier, options)")`, instead of writing `import(id, { ...options })` inline. The resolved specifier and the caller's `ImportCallOptions` are forwarded unchanged, so an extension's dynamic import and its attributes behave exactly as before.
+
+### Why
+
+- esbuild accepts only a fully static second argument for `import()`: measured on esbuild 0.28.2, `import(x, { ...options })`, `import(x, options)`, `import(x, { with: options?.with })` and `import(x, { with: { type: t } })` each warn `unsupported-dynamic-import`, while `import(x)` and `import(x, { with: { type: "json" } })` do not. The attributes here are whatever an extension wrote, so no static form exists.
+- `scripts/build-coding-agent-bundle.mjs` runs esbuild over this module twice (the main entry pass and the lazy/worker pass), so every release build - and every downstream build that vendors this package - printed the same warning twice. esbuild emitted the call verbatim either way, so nothing behaved differently; the cost was that the one place a real bundler warning would appear was already occupied.
+- esbuild has no per-call suppression, and the import must stay dynamic because extensions resolve through the Bun plugin at runtime. Building the import function at runtime is the supported way to keep the bundler out of a call it cannot follow.
+
+### Why an extension could not handle it
+
+- This is the loader that evaluates extension source; it runs before any extension exists.
+
+### Expected merge conflict zones
+
+- LOW: the module-level `importModule` declaration and the `import` member of `metadata()` in `bun-extension-registry.ts`.
+
 ## 2026-09-19 - CommonJS dependencies evaluate with Node's module semantics (#1838)
 
 ### What changed

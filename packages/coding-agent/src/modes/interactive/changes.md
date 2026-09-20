@@ -1,3 +1,57 @@
+## 2026-09-20 - Surface a held model switch (senpi#1873)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` renders the new `model_change_pending` event as a warning and invalidates the footer, so a switch waiting for the next message to compact for it is visible rather than looking like nothing happened.
+
+### Why
+
+- #1873 stops refusing a switch onto a model that one compaction would make usable, and holds it instead. Without a surface the model selector would appear to do nothing: the picker closes, the footer still shows the old model, and no error is printed.
+
+### Why an extension could not handle it
+
+- The event is emitted by the session's admission path and consumed by the interactive event switch, which no extension can extend with a new case.
+
+### Expected merge conflict zones
+
+- LOW: the session-event switch in `interactive-mode.ts`, next to the `model_change_skipped` case.
+
+## 2026-09-20 - Share the ask-user answer-frame parser (#1857 I3)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-answer-chip.ts` re-exports the parser and frame type from the ask-user formatter. The chip's public exports remain unchanged.
+
+### Why
+
+- Restart recovery and transcript rendering must recognize the same frame. Separate copies could drift and cause answered questions to be presented again.
+
+### Why an extension could not handle it
+
+- The host's transcript component imports this parser directly; an external extension cannot change that import.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-answer-chip.ts`: parser import and re-export.
+
+## 2026-09-20 - Restore question drafts after reload (#1857 I1)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` passes `initialDraft` to the blocking question component and uses it to initialize async question state.
+
+### Why
+
+- Reattaching the UI must restore the user's selections and comment rather than displaying a fresh question.
+
+### Why an extension could not handle it
+
+- The host owns creation of both question surfaces; the builtin already retains the draft but cannot seed the host's UI without this option.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: QuestionOverlayOptions, showQuestionOverlay, and showAsyncQuestion.
+
 ## 2026-09-17 - Remember the detected terminal background (senpi#1781)
 
 ### What changed
