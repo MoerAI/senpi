@@ -1,5 +1,117 @@
 # changes
 
+## 2026-09-20 - Skill assets embedded in a compiled binary are read without a descriptor (senpi#1852)
+
+### What changed
+
+- `skill-discovery.ts` `readSkillMarkdownSource` now falls back to `readFileSync` when `openSync` refuses the
+  path, and keeps the bounded 8 KiB prefix read for every file that does open. The frontmatter slicing is
+  shared, so both paths return the same source.
+
+### Why
+
+- A Bun single-file executable serves embedded assets from a virtual filesystem that answers `existsSync`,
+  `statSync` and `readFileSync` but hands out no file descriptors. `loadSkills` accepts such a path through
+  its `existsSync` + `statSync` guards and then failed inside the reader with `ENOENT ... open`, so every
+  skill contributed as an embedded asset - the builtin `imagegen` skill today - was dropped and reported as a
+  `Skill conflicts` warning on every start of a compiled build. The descriptor read arrived with the
+  2026-09-17 frontmatter-prefix change (senpi#1781); before it, `readFileSync` loaded those skills fine.
+
+### Why an extension could not handle it
+
+- Skill discovery and frontmatter parsing run in the host resource loader before any extension is bound.
+
+### Expected merge conflict zones
+
+- LOW: the head of `readSkillMarkdownSource` in `packages/coding-agent/src/core/skill-discovery.ts`.
+
+## 2026-09-19 - Package resolution is memoized per host, keyed on its real inputs (senpi#1844)
+
+### What changed
+
+- `resolved-paths-memo.ts` (new, 41 LOC): a module-scoped LRU of 16 that memoizes the PROMISE of
+  `packageManager.resolve()` + `resolveExtensionSources(additionalExtensionPaths)`, keyed on a
+  stable digest of `{ agentDir, cwd, globalSettings, projectSettings, additionalExtensionPaths }`.
+  A rejected computation is evicted so the next caller retries.
+- `resource-loader.ts` resolves through it from ONE private `resolvePackagePaths()`, used by both
+  `reload()` and the pre-trust bootstrap pass `loadCurrentExtensionSet()`. The bootstrap pass
+  had its own un-memoized pair of calls, so a session in a trust-requiring project resolved
+  twice per open with only the second memoized; now each pass shares its own entry (the keys
+  differ: the bootstrap pass sees untrusted project settings). The key is computed AFTER
+  `settingsManager.reload()`, so a settings change yields a new key.
+
+### Why
+
+On the daemon, `reload()` cost ~150 ms per open warm and interleaved (SENPI_TIMING marks,
+aggregated): `packageResolve` 68 ms, per-extension `module import` 77 ms, `factory` 3 ms. The
+first is discovery over the agent dir's installed packages - identical for every session of a host
+whose set is fixed - and it was rerun by every open, N-way interleaved on one loop for N concurrent
+opens. Memoizing the promise makes N concurrent opens of one key await ONE resolution.
+Measured after: `packageResolve` 68 -> 0-1 ms on warm opens; warm concurrent `reload` 150 -> 53 ms.
+Built daemon over its socket, 8 rounds alternating against `main` (which already carries the shared
+model runtime): 8 concurrent opens 448 -> 320 ms wall median (~29%), single warm open 222 -> 168 ms
+(~24%), 0 failed. Invalidation pinned with real loaders: a `settings.json` change makes the next
+loader resolve again; three concurrent loaders share one in-flight resolution.
+
+### What CI caught, and the fix
+
+`hooks-builtin-extension` failed on the first push: a test edits a package's own `package.json`
+(which hooks it declares) and reloads. Settings are unchanged, so the key was unchanged, so the memo
+served the stale manifest. Resolution reads manifest content on disk, which a settings digest cannot
+see. The old per-loader path handled this through the re-load signal - `if (this.loaded)
+clearExtensionCache()` - which the memo had bypassed. A re-load of the same loader now passes
+`refresh: true` through both call sites and replaces the entry; only a FRESH loader (a new session on
+a shared host) reads through the memo. Pinned: reload twice on one loader = 2 resolves, and a fresh
+loader afterwards adds none. 56 suites that construct a loader or call `reload()`: 538/538.
+
+### Why an extension could not handle it
+
+Package resolution is what decides WHICH extensions load; it runs before any extension of the
+session exists.
+
+### Expected merge conflict zones
+
+- `resource-loader.ts` - the two `packageManager` awaits at the top of `reload()` and the
+  import block from `./extensions/loader.ts`.
+
+### What did NOT ship, and why
+
+A synchronous fast path in `extensions/loader.ts` for already-cached factories was built on the
+hypothesis that the per-extension `await` hop was the remaining cost. Measured: `module import`
+49 -> 48 ms. Reverted; a change that measures as a no-op has no place in a perf change. Only 15 of
+the 49 extensions reach `loadExtension` at all - builtins take the inline route - so that remaining
+~48 ms spans two code paths and is the next step on #1844.
+
+## 2026-09-19 - A shared model runtime refreshes only what this session registered (senpi#1844)
+
+### What changed
+
+- `agent-session-services.ts` records the provider ids its replay loop registers. When the
+  caller injected `options.modelRuntime`, the trailing refresh is
+  `refresh({ providers: [those ids] })`, and is skipped when none were registered. A runtime
+  built for this session still refreshes everything, as before.
+
+### Why
+
+The in-process daemon now hands one `ModelRuntime` to every session (see `src/changes.md`,
+same date). With that in place the unconditional `modelRuntime.refresh()` recomposed every
+provider the shared instance had accumulated, on every open, serialized on the one instance -
+measured 29-118 ms against ~5 ms on a per-session runtime - and cost more than the parallel
+`create` it replaced. Scoped to what this open added, the two paths reach the same state:
+everything else was refreshed by whoever added it. Built daemon over its socket: single warm
+open 277 -> 162 ms median; eight concurrent 507 -> 439 ms wall median.
+
+### Why an extension could not handle it
+
+The refresh runs in the services layer after the replay of extension provider registrations
+and before any session exists. An extension has no hook there and cannot see whether the
+runtime it registered into is private or shared.
+
+### Expected merge conflict zones
+
+- `agent-session-services.ts` - the provider replay loop and the `modelRuntime.refresh` call
+  that follows it.
+
 ## 2026-09-18 - Default B.AI model selection
 
 ### What changed
