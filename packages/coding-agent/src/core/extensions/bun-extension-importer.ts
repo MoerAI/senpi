@@ -41,7 +41,7 @@ function skipTrivia(source: string, index: number): { readonly index: number; re
 		}
 		if (char === "/" && source[index + 1] === "/") {
 			index += 2;
-			while (index < source.length && source[index] !== "\r" && source[index] !== "\n") index += 1;
+			while (index < source.length && !/[\r\n\u2028\u2029]/u.test(source[index] ?? "")) index += 1;
 			continue;
 		}
 		if (char === "/" && source[index + 1] === "*") {
@@ -74,7 +74,7 @@ function stringLiteralEnd(source: string, index: number): number | undefined {
 			continue;
 		}
 		if (char === quote) return index + 1;
-		if (char === "\r" || char === "\n" || char === "\u2028" || char === "\u2029") return undefined;
+		if (char === "\r" || char === "\n") return undefined;
 	}
 	return undefined;
 }
@@ -83,8 +83,9 @@ function isStringExpressionContinuation(source: string, index: number): boolean 
 	const char = source[index];
 	if (char === undefined) return false;
 	if (char === "+" || char === "-") return source[index + 1] !== char;
+	if (char === "!") return source[index + 1] === "=";
 	if ("([.`?*/%&|^<>=,:".includes(char)) return true;
-	return /^(?:in|instanceof)(?![A-Za-z0-9_$])/u.test(source.slice(index));
+	return /^(?:in|instanceof)(?![$_\p{ID_Continue}\\\u200c\u200d])/u.test(source.slice(index));
 }
 
 /** Whether the original CommonJS source opts into strict mode with a directive prologue. */

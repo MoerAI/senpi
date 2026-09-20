@@ -234,6 +234,34 @@ assert.equal(factory(), "ReferenceError");
 		);
 	});
 
+	it.each([
+		["comparison expression", '"use strict"\n!= "";', "sloppy"],
+		["negation after ASI", '"use strict"\n!false;', "ReferenceError"],
+		["Unicode line separator", '// header\u2028"use strict";', "ReferenceError"],
+		["Unicode paragraph separator", '// header\u2029"use strict";', "ReferenceError"],
+		["Unicode identifier after ASI", '"use strict"\nin\u03c0;\nvar in\u03c0;', "ReferenceError"],
+		["escaped identifier after ASI", '"use strict"\nin\\u0066oo;\nvar infoo;', "ReferenceError"],
+		["Unicode custom directive", '"custom\u2028directive";\n"use strict";', "ReferenceError"],
+	])("preserves directive semantics for %s (#1841)", (_name, prologue, expected) => {
+		const root = fixture('import lib from "cjs-lib"; export default () => lib;');
+		commonJsPackage(root, "cjs-lib", {
+			"index.js": [
+				prologue,
+				'let result = "sloppy";',
+				"try { senpiDirectiveBoundaryFixture = 1; } catch (error) { result = error.name; }",
+				"module.exports = result;",
+			].join("\n"),
+		});
+		run(
+			root,
+			`
+const importer = await createBunExtensionImporter({});
+const factory = await importer.import(entry, { default: true });
+assert.equal(factory(), ${JSON.stringify(expected)});
+`,
+		);
+	});
+
 	it('does not inherit "type": "module" through a node_modules boundary (#1841)', () => {
 		// Given: a dependency with no package.json under a type:module project package.
 		const root = fixture(

@@ -10,6 +10,7 @@
 
 ### Why
 
+- Directive detection also preserves inequality expressions, Unicode comment terminators, string literals, and identifier boundaries instead of accidentally changing strict mode at an ASI boundary.
 - #1841: a CommonJS dependency evaluated in strict mode because its wrapper lived inside an ES module, so implicit-global assignment threw `ReferenceError` and jsdom 27's `@acemir/cssom`/`cssstyle` raised `Attempted to assign to readonly property` through the loader while the same code parses under plain `bun` and `node`. Separately, a `.js` file in a `"type": "module"` package was classified by syntax alone, so a file whose only module-level syntax is `await` was wrapped as CommonJS and failed to parse with `"await" can only be used inside an "async" function`.
 
 ### Why an extension could not handle it
