@@ -138,11 +138,17 @@ import {
 	type ResumeCompactionRequirement,
 } from "./extensions/builtin/compaction/resume-admission.ts";
 import {
+	planResumeSlice,
 	RESUME_SLICE_ORIGIN,
 	RESUME_SLICE_SCHEMA,
 	type ResumeSlicePlan,
 	resumeSliceNotice,
 } from "./extensions/builtin/compaction/resume-slice.ts";
+import {
+	createPendingModelSwitch,
+	type PendingModelSwitch,
+	pendingSwitchKeepRecentTokens,
+} from "./extensions/builtin/compaction/switch-admission.ts";
 import { WAKE_SOURCE_STATE_EVENT } from "./extensions/builtin/monitor-state-event.ts";
 import { CODEX_RESPONSES_API, type ServiceTier } from "./extensions/builtin/service-tier.ts";
 import { deriveExtensionRegistrationId } from "./extensions/builtin/tool-search/engine/marker.ts";
@@ -375,6 +381,16 @@ export type AgentSessionEvent =
 			safetyMarginProfile: string;
 			direction: "forward" | "backward";
 	  }
+	/** A switch accepted but held until the next send can compact for it (#1873). */
+	| {
+			type: "model_change_pending";
+			model: Model<any>;
+			contextWindow: number;
+			liveContextTokens: number;
+			requiredTokens: number;
+			shortfallTokens: number;
+			notice: string;
+	  }
 	/** Effective service tier or fast-mode state changed. */
 	| { type: "service_tier_changed"; tier?: ServiceTier; fastMode: boolean }
 	| {
@@ -551,6 +567,8 @@ interface CompactionExecutionRequest {
 	precomputed?: CompactionResult;
 	allowSummaryOnly?: boolean;
 	agentMessagesAtStart?: readonly AgentMessage[];
+	/** Aim the reduction at another model's window while this model summarizes (#1873). */
+	keepRecentTokensOverride?: number;
 }
 
 type CompactionExecutionResult =
@@ -911,6 +929,7 @@ export class AgentSession {
 	// that AgentSession initiated required-compaction recovery.
 	private _requiredCompactionTurnError: RequiredCompactionError | undefined;
 	private _resumeCompactionRequirement: ResumeCompactionRequirement | undefined;
+	private _pendingModelSwitch: PendingModelSwitch | undefined;
 	private _resumeSlice: ResumeSlicePlan | undefined;
 	// A retry continuation immediately follows an accepted compaction. Its first
 	// response must not retrigger threshold compaction from stale provider usage.
@@ -1094,6 +1113,8 @@ export class AgentSession {
 					modelSelectSource: reason,
 					invalidateCompaction: true,
 					ephemeralThinkingLevel: thinking,
+					allowDeferral: false,
+					repairWithSlice: true,
 				});
 			},
 			emit: (event) => this._emit(event),
@@ -1791,18 +1812,29 @@ export class AgentSession {
 		this._incrementMessageRevision();
 	}
 
+	/**
+	 * #1873 narrows #1378: a cycle silently passes over a candidate only when no
+	 * reduction could ever make it serve. A candidate that one compaction would fix
+	 * is landed on and held as a pending switch instead, because skipping it throws
+	 * away the model the user was cycling towards.
+	 */
 	private _modelChangeWouldExhaustContext(
 		model: Model<Api>,
 	): ReturnType<typeof projectModelUsabilityBudget> | undefined {
 		if (model.contextWindow <= 0) return undefined;
+		const compaction = this._getCompactionSettings();
 		const projection = projectModelUsabilityBudget({
 			model,
 			systemPrompt: this.agent.state.systemPrompt,
 			tools: this.agent.state.tools,
 			liveContextTokens: this._getDownswitchLiveContextTokens(model),
-			compaction: this._getCompactionSettings(),
+			compaction,
+			includeSpeculationLead: false,
+			admission: this._modelSwitchAdmission(),
 		});
-		return projection.usable ? undefined : projection;
+		if (projection.usable) return undefined;
+		if (compaction.enabled && projection.verdict === "fits-after-compaction") return undefined;
+		return projection;
 	}
 
 	private _getIdleWaitPromise(): Promise<void> {
@@ -4782,6 +4814,142 @@ export class AgentSession {
 	}
 
 	/** Admit an oversized restored transcript so the normal pre-provider compaction can run. */
+	/** The switch waiting for the next send to compact for it, if any (#1873). */
+	get pendingModelSwitch(): PendingModelSwitch | undefined {
+		return this._pendingModelSwitch;
+	}
+
+	/**
+	 * A switch the target cannot hold yet but one compaction would fix. Refusing it
+	 * discards what the user asked for; committing it strands the session on a model
+	 * that cannot answer. Holding it does neither: nothing durable is written until
+	 * the next send has reduced the transcript and the switch actually applies.
+	 */
+	private _projectSwitchDeferral(
+		model: Model<Api>,
+		liveContextTokens: number,
+	): ModelUsabilityBudgetProjection | undefined {
+		if (model.contextWindow <= 0) return undefined;
+		const compaction = this._getCompactionSettings();
+		if (!compaction.enabled) return undefined;
+		if (this._modelSwitchAdmission() !== "switch") return undefined;
+		const projection = projectModelUsabilityBudget({
+			model,
+			systemPrompt: this.agent.state.systemPrompt,
+			tools: this.agent.state.tools,
+			liveContextTokens,
+			compaction,
+			includeSpeculationLead: false,
+			admission: "switch",
+		});
+		return projection.verdict === "fits-after-compaction" ? projection : undefined;
+	}
+
+	private _admitSwitchCompactionRequired(
+		model: Model<Api>,
+		projection: ModelUsabilityBudgetProjection,
+		persistDefault: boolean,
+	): void {
+		const pending = createPendingModelSwitch({ model, projection, persistDefault });
+		this._pendingModelSwitch = pending;
+		this._emit({
+			type: "model_change_pending",
+			model,
+			contextWindow: projection.contextWindow,
+			liveContextTokens: projection.liveContextTokens,
+			requiredTokens: projection.requiredTokens,
+			shortfallTokens: projection.shortfallTokens,
+			notice: pending.notice,
+		});
+	}
+
+	/**
+	 * Fit a fallback rung by reducing the transcript without a provider request
+	 * (#1873). Summarizing is not available here: the model being fallen back from
+	 * has usually just failed, and the rung itself cannot hold the transcript, so
+	 * the deterministic slice is the only reduction that can run. The recorded
+	 * transcript stays intact in the session file.
+	 */
+	private _reduceForSwitchTarget(model: Model<Api>, liveContextTokens: number): number {
+		if (!this._getCompactionSettings().enabled) return liveContextTokens;
+		const projection = this._projectSwitchFit(model);
+		if (projection.usable || projection.verdict !== "fits-after-compaction") return liveContextTokens;
+		const plan = planResumeSlice({ entries: this.sessionManager.getBranch(), projection });
+		if (!plan) return liveContextTokens;
+		this.applyResumeSlice(plan);
+		return this._projectSwitchFit(model).liveContextTokens;
+	}
+
+	private _projectSwitchFit(model: Model<Api>): ModelUsabilityBudgetProjection {
+		// Measured per message rather than through the context estimate: a retained
+		// turn keeps the usage it reported before the reduction, so a usage-derived
+		// total cannot observe the compaction that just ran (the sdk.ts convention).
+		const liveContextTokens = filterContextExcludedMessages(
+			this.sessionManager.buildSessionContext().messages,
+		).reduce((total, message) => total + estimateTokens(message), 0);
+		return projectModelUsabilityBudget({
+			model,
+			systemPrompt: this.agent.state.systemPrompt,
+			tools: this.agent.state.tools,
+			liveContextTokens,
+			compaction: this._getCompactionSettings(),
+			includeSpeculationLead: false,
+			admission: "switch",
+		});
+	}
+
+	/**
+	 * Repair and apply a held switch, in the one order that works: the model that
+	 * can still hold the transcript writes the summary, the reduction aims at the
+	 * window the transcript must end up inside, and only a transcript that actually
+	 * fits is allowed to carry the switch. The deterministic slice is the floor when
+	 * summarization did not get there, so a repairable switch cannot strand itself.
+	 */
+	private async _applyPendingModelSwitch(
+		assistantMessage: AssistantMessage | undefined,
+		skipAbortedCheck: boolean,
+		inlineReason: "pre_prompt" | "threshold",
+	): Promise<boolean> {
+		const pending = this._pendingModelSwitch;
+		if (pending === undefined) return false;
+		if (!this.model) throw new RequiredCompactionError();
+
+		await this._runPrePromptCompaction(
+			assistantMessage,
+			skipAbortedCheck,
+			inlineReason,
+			false,
+			false,
+			pendingSwitchKeepRecentTokens(pending.projection),
+		);
+
+		let projection = this._projectSwitchFit(pending.model);
+		if (!projection.usable) {
+			const plan = planResumeSlice({ entries: this.sessionManager.getBranch(), projection });
+			if (plan) {
+				this.applyResumeSlice(plan);
+				projection = this._projectSwitchFit(pending.model);
+			}
+		}
+
+		this._pendingModelSwitch = undefined;
+		if (!projection.usable) {
+			const error = new ModelUsabilityBudgetError(projection);
+			this._recordRejectedModelChange(pending.model, error);
+			throw error;
+		}
+
+		await this._switchActiveModel(pending.model, {
+			persistDefault: pending.persistDefault,
+			appendSessionEntry: true,
+			emitModelSelect: true,
+			modelSelectSource: "set",
+			invalidateCompaction: true,
+			allowDeferral: false,
+		});
+		return true;
+	}
+
 	admitResumeCompactionRequired(projection: ModelUsabilityBudgetProjection): void {
 		this._resumeCompactionRequirement = createResumeCompactionRequirement(projection);
 	}
@@ -4892,8 +5060,17 @@ export class AgentSession {
 	 * observable on one path and invisible on its sibling.
 	 */
 	private _assertModelUsableForSwitch(model: Model<Api>, liveContextTokens: number): void {
+		const admission = this._modelSwitchAdmission();
 		try {
-			this.assertModelUsable(model, liveContextTokens, { admission: this._modelSwitchAdmission() });
+			// #1873: a live switch only has to fit the next single request. Speculation
+			// runs after the switch is admitted and cannot shrink a transcript it has not
+			// been admitted to yet - the reasoning #1339 applied to resume, which this
+			// extends to the switch path. The cold-start floor (`start`) keeps charging
+			// the lead, because there it is a property of the model, not of a transcript.
+			this.assertModelUsable(model, liveContextTokens, {
+				admission,
+				includeSpeculationLead: admission === "start",
+			});
 		} catch (error) {
 			this._recordRejectedModelChange(model, error);
 			throw error;
@@ -4904,11 +5081,22 @@ export class AgentSession {
 		model: Model<Api>,
 		updateGlobalDefaults: boolean,
 	): Promise<SystemPromptChangeEvent | undefined> {
-		this._assertModelUsableForSwitch(model, this._getDownswitchLiveContextTokens(model));
+		const liveContextTokens = this._getDownswitchLiveContextTokens(model);
+		const deferral = this._projectSwitchDeferral(model, liveContextTokens);
+		if (deferral === undefined) {
+			this._assertModelUsableForSwitch(model, liveContextTokens);
+		}
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			const error = new Error(`No API key for ${model.provider}/${model.id}`);
 			this._recordRejectedModelChange(model, error);
 			throw error;
+		}
+		// Auth is the last check that can refuse outright, so the switch is only held
+		// once it is otherwise good: a pending switch to a model with no key would
+		// surface its failure a whole message later.
+		if (deferral !== undefined) {
+			this._admitSwitchCompactionRequired(model, deferral, updateGlobalDefaults);
+			return undefined;
 		}
 
 		// A manual model change abandons any active fallback window; if a fallback
@@ -4959,6 +5147,19 @@ export class AgentSession {
 			modelSelectSource: ModelSelectSource;
 			invalidateCompaction: boolean;
 			ephemeralThinkingLevel?: ThinkingLevel;
+			/**
+			 * Off for the paths that must settle now (#1873): applying a held switch,
+			 * where re-holding would defer the same switch forever, and the fallback
+			 * lanes, whose retry is the next request and has nothing to wait for.
+			 */
+			allowDeferral?: boolean;
+			/**
+			 * Reduce the transcript in place so this switch can settle now (#1873). Used
+			 * by the fallback lanes: a rung that cannot hold the conversation is repaired
+			 * rather than rejected, because rejecting it fails a chain whose rungs are all
+			 * smaller than the model that just failed.
+			 */
+			repairWithSlice?: boolean;
 		},
 	): Promise<SystemPromptChangeEvent | undefined> {
 		const previousModel = this.model;
@@ -4972,6 +5173,11 @@ export class AgentSession {
 		}
 		const thinking = this._getThinkingForModelSwitch(model, opts.ephemeralThinkingLevel);
 		const liveContextTokens = this._getDownswitchLiveContextTokens(model);
+		// Snapshot before any mutation: the baseline reset below used to run first, so the
+		// "previous" value captured the already-cleared one and a refused switch restored
+		// `undefined` instead of the baseline the session came in with.
+		const previousReasoningBaseline = this.agent.state.reasoningBaseline;
+		const previousAbortServerSideFallback = this.agent.abortServerSideFallback;
 		this.agent.state.model = model;
 		if (!(model.id === "gpt-6-astra" && (model.provider === "openai" || model.provider === "openai-codex"))) {
 			this.agent.state.reasoningBaseline = undefined;
@@ -4981,8 +5187,6 @@ export class AgentSession {
 		const previousFastMode = this.isFastModeActive();
 		const previousThinkingLevel = this.agent.state.thinkingLevel;
 		const previousThinkingSelection = this.agent.state.thinkingSelection;
-		const previousReasoningBaseline = this.agent.state.reasoningBaseline;
-		const previousAbortServerSideFallback = this.agent.abortServerSideFallback;
 		this.agent.abortServerSideFallback =
 			this.settingsManager.getAbortServerSideFallback() && this._retryFallback.hasConfiguredChain();
 		this._currentServiceTier = this._resolveServiceTier(model, scopedMatch?.serviceTier);
@@ -4999,7 +5203,25 @@ export class AgentSession {
 			const systemPromptChange = opts.emitModelSelect
 				? await this._emitModelSelect(model, previousModel, opts.modelSelectSource)
 				: undefined;
-			this._assertModelUsableForSwitch(model, liveContextTokens);
+			const deferral =
+				opts.allowDeferral === false ? undefined : this._projectSwitchDeferral(model, liveContextTokens);
+			if (deferral !== undefined) {
+				// Roll the in-memory selection back: the switch is held, not applied, so
+				// nothing may observe the target as active until the next send repairs it.
+				if (previousModel) this.agent.state.model = previousModel;
+				this.agent.state.systemPrompt = previousSystemPrompt;
+				this.agent.state.thinkingLevel = previousThinkingLevel;
+				this.agent.state.thinkingSelection = previousThinkingSelection;
+				this.agent.state.reasoningBaseline = previousReasoningBaseline;
+				this.agent.abortServerSideFallback = previousAbortServerSideFallback;
+				this._currentServiceTier = previousTier;
+				this._admitSwitchCompactionRequired(model, deferral, opts.persistDefault);
+				return undefined;
+			}
+			const admittedLiveContextTokens = opts.repairWithSlice
+				? this._reduceForSwitchTarget(model, liveContextTokens)
+				: liveContextTokens;
+			this._assertModelUsableForSwitch(model, admittedLiveContextTokens);
 			if (opts.appendSessionEntry) {
 				this.sessionManager.appendModelChange(
 					model.provider,
@@ -5010,6 +5232,11 @@ export class AgentSession {
 				);
 			}
 			if (opts.persistDefault) this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+			// A switch that actually landed supersedes anything still being held (#1873).
+			// Without this a held switch survives its own resolution - an explicit
+			// /compact followed by a manual retry applies the switch here, and the stale
+			// hold would compact and re-switch again on the next message.
+			this._pendingModelSwitch = undefined;
 			// Emit only after all admission hooks have accepted the candidate.
 			this._emit({
 				type: "model_changed",
@@ -5105,10 +5332,13 @@ export class AgentSession {
 			const alternatives = favoriteModels.filter((entry) => !modelsAreEqual(entry.model, currentModel));
 			const onlyAlternative = alternatives.length === 1 ? alternatives[0] : undefined;
 			if (onlyAlternative) {
-				this._assertModelUsableForSwitch(
-					onlyAlternative.model,
-					this._getDownswitchLiveContextTokens(onlyAlternative.model),
-				);
+				const onlyLiveContextTokens = this._getDownswitchLiveContextTokens(onlyAlternative.model);
+				const onlyDeferral = this._projectSwitchDeferral(onlyAlternative.model, onlyLiveContextTokens);
+				if (onlyDeferral !== undefined) {
+					this._admitSwitchCompactionRequired(onlyAlternative.model, onlyDeferral, true);
+				} else {
+					this._assertModelUsableForSwitch(onlyAlternative.model, onlyLiveContextTokens);
+				}
 			}
 			return {
 				model: currentModel,
@@ -5119,6 +5349,18 @@ export class AgentSession {
 		}
 		const next = favoriteModels[selectedIndex];
 		const liveContextTokens = this._getDownswitchLiveContextTokens(next.model);
+		// #1873: the cycle lands on a candidate one compaction would admit instead of
+		// refusing it. Nothing is mutated yet, so holding here needs no rollback.
+		const cycleDeferral = this._projectSwitchDeferral(next.model, liveContextTokens);
+		if (cycleDeferral !== undefined) {
+			this._admitSwitchCompactionRequired(next.model, cycleDeferral, true);
+			return {
+				model: currentModel,
+				thinkingLevel: this.thinkingLevel,
+				isScoped: true,
+				skippedModels,
+			};
+		}
 		this._assertModelUsableForSwitch(next.model, liveContextTokens);
 		const invalidatesCompaction =
 			this._modelSelectionChangesContext(currentModel, next.model) ||
@@ -5147,9 +5389,28 @@ export class AgentSession {
 			// default - may be written before this guard accepts, or a refused cycle
 			// would resume on a model that never ran (the ordering `_switchActiveModel`
 			// already uses).
+			// #1873: a prompt that only grew past the budget is held, not refused; the
+			// in-memory selection rolls back exactly as the catch below would.
+			const postHookDeferral = this._projectSwitchDeferral(next.model, liveContextTokens);
+			if (postHookDeferral !== undefined) {
+				if (currentModel) this.agent.state.model = currentModel;
+				this.agent.state.systemPrompt = previousSystemPrompt;
+				this._currentServiceTier = previousTier;
+				this._admitSwitchCompactionRequired(next.model, postHookDeferral, true);
+				return {
+					model: currentModel,
+					thinkingLevel: this.thinkingLevel,
+					isScoped: true,
+					skippedModels,
+				};
+			}
 			this._assertModelUsableForSwitch(next.model, liveContextTokens);
 			this.sessionManager.appendModelChange(next.model.provider, next.model.id);
 			this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
+			// #1873: the cycle commits here rather than through `_switchActiveModel`, so it
+			// has to supersede a held switch itself - otherwise cycling onto a model that
+			// fits leaves an older hold to reclaim the session on the next message.
+			this._pendingModelSwitch = undefined;
 			// Post-switch, same contract as _switchActiveModel: the level in force AFTER the cycle.
 			this._emit({
 				type: "model_changed",
@@ -5873,8 +6134,11 @@ export class AgentSession {
 				throw new CompactionCancelledError();
 			}
 			const pathEntries = this.sessionManager.getBranch();
+			const resolvedSettings = this._getCompactionSettings();
 			const settings = cursorOverflowCompactionSettings(
-				this._getCompactionSettings(),
+				request.keepRecentTokensOverride === undefined
+					? resolvedSettings
+					: { ...resolvedSettings, keepRecentTokens: request.keepRecentTokensOverride },
 				this.model?.provider,
 				request.reason,
 			);
@@ -6300,6 +6564,9 @@ export class AgentSession {
 
 		const settings = this._getCompactionSettings();
 		const model = this.model;
+		if (this._pendingModelSwitch !== undefined) {
+			return await this._applyPendingModelSwitch(assistantMessage, skipAbortedCheck, inlineReason);
+		}
 		if (this._resumeCompactionRequirement !== undefined) {
 			if (!model) throw new RequiredCompactionError();
 			const compacted = await this._runPrePromptCompaction(assistantMessage, skipAbortedCheck, inlineReason);
@@ -6668,6 +6935,7 @@ export class AgentSession {
 		reason: "pre_prompt" | "overflow" | "threshold" = "pre_prompt",
 		willRetry = false,
 		allowSummaryOnly = false,
+		keepRecentTokensOverride?: number,
 	): Promise<boolean> {
 		if (this._isCompactionDelegated()) return false;
 		const controller = new AbortController();
@@ -6685,6 +6953,7 @@ export class AgentSession {
 				lastAssistantMessage,
 				skipAbortedCheck,
 				allowSummaryOnly,
+				keepRecentTokensOverride,
 			});
 			if (
 				!execution.accepted &&

@@ -1,5 +1,133 @@
 # changes
 
+## 2026-09-20 - A fallback rung too small for the transcript is repaired, not rejected (senpi#1873)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: `_switchActiveModel` gained `repairWithSlice`, set by the retry-fallback lanes. When a rung reports `fits-after-compaction`, `_reduceForSwitchTarget` reduces the transcript with `planResumeSlice` against that rung's own projection and re-measures before the admission guard runs, so the chain advances onto a model that can now hold the conversation instead of rejecting it.
+- `_projectPendingSwitchFit` is renamed `_projectSwitchFit`; it is now shared by the held-switch repair and the fallback repair.
+- The reduction is skipped when compaction is disabled, and `planResumeSlice` returning nothing leaves the original refusal in place, so a transcript with no interior boundary to cut still fails the rung rather than advancing onto a model that cannot serve it.
+
+### Why
+
+- A fallback switch has no next message to defer to: the retry is the next request. The model being fallen back from has usually just failed, so it cannot be asked for a summary either, and the rung itself cannot hold the transcript. The deterministic, provider-free slice is the only reduction available, and the recorded transcript stays intact in the session file.
+- Rejecting the rung fails a chain whose rungs are all smaller than the model that just failed, which is the case a fallback chain exists for.
+
+### Why an extension could not handle it
+
+- The repair has to run between the `model_select` hook and the admission guard inside `_switchActiveModel`, a window no extension can observe, and it mutates session context that only the session owns.
+
+### Expected merge conflict zones
+
+- MEDIUM: `agent-session.ts` around the `_switchActiveModel` guard. PR #1338 rewrites the same seam to *skip* incompatible rungs; this supersedes that policy.
+- Coverage: `test/suite/regressions/1873-fallback-rung-repair.test.ts`.
+
+## 2026-09-20 - A switch one compaction would admit is held, not refused (senpi#1873)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: a switch whose target reports `fits-after-compaction` is registered as `_pendingModelSwitch` instead of throwing. `_setModel` holds it only after the auth check has passed, so a pending switch can never be waiting on a model with no key, and returns without touching durable state. `_switchActiveModel` gained `allowDeferral`, off for the two paths that must settle now: applying a held switch (re-holding would defer the same switch forever) and the fallback lanes (their retry is the next request).
+- `_applyPendingModelSwitch` runs from `_enforceCompactionBeforeProvider` ahead of the resume branch. It compacts with the model still holding the transcript, aims the reduction at the pending model's window through the new `keepRecentTokensOverride` on `CompactionExecutionRequest`, falls back to `planResumeSlice` when summarization did not get there, and only then calls `_switchActiveModel`. A transcript that still does not fit records the refusal and throws, so a held switch cannot strand the session.
+- `_projectPendingSwitchFit` measures the reduced transcript per message with `estimateTokens` rather than through `estimateContextTokens`: a retained turn keeps the usage it reported before the reduction, so a usage-derived total reports the pre-compaction size and would reject a compaction that actually worked.
+- `_modelChangeWouldExhaustContext` now skips a cycle candidate only when the verdict is `impossible`, and a held switch emits `model_change_pending`, which the interactive mode renders.
+
+### Why
+
+- Refusing the switch discards what the user asked for and leaves the session on the old model; #1378's cycle skip does the same silently. Resume already had the repair (admit, compact before the first prompt, revalidate) but it was keyed to the resume admission. Holding the switch reuses that shape for the case users actually hit.
+- The compaction has to run before the switch, not after: `_runPrePromptCompaction` summarizes with `this.model`, so switching first would ask the model that cannot hold the transcript to summarize it.
+
+### Why an extension could not handle it
+
+- Pending-switch state lives in the session's admission and pre-provider compaction path. No public hook can hold a refused switch, order a compaction against a model other than the active one, or re-enter the switch once the transcript fits.
+
+### Expected merge conflict zones
+
+- MEDIUM: `agent-session.ts` around `_setModel`, the `_switchActiveModel` options, and the head of `_enforceCompactionBeforeProvider`; PR #1338 rewrites the same guard seam for its fallback preflight.
+- LOW: `_executeCompaction`'s settings resolution, which PR #1735 also touches.
+- Coverage: `test/suite/regressions/1873-deferred-model-switch.test.ts`, plus the two re-pinned cases in `test/suite/model-usability-budget.test.ts`.
+
+## 2026-09-20 - A model switch stops charging the speculation lead at admission (senpi#1873)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: `_assertModelUsableForSwitch` now passes `includeSpeculationLead: admission === "start"`, so an actual switch on a live session is admitted without the lead while the cold-start floor keeps charging it. The guard seam itself is unchanged - every refusal still records a `model_change_rejected` entry and rethrows the original error (#1526).
+
+### Why
+
+- #1339 removed the lead from resume admission because speculation cannot shrink a transcript it has not been admitted to yet, and closed with the note that a live switch could keep charging it. That held only while refusal was the sole outcome, so the lead doubled as a refusal margin. It refuses real switches on its own: in the session that prompted #1873 the shortfall was 44110 tokens against a lead of 32768, and the regression test reproduces the same shape at a 31549-token shortfall against a 32549-token lead. Admission decides whether the next single request fits; speculation runs after the switch is admitted.
+
+### Why an extension could not handle it
+
+- The switch guard is core session state: it runs inside `_setModel` and `_switchActiveModel`, before any extension-visible model change is emitted, and no hook can relax or re-run it.
+
+### Expected merge conflict zones
+
+- LOW: `agent-session.ts` around `_assertModelUsableForSwitch`, a five-line body that #1526 and #1338 both touch.
+- Coverage: `test/suite/model-usability-budget.test.ts` (`admits a switch that only the speculation lead would have rejected`, and the updated lead assertion in `rejects a downswitch before committing when live context exceeds the target budget`).
+
+## 2026-09-20 - Fable 5 ships an Opus-only default fallback chain (senpi#1860)
+
+### What changed
+
+- `retry-fallback/settings.ts`: `DEFAULT_FALLBACK_CHAINS` carries `claude-fable-5-1` and `claude-fable-5`, each
+  `["claude-opus-5:max", "claude-opus-4-8:max", "claude-opus-4-6:max"]`, and `resolveFallbackChains` layers user
+  chains over a clone of that map again instead of returning user configuration alone. A same-named user key still
+  replaces the default outright, an empty array stays the tombstone canonicalization needs, and a malformed map
+  falls back to the defaults.
+- Every rung is `:max` because the catalog publishes only that level for `claude-opus-4-6`
+  (`thinkingLevelMap: {"max": "max"}`); `claude-opus-5` and `claude-opus-4-8` publish it too.
+- `test/suite/retry-fallback-chains.test.ts` pins the shipped ladder, the Anthropic-only rungs, and that an
+  unrelated user key does not delete the defaults. `test/suite/retry-fallback-expansion.test.ts` restores the two
+  tombstone assertions to the per-provider semantics their own test names describe: emptying one canonical key
+  leaves the other provider variant, and an explicit canonical chain overrides only its own provider.
+
+### Why
+
+- `daa81b0ed5` (2026-09-05) emptied the map because the default it removed led with `k3:max` / `kimi-k3:max`: that
+  moved a Claude session onto another vendor as the FIRST hop, and bare-family expansion ranks OAuth lanes first,
+  so the hop could land on a lane guaranteed to refuse (senpi#978). Both problems belong to cross-family leading
+  rungs, not to shipping a default at all.
+- The cost of the empty map is that a fresh install has no escape hatch: a refusal or a 429 on Fable 5 writes
+  `no_chain` to `fallback.log` and ends the turn, while same-family Opus models sit in the same registry.
+- An Anthropic-only step-down keeps the session inside one model family and one tool dialect, so a fallback is a
+  step down in capability instead of a change of vendor. There is still deliberately no wildcard lane.
+
+### Why an extension could not handle it
+
+- Chain resolution runs inside `settings-manager.ts` -> `resolveRetryFallbackSettings` before any extension is
+  bound, and `RetryFallbackController` reads the resolved map directly. No extension hook observes or contributes
+  fallback chains.
+
+### Expected merge conflict zones
+
+- LOW: `DEFAULT_FALLBACK_CHAINS` and `resolveFallbackChains` in
+  `packages/coding-agent/src/core/retry-fallback/settings.ts`.
+
+## 2026-09-20 - Skill assets embedded in a compiled binary are read without a descriptor (senpi#1852)
+
+### What changed
+
+- `skill-discovery.ts` `readSkillMarkdownSource` now falls back to `readFileSync` when `openSync` refuses the
+  path, and keeps the bounded 8 KiB prefix read for every file that does open. The frontmatter slicing is
+  shared, so both paths return the same source.
+
+### Why
+
+- A Bun single-file executable serves embedded assets from a virtual filesystem that answers `existsSync`,
+  `statSync` and `readFileSync` but hands out no file descriptors. `loadSkills` accepts such a path through
+  its `existsSync` + `statSync` guards and then failed inside the reader with `ENOENT ... open`, so every
+  skill contributed as an embedded asset - the builtin `imagegen` skill today - was dropped and reported as a
+  `Skill conflicts` warning on every start of a compiled build. The descriptor read arrived with the
+  2026-09-17 frontmatter-prefix change (senpi#1781); before it, `readFileSync` loaded those skills fine.
+
+### Why an extension could not handle it
+
+- Skill discovery and frontmatter parsing run in the host resource loader before any extension is bound.
+
+### Expected merge conflict zones
+
+- LOW: the head of `readSkillMarkdownSource` in `packages/coding-agent/src/core/skill-discovery.ts`.
+
 ## 2026-09-19 - Package resolution is memoized per host, keyed on its real inputs (senpi#1844)
 
 ### What changed
