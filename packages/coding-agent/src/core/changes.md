@@ -1,5 +1,23 @@
 # changes
 
+## 2026-09-20 - Preserve initial model provenance through services (#1560)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session-services.ts` accepts the SDK's existing provenance type and forwards it unchanged.
+
+### Why
+
+- `packages/coding-agent/src/core/agent-session-services.ts` dropped explicit/scoped provenance, leaving `session_start` without the resolved selection source.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/agent-session-services.ts` constructs the session before extension startup handlers run.
+
+### Expected merge conflict zones
+
+- LOW: the options interface and SDK forwarding object in `packages/coding-agent/src/core/agent-session-services.ts`.
+
 ## 2026-09-20 - Skill assets embedded in a compiled binary are read without a descriptor (senpi#1852)
 
 ### What changed
