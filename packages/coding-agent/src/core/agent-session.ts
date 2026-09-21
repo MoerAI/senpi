@@ -51,6 +51,7 @@ import type {
 	SimpleStreamOptions,
 	TextContent,
 	Usage,
+	UserMessage,
 } from "@earendil-works/pi-ai/compat";
 import {
 	cleanupSessionResources,
@@ -118,6 +119,12 @@ import {
 	buildEditedAssistantMessage,
 	SessionStreamingError,
 } from "./edited-assistant-message.ts";
+import {
+	assertExpectedUserLeaf,
+	buildEditedUserMessage,
+	UserEditError,
+	userTextEquals,
+} from "./edited-user-message.ts";
 import { areExperimentalFeaturesEnabled } from "./experimental.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
@@ -700,6 +707,8 @@ export interface ExtensionBindings {
 }
 
 export interface TreeNavigationOptions {
+	/** navigateTree only: resume the exact entry; select (default) puts user/custom text in the editor. */
+	intent?: "select" | "resume";
 	summarize?: boolean;
 	customInstructions?: string;
 	replaceInstructions?: boolean;
@@ -718,6 +727,9 @@ export interface AssistantEditResult {
 	/** Id of the appended edited assistant entry. */
 	entryId?: string;
 }
+
+/** Result of {@link AgentSession.editUserMessage}; the edited-assistant shape, field for field. */
+export type UserEditResult = AssistantEditResult;
 
 /** Options for AgentSession.prompt() */
 export type PromptDisposition = "handled" | "queued" | "started";
@@ -9004,6 +9016,7 @@ export class AgentSession {
 	 * Unlike fork() which creates a new session file, this stays in the same file.
 	 *
 	 * @param targetId The entry ID to navigate to
+	 * @param options.intent Select for retry (default), or resume the exact entry without editor text
 	 * @param options.summarize Whether user wants to summarize abandoned branch
 	 * @param options.customInstructions Custom instructions for summarizer
 	 * @param options.replaceInstructions If true, customInstructions replaces the default prompt
@@ -9053,10 +9066,40 @@ export class AgentSession {
 		return this._navigateTree(entryId, options, replacement);
 	}
 
+	/**
+	 * Replace a prompt with an edited copy. The leaf moves to the target's parent and the edited
+	 * prompt is appended there as the new leaf, so the original and everything after it are
+	 * abandoned exactly like a tree navigation - this is the `/tree` selection rule of
+	 * `docs/sessions.md`, with the edited text written into the session instead of into an editor.
+	 * No turn starts: the new leaf is a prompt with no reply until a caller runs one. Unchanged
+	 * text appends nothing.
+	 */
+	async editUserMessage(entryId: string, text: string, options: TreeNavigationOptions = {}): Promise<UserEditResult> {
+		if (this.isStreaming) {
+			throw new SessionStreamingError();
+		}
+		// Stale tokens fail before the unchanged short-circuit: a stale window never learns "unchanged".
+		// `_navigateTree` re-checks the same token; nothing awaits in between, so the two agree.
+		assertExpectedUserLeaf(options.expectedLeafId, this.sessionManager.getLeafId());
+		const targetEntry = this.sessionManager.getEntry(entryId);
+		if (!targetEntry) {
+			throw new UserEditError("not-found", `Entry ${entryId} not found`);
+		}
+		if (targetEntry.type !== "message" || targetEntry.message.role !== "user") {
+			throw new UserEditError("not-user", `Entry ${entryId} is not a user message`);
+		}
+		// Build first so an empty replacement is rejected even when the original carries no text.
+		const replacement = buildEditedUserMessage(targetEntry.message, text);
+		if (userTextEquals(targetEntry.message, text)) {
+			return { cancelled: false, unchanged: true };
+		}
+		return this._navigateTree(entryId, options, replacement);
+	}
+
 	private async _navigateTree(
 		targetId: string,
 		options: TreeNavigationOptions,
-		replacement?: AssistantMessage,
+		replacement?: AssistantMessage | UserMessage,
 	): Promise<AssistantEditResult> {
 		if (this.isStreaming) {
 			throw new SessionStreamingError();
@@ -9071,11 +9114,6 @@ export class AgentSession {
 		// Stale tokens fail even for a would-be no-op, before any extension hears about the navigation.
 		assertExpectedLeaf(options.expectedLeafId, oldLeafId);
 
-		// No-op if already at target (a replacement of the leaf itself still has work to do)
-		if (targetId === oldLeafId && !replacement) {
-			return { cancelled: false };
-		}
-
 		// Model required for summarization
 		if (options.summarize && !this.model) {
 			throw new Error("No model available for summarization");
@@ -9083,7 +9121,7 @@ export class AgentSession {
 
 		const targetEntry = this.sessionManager.getEntry(targetId);
 		if (!targetEntry) {
-			throw new Error(`Entry ${targetId} not found`);
+			throw new AssistantEditError("not-found", `Entry ${targetId} not found`);
 		}
 
 		// Collect entries to summarize (from old leaf to common ancestor)
@@ -9193,13 +9231,19 @@ export class AgentSession {
 				summaryUsage = extensionSummary.usage;
 			}
 
-			// Determine the new leaf position based on target type
+			// Determine the new leaf position based on intent and target type.
+			// Message edits keep their replacement semantics regardless of navigation-only options.
+			const resume = options.intent === "resume" && !replacement;
 			let newLeafId: string | null;
 			let editorText: string | undefined;
 
 			if (replacement) {
-				// Edited assistant message: leaf = parent, the edited copy is appended below
+				// Edited message (assistant or user): leaf = parent, the edited copy is appended below.
+				// A user target keeps no editorText: its text is written into the session, not an editor.
 				newLeafId = targetEntry.parentId;
+			} else if (resume) {
+				// Exact branch resumption never selects a prompt for editing, whatever its role.
+				newLeafId = targetId;
 			} else if (targetEntry.type === "message" && targetEntry.message.role === "user") {
 				// User message: leaf = parent (null if root), text goes to editor
 				newLeafId = targetEntry.parentId;
@@ -9246,6 +9290,11 @@ export class AgentSession {
 				this.sessionManager.appendLabelChange(editedEntryId ?? targetId, label);
 			}
 
+			// Keep generated summary/label entries in the tree, not at the resumed conversation's tail.
+			if (resume && (summaryText || label)) {
+				this.sessionManager.branch(targetId);
+			}
+
 			// Update agent state (preserving exact messages still awaiting persistence)
 			this._restoreAgentMessagesFromSession();
 			this._delegatedCompactionKey = undefined;
@@ -9260,7 +9309,12 @@ export class AgentSession {
 				fromExtension: summaryText ? fromExtension : undefined,
 			});
 
-			// Emit to custom tools
+			// Lifecycle handlers may append metadata too. Preserve it without changing an exact resume.
+			if (resume && this.sessionManager.getLeafId() !== targetId) {
+				this.sessionManager.branch(targetId);
+				this._restoreAgentMessagesFromSession();
+				this._incrementMessageRevision();
+			}
 
 			return { editorText, cancelled: false, summaryEntry, entryId: editedEntryId };
 		} finally {

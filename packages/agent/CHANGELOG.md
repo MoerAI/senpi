@@ -8,6 +8,32 @@
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+## [2026.9.21-2] - 2026-09-21
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- Updated the test runner to Vitest 5.0.1 and V8 coverage to @vitest/coverage-v8 5.0.1, and migrated session timing benchmarks to the new benchmark API. ([#1895](https://github.com/code-yeongyu/senpi/issues/1895))
+
+### Fixed
+
+### Removed
+
+## [2026.9.21] - 2026-09-21
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
 - Updated the bundled dependencies: typebox 1.3.27 -> 1.3.34, ignore 7.0.8 -> 7.0.9 and yaml 2.9.0 -> 2.9.1. ([#1895](https://github.com/code-yeongyu/senpi/issues/1895))
 
 ### Fixed

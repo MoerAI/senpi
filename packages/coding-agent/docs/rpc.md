@@ -207,7 +207,13 @@ are what this decision encodes; the other two are what a client must not undo el
   `ensureHost` records a `writer: { pid, startTime }` stamp in its pidfile and stops the host it names only when
   that stamp is this process (the start time is what keeps a recycled pid from inheriting the right). A pidfile
   written by anyone else fails the ensure with `HostEnsureRefusedError { reason: "foreign_writer" }` and the host
-  keeps running.
+  keeps running. That refusal is about signalling, so it holds only while something still accepts connections at
+  the public path: a registration that names a live process whose entry is GONE (it was replaced by another socket
+  and the replacement later exited) or whose entry nobody listens behind (a dead listener left it, a successor's
+  rename never landed) describes a generation nobody can reach, and binding a fresh generation to the free path
+  touches nothing of it. The ensure then starts one beside it, numbered after the stranded generation, which
+  keeps its registration until it exits; refusing there locked every client out until that process happened to
+  end (#1936). A named pipe has no entry to lose, so win32 keeps refusing.
 - **I2 - compatibility is protocol version + capabilities, never semver equality.** An ordinal that cannot be
   compared (a build without git metadata, a host that reports none) is EQUAL, and since a handoff requires
   STRICTLY greater, such a pair attaches instead of upgrading.
@@ -238,10 +244,11 @@ client's sessions. A GENERATION HANDOFF replaces the process while its sessions 
    running host keeps serving.
 3. `handoffHost` then registers the successor (its own `generations/<instanceId>/host.pid`, the pointer
    moved onto it, and `settings.json { socket, generation }`) and sends
-   the predecessor SIGUSR1 = DRAIN: stop accepting, keep every connection already proxied, park each
-   retained session as soon as its turn settles, and exit through the ordinary idle path. Attached clients
-   see `session_closed { reason: "handoff_parked" }` for a parked session and reopen it with
-   `open_session { sessionPath }`.
+   the predecessor SIGUSR1 = DRAIN: stop accepting, announce `host_superseded` to every connection,
+   park attached and unattached sessions as their turns and requests settle, then exit independently of
+   connection occupancy. Clients see `session_closed { reason: "handoff_parked", sessionPath }` before
+   their connection closes and reopen with `open_session { sessionPath }` on the successor. Losing
+   ownership of the public socket triggers the same sequence even if SIGUSR1 never arrives.
 
 Two guards decide whether a handoff is attempted at all, and both fail closed:
 
@@ -485,7 +492,7 @@ exposing session content. The one exception is `session_closed` and `session_par
 `kind: "worker"`: they are delivered only to
 the connections attached to that session, so machine-driven work neither appears in nor disappears from a client that never
 asked for it. Every other lifecycle record, and every record of an `interactive` session, keeps today's broadcast. Host-level
-records (`host_stalled`, `host_memory_pressure`) are broadcast the same way and describe the host process rather than a
+records (`host_superseded`, `host_stalled`, `host_memory_pressure`) are broadcast the same way and describe the host process rather than a
 session. Correlated responses and dialog extension UI
 requests (select, confirm, input, and editor) are requester-only; other extension UI state records go to the session's
 attached connections. To observe a foreign session, open it by its existing
@@ -599,6 +606,48 @@ internal directory. The supervisor also exports `SENPI_RPC_HOST_WATCH_PPID` as a
 set only by the supervisor: a host started any other way (plain `senpi --mode rpc --listen …`, embedders, hand-started
 hosts) sees neither variable and is unaffected. A host whose supervisor is alive is never touched by this binding.
 
+### Supersession lifecycle: `host_superseded`
+
+Before parking for a generation handoff, the old host sends every connected client one unsolicited record:
+
+```json
+{"type":"host_superseded","instanceId":"old-host-uuid","generation":0,"successor":{"socket":"/tmp/agent/rpc.sock"}}
+```
+
+`instanceId` and `generation` identify the OLD host, matching its `get_protocol_info` response. `successor.socket`
+identifies the public socket, never the supervisor's private hop. `successor` is `null` when a drain is requested
+without a known replacement. This record has no request id or session handle; older clients can ignore it.
+
+1. The announcement is queued on every connection before handoff parking changes any session.
+2. Every parkable session, attached or unattached, is parked immediately. A session is **parkable** when no agent
+   run, bash/tool execution, compaction, queued session work, or in-flight host request remains. Accepted opens,
+   binding creation, close requests, and steer delivery must finish. This is the ordinary busy predicate with
+   **durable wake-source holds excluded**: persistent monitors, scheduled continuations and goal-loop holds do not
+   pin an old generation. They resume from the persisted session when reopened, as after a restart. Ordinary idle
+   eviction retains its broader activity predicate, including all wake sources.
+3. Active sessions keep serving their existing connections and park when their turns and requests settle. Each
+   released handle emits `session_closed { sessionId, reason: "handoff_parked", sessionPath }` after releasing its
+   file. This is not a session deletion: reopen `sessionPath` on the successor to obtain a new routing handle.
+   That `sessionPath` is the CANONICAL path the host reserved the file under, which is not necessarily the string
+   the client passed to `open_session` (a scratch dir under `/var/...` on macOS is reported as `/private/var/...`).
+   A client matching the record against its own stored path must canonicalize before comparing; reopening with
+   either spelling resolves to the same reservation.
+   The connection closes after its last attached session parks; a connection shared with another active session
+   stays open until that session also settles. A command racing parking on the old connection is either served
+   or answered by that terminal record and close, never `unknown_session` for the parked handle. New opens on a
+   draining connection are refused with `host_draining`.
+4. The **supervisor** starts `SENPI_RPC_HANDOFF_GRACE_MS` at supersession (default **600000 ms / 10 minutes**).
+   This is a soft grace, not an abort deadline or a delay before parking. At expiry it reports outstanding work
+   and requests another drain pass. Sessions still mid-turn or handling requests remain alive even beyond grace;
+   no turn is cut short. Parkable sessions never wait for grace. A bare socket host has no supervisor grace timer,
+   but follows the same announce/park/settle sequence.
+5. Once every session has parked and its terminal records have drained, the generation exits even if an observer
+   or client never voluntarily disconnects. Neither the normal idle timeout nor persistent-host mode can pin it.
+
+A client may react to `host_superseded` early, but the old generation retains each file until its work settles;
+`session_path_in_use` on the successor remains a retryable response until parking releases that claim. A client
+that ignores the announcement still receives the terminal record and connection close.
+
 ### Shared host occupancy (idle eviction, retention, empty-host exit)
 
 **The daemon does not cap sessions.** On the in-process runtime - the default for a `--listen` socket host, i.e. the
@@ -619,8 +668,8 @@ What the host does enforce are lifecycle windows, and they only ever return memo
   `session_parked { sessionId, sessionPath }` and there is no `close_session` response, because nothing closed the session -
   the routing handle was released while the session itself stays on disk and reopens with `open_session { sessionPath }`
   (as a NEW handle). A client that does not know `session_parked` ignores it and learns the handle is gone from its next
-  command's `unknown_session`. A GENERATION HANDOFF parks the same sessions for the same reason, but names itself in
-  the record it emits: `session_closed { sessionId, reason: "handoff_parked" }`, so a client can tell "the host handed
+  command's `unknown_session`. A GENERATION HANDOFF also parks attached sessions, using the distinct activity
+  predicate below, and emits `session_closed { sessionId, reason: "handoff_parked", sessionPath }`, so a client can tell "the host handed
   over, reopen by path" from "this session ended". An explicit `close_session` is `reason: "client_close"`; the host
   process exiting is `reason: "host_shutdown"` (even for a retained session - the process is going away, so this is not
   a park). `reason` is optional on the wire; a client that does not know a
@@ -836,6 +885,7 @@ In the response `error` field, machine-matchable:
 - `session_reservation_limit` (this worker already holds 64 live session paths; the open or session replacement was refused without disturbing the existing session)
 - `missing_session_id` (session-scoped command without `sessionId` in multi mode)
 - `multi_session_disabled` (`open_session` in classic mode)
+- `host_draining` (`open_session` on a connection whose generation is parking for a handoff; the successor already owns the public path, so re-resolve it and open there rather than retrying this connection)
 - `invalid_path` (relative `sessionPath`/`cwd`)
 - `open_failed: <detail>`
 - `invalid_session_context: <detail>` (`open_session.context` past a documented cap: more than 32 keys, a key that does not match `^[a-z][a-z0-9_]*$`, a non-string or >16 KiB value, or more than 32 KiB of JSON in total; the detail names the cap and its byte budget)
@@ -1642,6 +1692,80 @@ If an extension cancelled the fork:
 }
 ```
 
+#### navigate_tree
+
+Move the session leaf to another point in the tree without creating a new file: the RPC equivalent of `/tree` (see [Branching with `/tree`](sessions.md#branching-with-tree)). Nothing is deleted; the branch you leave stays in the file. Emits `session_before_tree` (cancellable) and `session_tree`.
+
+The target is addressed in one of two ways. Send exactly one of them; a request with both, or neither, is refused.
+
+**`entryId`: select like the TUI by default.** Unless `intent: "resume"` is supplied, the host applies the `/tree` selection rule from [Selection Behavior](sessions.md#selection-behavior), so a client never computes a parent id:
+
+- A user or custom message moves the leaf to that entry's **parent** and returns the entry's text as `editorText`, the text the TUI would put back in the editor for you to edit and resubmit.
+- Any other kind (assistant, tool, compaction, ...) moves the leaf **to** the entry. No `editorText`.
+- The root user message resets the leaf to an empty conversation. `leafId` is `null` and `editorText` carries the original prompt.
+
+```json
+{"type": "navigate_tree", "entryId": "u2", "expectedLeafId": "a3"}
+```
+
+Response:
+
+```json
+{"type": "response", "command": "navigate_tree", "success": true, "data": {"outcome": "navigated", "leafId": "a1", "editorText": "Let's try approach A..."}}
+```
+
+Other outcome: `{"outcome": "cancelled", "leafId": "...", "aborted": true}` when an extension cancelled the navigation or the summary was aborted. With a summary, `summaryEntryId` names the new `branch_summary` entry.
+
+**`targetId`: select with the legacy response.** The original spelling, kept for the TUI and every shipped client. It applies the same selection rule as `entryId`: user/custom messages select their parent and return `editorText`, other entries select themselves, and the root user message resets the leaf to `null`. The difference is the response shape, not where selection moves the leaf: `targetId` answers the legacy payload, while `entryId` answers the richer `outcome`-tagged payload.
+
+```json
+{"type": "navigate_tree", "targetId": "u2", "expectedLeafId": "a3"}
+```
+
+Response:
+
+```json
+{"type": "response", "command": "navigate_tree", "success": true, "data": {"cancelled": false, "leafId": "a1", "editorText": "Let's try approach A..."}}
+```
+
+`editorText`, `aborted` and `summaryEntry` (the full `branch_summary` entry) appear on this shape when they apply. With either spelling, selecting a user/custom message that is already the current leaf still moves to its parent and returns its text. In particular, retrying the most recent prompt removes it from the active context before resubmission; selecting a root prompt leaves an empty conversation.
+
+**`intent: "resume"`: resume the exact leaf.** With either address, this explicitly moves the leaf **to the requested entry itself**, including a user, root user, or custom message. No `editorText` is returned: no prompt is being selected for editing. Use this to switch back to an edit-only branch whose tail is the edited user message. Resuming the current leaf keeps it in place. No turn starts, no entry is copied, and the abandoned branch remains intact. The address still determines only the response shape.
+
+```json
+{"type": "navigate_tree", "entryId": "edited-u2", "intent": "resume", "expectedLeafId": "a3"}
+```
+
+Response:
+
+```json
+{"type": "response", "command": "navigate_tree", "success": true, "data": {"outcome": "navigated", "leafId": "edited-u2"}}
+```
+
+Using `targetId` with the same intent instead returns `{"cancelled": false, "leafId": "edited-u2"}`. Omitting `intent`, or specifying `"select"`, preserves the released retry-selection behavior and payloads described above; changing address alone never requests resumption.
+
+Resumption uses the same core navigation lifecycle, cancellation, streaming guard, and summary generation. When `summarize` or `label` is supplied, their entries are still recorded, but the active leaf stays on the requested entry rather than the generated metadata. A summary is stored as a child of that entry and returned through `summaryEntryId` / `summaryEntry`; it is not part of the resumed active context. Labels remain visible on the tree. Metadata appended by lifecycle handlers is preserved too, without replacing the exact leaf when navigation returns.
+
+Options, common to both spellings:
+
+- `intent` (optional): `"select"` (default) or `"resume"`. Any other value is refused before navigation rather than silently selecting a prompt.
+- `expectedLeafId` (optional): the leaf you last observed (from `get_tree`, `get_entries`, or the `entry_appended` stream). Forwarded unchanged for either intent, including an empty string. When the session's current leaf differs, the command fails with `errorCode: "stale_leaf"` before anything is written, so a client with a stale view can't move a conversation another client already moved.
+- `summarize` (optional): summarize the abandoned branch and attach the summary at the new position, as described under [Branch Summaries](sessions.md#branch-summaries). Requires a model.
+- `customInstructions` (optional): extra guidance for the summary. With `replaceInstructions: true` it replaces the default summarization prompt instead of extending it.
+- `label` (optional): a label to set on the new position.
+
+`leafId` is present on every success payload of either spelling and is `null` when the session was left on an empty conversation. Read it back rather than predicting the leaf: one round trip resynchronizes a client.
+
+Navigation failures for either address and either intent carry a typed `errorCode`:
+
+| `errorCode` | Meaning |
+|-------------|---------|
+| `streaming` | A response is in flight; retry once the turn ends |
+| `not_found` | No entry with that id |
+| `stale_leaf` | `expectedLeafId` no longer matches the session leaf |
+
+The human-readable `error` text is also retained for older clients. Malformed addressing or intent is refused with `error` text and the current `errorData.leafId`, without a typed `errorCode`.
+
 #### edit_assistant_message
 
 Replace an assistant response with an edited copy. The session leaf moves to the target entry's parent and the edited copy is appended there as the new leaf, so the original response and everything after it stay in the file on an abandoned branch. The copy keeps only the new text (tool calls and thinking blocks are dropped; `stopReason` is `stop`) and preserves the original's model, provider and usage. Emits `session_before_tree` (cancellable) and `session_tree` like tree navigation.
@@ -1672,6 +1796,41 @@ Failures carry a typed `errorCode`:
 | `stale_leaf` | `expectedLeafId` no longer matches the session leaf |
 
 Message identity: RPC mode emits `entry_appended` right after every persisted `message_end`, carrying the full session entry (`entry.id`, `entry.parentId`, `entry.message`). Clients should record `entry.id` from that stream as the identity of each rendered message instead of inferring it by position, and pass it as `entryId` here.
+
+#### edit_user_message
+
+Replace a user message with an edited copy, in place. This is the `/tree` flow for selecting a prompt (see [Selection Behavior](sessions.md#selection-behavior)) with the edited text written into the session instead of into an editor: the leaf moves to the target's parent and the edited copy is appended there as the new leaf. The original prompt and every reply after it stay in the file on an abandoned branch. Nothing is deleted.
+
+The copy keeps the new text, trimmed, and carries every non-text block of the original (images, attachments) over verbatim. Those are the user's own input and the model still needs them.
+
+No turn starts. After the call the active tail is a prompt with no reply; send `prompt`, or continue however your client normally runs a turn, when you want one. Emits `session_before_tree` (cancellable) and `session_tree` like `navigate_tree`.
+
+```json
+{"type": "edit_user_message", "entryId": "u2", "text": "Let's try approach C instead.", "expectedLeafId": "a3"}
+```
+
+- `expectedLeafId` (optional): the leaf you last observed (from `get_tree`, `get_entries`, or the `entry_appended` stream). When the session's current leaf differs, the command fails with `errorCode: "stale_leaf"` before anything is written. The check runs before the unchanged comparison, so identical text still reports `stale_leaf` from a stale client.
+- `summarize` / `customInstructions` (optional): summarize the abandoned branch like `navigate_tree`. With a summary, the edited copy's parent is the new `branch_summary` entry (its id is returned as `summaryEntryId`).
+
+Response:
+
+```json
+{"type": "response", "command": "edit_user_message", "success": true, "data": {"outcome": "edited", "entry": {"type": "message", "id": "u4", "parentId": "a1", "message": {"role": "user", "content": [{"type": "text", "text": "Let's try approach C instead."}]}}, "leafId": "u4"}}
+```
+
+Other outcomes: `{"outcome": "unchanged", "leafId": "..."}` when the text matches the original (nothing written) and `{"outcome": "cancelled", "leafId": "...", "aborted": true}` when an extension cancelled the navigation or the summary was aborted. `leafId` is reported on every outcome and is `null` when the session was left on an empty conversation.
+
+Failures carry a typed `errorCode`:
+
+| `errorCode` | Meaning |
+|-------------|---------|
+| `streaming` | A response is in flight; retry once the turn ends |
+| `not_found` | No entry with that id |
+| `not_user` | The entry is not a user message |
+| `empty` | The replacement text is blank |
+| `stale_leaf` | `expectedLeafId` no longer matches the session leaf |
+
+Message identity: as with `edit_assistant_message`, record `entry.id` from the `entry_appended` stream as the identity of each rendered message and pass it as `entryId` here. Don't infer it by position; after an edit the positions on screen no longer match the file.
 
 #### clone
 

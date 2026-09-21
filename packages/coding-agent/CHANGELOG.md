@@ -6,6 +6,48 @@
 
 ### Added
 
+- `agent()` forwards `isolated`, `apply`, and `merge` when the task host advertises isolation. Hosts that do not still drop those options with the existing warning. A foreground call whose isolation did not apply now raises instead of looking successful; with `handle: true` the isolation result arrives on completion. ([#1910](https://github.com/code-yeongyu/senpi/issues/1910))
+
+### Changed
+
+### Fixed
+
+- `senpi host ensure` no longer refuses `foreign_writer` forever when the registered generation is still alive but nothing accepts connections at its public socket path - the entry is gone, or a dead listener left it behind. Nothing serves that path, so a fresh generation is started beside the stranded one, which is never signalled and keeps its registration until it exits. Before, a superseded host draining its last session locked every other client out of the endpoint until it happened to end. ([#1936](https://github.com/code-yeongyu/senpi/issues/1936))
+
+### Removed
+
+## [2026.9.21-2] - 2026-09-21
+
+### Breaking Changes
+
+### Added
+
+- `navigate_tree` accepts `intent: "resume"` to resume a branch at exactly the requested entry, including an unanswered edited user message, without returning `editorText` or starting a turn. Both `entryId` and `targetId` retain their released retry-selection behavior by default; leaf-token checks, cancellation and lifecycle remain shared. ([#1926](https://github.com/code-yeongyu/senpi/issues/1926))
+- `providers.<id>.maxConcurrency` caps the number of streaming requests one provider serves at once. A provider that rate-limits on concurrent connections - or a local runtime with a small worker pool - turned burst fan-out into 429s and refused sockets, and there was no way to express "at most N at once" for a single provider. Set the key and extra requests wait in line instead of failing; unset keeps today's behaviour, and no provider ships a default. ([#1909](https://github.com/code-yeongyu/senpi/issues/1909))
+
+### Changed
+
+- The ask-user builtin's `schema.ts` re-exports `QuestionRequest` and `QuestionResponse` from the public extension API (`core/extensions/types.ts`) instead of declaring a second, identical copy, so the question tool, the TUI dialog and the RPC bridge share one contract. Type-only; no runtime change. ([#1931](https://github.com/code-yeongyu/senpi/issues/1931))
+- Sessions in the in-process daemon now share connections to the same HTTP or session-independent stdio MCP server. Closing one session leaves other sessions' tools available; catalogs and elicitation stay session-owned. Servers with cwd/session-dependent arguments or environment, including ast-grep, remain separate. Standalone and worker sessions are unchanged. ([#1921](https://github.com/code-yeongyu/senpi/issues/1921))
+
+- Updated the test runner to Vitest 5.0.1. ([#1895](https://github.com/code-yeongyu/senpi/issues/1895))
+
+### Fixed
+
+- An upgraded RPC host now tells attached clients `host_superseded`, parks their sessions when current turns and requests finish, and closes their connections so they can reopen by session path on the new host. Idle sessions and persistent monitors no longer keep the old generation in memory indefinitely. The handoff grace defaults to 10 minutes and never interrupts a running turn. ([#1933](https://github.com/code-yeongyu/senpi/issues/1933))
+- The Bun extension importer reads `es-module-lexer` 3's tagged-union import records, so extensions load unchanged after the lexer upgrade to 3.0.2. ([#1895](https://github.com/code-yeongyu/senpi/issues/1895))
+- RPC `navigate_tree` now returns the documented `errorCode: "not_found"` when its target entry is missing, instead of an untyped error. The refusal leaves the session unchanged. ([#1892](https://github.com/code-yeongyu/senpi/issues/1892))
+
+### Removed
+
+## [2026.9.21] - 2026-09-21
+
+### Breaking Changes
+
+### Added
+
+- RPC clients can edit a user message in place. `edit_user_message` moves the session leaf to the prompt's parent and appends the edited prompt there as a new branch, the same thing `/tree` does when you select a prompt, except the text lands in the session instead of the editor. The original and every reply after it stay in the file; nothing is deleted and no turn starts. Images and other attachments on the original carry over. `navigate_tree` now also accepts `entryId`, which applies the `/tree` selection rule on the host (a user message selects its parent and returns `editorText`; the root prompt resets to an empty conversation) so a client never computes a parent id. Both commands take `expectedLeafId` and refuse with `stale_leaf` when another client moved the conversation first, and every response reports the resulting `leafId`. Documented under `docs/rpc.md`, with a test that fails when a new RPC command ships without a section there.
+
 ### Changed
 
 - Updated the bundled dependencies: @anthropic-ai/sdk 0.123.0 -> 0.127.0, @anthropic-ai/claude-agent-sdk 0.3.259 -> 0.3.278, @aws-sdk/client-bedrock-runtime 3.1127.0 -> 3.1136.0, @bufbuild/protobuf 2.14.0 -> 2.15.0, @smithy/types 4.17.2 -> 4.18.0, zod 4.4.3 -> 4.6.5, typebox 1.3.27 -> 1.3.34, ignore 7.0.8 -> 7.0.9, linkedom 0.18.12 -> 0.18.13, marked 18.0.11 -> 18.0.13, picomatch 4.0.5 -> 4.0.7, yaml 2.9.0 -> 2.9.1 and get-east-asian-width 1.6.0 -> 1.7.0. The transitive copies of fast-uri, hono, ip-address, qs, express-rate-limit, brace-expansion and undici carrying published advisories are pinned past them, so `npm audit` and `bun audit` both report nothing. ([#1895](https://github.com/code-yeongyu/senpi/issues/1895))

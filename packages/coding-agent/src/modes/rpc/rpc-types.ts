@@ -109,15 +109,40 @@ type RpcSessionCommand =
 	| { id?: string; type: "abort_bash" }
 	| { id?: string; type: "cleanup_bash_output"; path: string }
 	| { id?: string; type: "set_label"; entryId: string; label?: string }
-	| {
+	| ({
 			id?: string;
 			type: "navigate_tree";
-			targetId: string;
+			/** Select for retry (default), or resume the exact entry as leaf with no editorText. */
+			intent?: "select" | "resume";
+			/** Leaf the client last observed; the navigation is refused with `stale_leaf` when the session moved on. */
+			expectedLeafId?: string;
 			summarize?: boolean;
 			customInstructions?: string;
 			replaceInstructions?: boolean;
 			label?: string;
-	  }
+	  } & (
+			| {
+					/**
+					 * Entry to navigate to. Unless intent is `resume`, the host applies the `/tree`
+					 * selection rule of `docs/sessions.md`: a user/custom target selects its PARENT and
+					 * returns `editorText`; any other kind moves the leaf TO the entry with no `editorText`;
+					 * the root user message resets the leaf to an empty conversation (`leafId: null`). A
+					 * client therefore never computes a parent id. Answers `NavigateTreeResult`.
+					 */
+					entryId: string;
+					targetId?: never;
+			  }
+			| {
+					/**
+					 * Original spelling, kept for the TUI and shipped clients. By default applies the selection
+					 * rule as `entryId`: user/custom targets select their PARENT and return `editorText`,
+					 * other targets select themselves, and a root user target yields `leafId: null`.
+					 * Answers the legacy `{ cancelled, leafId, editorText? }` payload. New clients use `entryId`.
+					 */
+					targetId: string;
+					entryId?: never;
+			  }
+	  ))
 
 	// Session
 	| { id?: string; type: "get_session_stats" }
@@ -128,6 +153,16 @@ type RpcSessionCommand =
 	| {
 			id?: string;
 			type: "edit_assistant_message";
+			entryId: string;
+			text: string;
+			/** Leaf the client last observed; the edit is refused with `stale_leaf` when the session moved on. */
+			expectedLeafId?: string;
+			summarize?: boolean;
+			customInstructions?: string;
+	  }
+	| {
+			id?: string;
+			type: "edit_user_message";
 			entryId: string;
 			text: string;
 			/** Leaf the client last observed; the edit is refused with `stale_leaf` when the session moved on. */
@@ -196,10 +231,14 @@ export const RPC_ERROR_INVALID_LAUNCH_PROFILE = "invalid_launch_profile";
  * to a live path and interactive opens are never refused for memory.
  */
 export const RPC_ERROR_HOST_MEMORY_PRESSURE = "host_memory_pressure";
-// edit_assistant_message failures (mirror AssistantEditError.code / SessionStreamingError.code)
+// Message-edit and tree-navigation failures (mirror AssistantEditError.code / UserEditError.code /
+// SessionStreamingError.code). Every code lives in the one shared RpcErrorCode union below: the
+// failure response is a single catch-all member, so a command's codes are a documented SUBSET
+// rather than a per-command type.
 export const RPC_ERROR_STREAMING = "streaming";
 export const RPC_ERROR_ENTRY_NOT_FOUND = "not_found";
 export const RPC_ERROR_NOT_ASSISTANT = "not_assistant";
+export const RPC_ERROR_NOT_USER = "not_user";
 export const RPC_ERROR_EMPTY_TEXT = "empty";
 export const RPC_ERROR_STALE_LEAF = "stale_leaf";
 
@@ -220,6 +259,7 @@ export type RpcErrorCode =
 	| typeof RPC_ERROR_STREAMING
 	| typeof RPC_ERROR_ENTRY_NOT_FOUND
 	| typeof RPC_ERROR_NOT_ASSISTANT
+	| typeof RPC_ERROR_NOT_USER
 	| typeof RPC_ERROR_EMPTY_TEXT
 	| typeof RPC_ERROR_STALE_LEAF;
 
@@ -604,7 +644,20 @@ export type RpcResponse =
 			type: "response";
 			command: "navigate_tree";
 			success: true;
-			data: { cancelled: boolean; editorText?: string; aborted?: boolean; summaryEntry?: unknown };
+			/**
+			 * `NavigateTreeResult` answers an `entryId` navigation; the shipped shape answers a
+			 * `targetId` one. Both report `leafId` - the leaf the session was left on, `null` for an
+			 * empty conversation - so a client resynchronizes in one round trip on either spelling.
+			 */
+			data:
+				| NavigateTreeResult
+				| {
+						cancelled: boolean;
+						leafId: string | null;
+						editorText?: string;
+						aborted?: boolean;
+						summaryEntry?: unknown;
+				  };
 	  }
 	| { id?: string; type: "response"; command: "abort_bash"; success: true }
 
@@ -620,6 +673,13 @@ export type RpcResponse =
 			command: "edit_assistant_message";
 			success: true;
 			data: EditAssistantMessageResult;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "edit_user_message";
+			success: true;
+			data: EditUserMessageResult;
 	  }
 	| { id?: string; type: "response"; command: "clone"; success: true; data: { cancelled: boolean } }
 	| {
@@ -725,6 +785,26 @@ export type RpcResponse =
 export type EditAssistantMessageResult =
 	| { outcome: "edited"; entry: SessionMessageEntry; leafId: string; summaryEntryId?: string }
 	| { outcome: "unchanged"; leafId: string | null }
+	| { outcome: "cancelled"; leafId: string | null; aborted?: boolean };
+
+/**
+ * Success payload of `edit_user_message`, mirroring `EditAssistantMessageResult`. `leafId` is the
+ * session leaf after the call and is reported on EVERY outcome so a client resynchronizes in one
+ * round trip; it is `null` when the call left the session on an empty conversation.
+ */
+export type EditUserMessageResult =
+	| { outcome: "edited"; entry: SessionMessageEntry; leafId: string; summaryEntryId?: string }
+	| { outcome: "unchanged"; leafId: string | null }
+	| { outcome: "cancelled"; leafId: string | null; aborted?: boolean };
+
+/**
+ * Success payload of an `entryId`-addressed `navigate_tree`. `editorText` is present when the
+ * intent is selection and the target is a user/custom message, as in the TUI editor. Resumption
+ * never returns editor text. `leafId` is `null` when selection reset the session to an empty
+ * conversation, which is what selecting the root user message does.
+ */
+export type NavigateTreeResult =
+	| { outcome: "navigated"; leafId: string | null; editorText?: string; summaryEntryId?: string }
 	| { outcome: "cancelled"; leafId: string | null; aborted?: boolean };
 
 // ============================================================================
@@ -999,7 +1079,20 @@ export type RpcSessionClosedEvent = {
 	type: "session_closed";
 	sessionId: string;
 	reason?: RpcSessionClosedReason;
+	/** File released by handoff parking; reopen it on the successor. */
+	sessionPath?: string;
 };
+
+/** Sent once to every connection before this generation starts parking for a handoff. */
+export interface RpcHostSupersededEvent {
+	type: "host_superseded";
+	instanceId: string;
+	generation: number;
+	/** Public endpoint of the successor, or null for a drain without a known successor. */
+	successor: { socket: string } | null;
+}
+
+export type RpcHostLifecycleEvent = RpcHostSupersededEvent | RpcHostStalledEvent | RpcHostMemoryPressureEvent;
 
 /** Emitted after the loaded skill, extension, or MCP inventory changes. */
 export interface RpcLoadedSurfacesChangedEvent {

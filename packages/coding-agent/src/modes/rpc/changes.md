@@ -1,3 +1,104 @@
+## 2026-09-21 - Start a generation beside a stranded foreign one (#1936)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/host-ensure.ts`: in the `start` branch of `ensureHostLocked`, a record written by another process refuses `foreign_writer` only while something still ACCEPTS connections at the public path (`publicEndpointAccepts`: a missing entry and an entry nobody listens behind both read as free; win32 named pipes, abstract sockets and an entry that cannot be stat'ed always read as owned; an accepted-but-silent socket is owned, exactly as `host_busy` treats it). A live foreign generation whose endpoint accepts nothing is left running and `startHost` binds a new generation numbered after it: `startHost` takes a `generation` argument that flows into the daemon settings, the registration and `SENPI_RPC_HOST_GENERATION`, and appends to the daemon stderr log instead of truncating the file the stranded generation still writes. Own-writer behaviour (`host_busy`, stop-and-restart) is unchanged.
+
+### Why
+
+- `packages/coding-agent/src/modes/rpc/host-ensure.ts`: a supervisor that sees another entry over its path drains and exits only when its last session settles (#1893). Once that replacement exited and unlinked, every ensure met a silent probe, a live pid and a writer that was the ephemeral `senpi host ensure` child, and refused - one desktop lost its host for 75 minutes while nothing served the path.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/rpc/host-ensure.ts` is the daemon ensure itself; extensions run inside sessions the host serves and cannot decide whether a host may be bound.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/host-ensure.ts`: the `start` branch of `ensureHostLocked`, the `startHost` signature and `hostEnv`. Upstream has no shared daemon, so any conflict is structural.
+
+## 2026-09-21 - Announce a supersession and park attached sessions (#1933)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/rpc-types.ts`: additive `RpcHostSupersededEvent` (`host_superseded` with `instanceId`, `generation`, `successor`) in the host lifecycle record union, and an optional `sessionPath` on `session_closed` so a `handoff_parked` record names the file to reopen on the successor. No existing field changed shape.
+- `packages/coding-agent/src/modes/rpc/multi-session-host.ts`: `drainForHandoff` broadcasts `host_superseded` through the event writer before parking, exactly once per drain (a re-entered drain rescans only), and closes a connection once its last attached session parks.
+- `packages/coding-agent/src/modes/rpc/session-command-router.ts`: the drain sweep parks attached sessions too, gated by `handoff-activity.ts`; a parked handle is answered by its terminal record and close rather than `unknown_session`, and `open_session` on a draining connection is refused with the new stable code `host_draining`.
+- `packages/coding-agent/src/modes/rpc/handoff-activity.ts` (new): the handoff parkable predicate - turns and in-flight host requests block parking, durable wake-source holds do not.
+- `packages/coding-agent/src/modes/rpc/host-lifecycle.ts`: `SENPI_RPC_HANDOFF_GRACE_MS` (default 600000) soft grace that rescans and reports without aborting work; the idle ticker is suppressed while draining; proxied clients drain their final records before the socket closes.
+- `packages/coding-agent/src/modes/rpc/session-event-writer.ts`, `session-worker-client.ts`, `session-worker-protocol.ts`, `session-worker.ts`: publish the handoff predicate and flush a connection's records before it is closed, for both session runtimes.
+
+### Why
+
+- A superseded generation parked only the sessions nobody was attached to, so an attached idle client pinned the old host forever (the memory #1893's drain was meant to reclaim) and learned nothing about the handoff; its next command on a fresh connection reached the successor's empty registry and answered `unknown_session`.
+
+### Why an extension could not handle it
+
+- Supervisor signals, JSONL ordering on a shared connection, session-path reservations and the registry's parkable state are host transport internals; no extension can observe or drive them.
+
+### Expected merge conflict zones
+
+- `host-lifecycle.ts` drain/shutdown block, `multi-session-host.ts` connection accounting, `session-command-router.ts` sweep. Socket regression tests spawn real supervisors and hold a real model turn.
+
+## 2026-09-21 - Correct the legacy navigation selection comment (#1892 follow-up)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/rpc-types.ts`: the `targetId` comment now describes the same selection rule as `entryId`: user/custom targets select their parent, root-user selection yields a null leaf, and other targets select themselves. Only the response shape is legacy.
+
+### Why
+
+- `packages/coding-agent/src/modes/rpc/rpc-types.ts` still promised a verbatim leaf move, contrary to the shipped core behavior and corrected RPC documentation.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/rpc/rpc-types.ts` owns the client-facing command contract; an extension cannot correct its type comments.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/rpc-types.ts`: the `navigate_tree.targetId` comment only. No type, dispatch, response shape, or selection behavior changes.
+
+## 2026-09-21 - Exact-leaf navigation intent (#1926)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/rpc-types.ts`: additive `navigate_tree.intent: select | resume`, independent of existing addressing and response shapes.
+- `packages/coding-agent/src/modes/rpc/connection-handler.ts`: validate inbound intent and forward it and `expectedLeafId` unchanged through core navigation. Omitted intent preserves the existing options and serialized response.
+- `packages/coding-agent/src/modes/rpc/rpc-client.ts`: typed client options accept the same intent; transport already forwards those options.
+
+### Why
+
+- `packages/coding-agent/src/modes/rpc/rpc-types.ts`, `packages/coding-agent/src/modes/rpc/connection-handler.ts`, `packages/coding-agent/src/modes/rpc/rpc-client.ts`: branch resumption must preserve an unanswered user tail without redefining either released address. Real-handler and client regressions cover resumption, serialized retry payloads and stale tokens; shipping RPC/SDK docs describe the distinction.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/rpc/rpc-types.ts`, `packages/coding-agent/src/modes/rpc/connection-handler.ts`, `packages/coding-agent/src/modes/rpc/rpc-client.ts`: the wire union, JSON boundary and typed client are RPC-owned; leaf mutations must remain in core rather than an extension or transport workaround.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/rpc-types.ts`: `navigate_tree` command options/comments.
+- `packages/coding-agent/src/modes/rpc/connection-handler.ts`: `navigate_tree` validation and option forwarding only.
+- `packages/coding-agent/src/modes/rpc/rpc-client.ts`: `navigateTree` option type only.
+
+## 2026-09-21 - Own one MCP registry per in-process host (#1915)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/multi-session-host.ts` creates one registry for each in-process host.
+- `packages/coding-agent/src/modes/rpc/session-registry.ts` wraps the runtime factory once to inject the same registry on opens and session replacements.
+
+### Why
+
+- `packages/coding-agent/src/modes/rpc/multi-session-host.ts` owns the host lifetime; `packages/coding-agent/src/modes/rpc/session-registry.ts` retains that ownership across session replacement without changing attachment or parked/resumed semantics.
+
+### Why an extension could not handle it
+
+- Host construction in `packages/coding-agent/src/modes/rpc/multi-session-host.ts` and runtime-factory retention in `packages/coding-agent/src/modes/rpc/session-registry.ts` precede extension execution.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/multi-session-host.ts`: `createHostCore` in-process registry options.
+- `packages/coding-agent/src/modes/rpc/session-registry.ts`: options and constructor. Worker runtime selection and session policies are unchanged.
+
 ## 2026-09-21 - Pause periodic work on retained detach (#1902)
 
 ### What changed
@@ -16,6 +117,24 @@
 ### Expected merge conflict zones
 
 - `releaseOwnedSession` and attach-on-open. Keep eviction, worker runtimes and positive attachment counts unchanged.
+
+## 2026-09-21 - Drop the unreachable control-command guard in the session router (dead-code sweep after #1907)
+
+### What changed
+
+- `session-command-router.ts`: removed the module-level `controls` set and the `if (controls.has(command.type)) return undefined;` line in `dispatch`. Every member of that set (`get_protocol_info`, `list_sessions`, `open_session`, `close_session`) already returns from `dispatch` before that line, so the guard could never match a parsed command.
+
+### Why
+
+- Dead-code sweep over the files #1907 touched: the guard is an unreachable branch (LSP: one reference, itself). No behavior, public API or protocol table changes.
+
+### Why an extension could not handle it
+
+- The router is host-internal; extensions never see this dispatch path.
+
+### Expected merge conflict zones
+
+- LOW: the top-of-file constants and the `dispatch` tail in `session-command-router.ts`.
 
 ## 2026-09-21 — a loop stall no longer cuts live peers, teardown cannot leak a scope, and a critical host refuses new workers (#1905)
 
@@ -111,6 +230,114 @@ without the `attached` field is honored, which is what keeps a running older bui
 reclaimed from. A generation record that cannot be parsed is never pruned: an ensure may be writing
 it right now. Pinned by `test/suite/regressions/1893-superseded-generation-drain.test.ts` (real
 supervisor, socket taken over with no signal) and `1893-generation-records-and-claims.test.ts`.
+
+## 2026-09-21 - Extension user-edit binding and client leaf visibility
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/connection-handler.ts`: binds the extension user-edit action beside assistant edits and forwards navigation's `expectedLeafId` unchanged.
+- `packages/coding-agent/src/modes/rpc/rpc-client.ts`: declares `navigateTree`'s already-shipped `leafId: string | null`, accepts the concurrency token, and adds the user-edit client method needed by the interactive host proxy.
+
+### Why
+
+- `packages/coding-agent/src/modes/rpc/connection-handler.ts`: an RPC-hosted extension must have the same capability and typed core refusals as print and interactive extensions.
+- `packages/coding-agent/src/modes/rpc/rpc-client.ts`: a wire leaf that library callers cannot read is an incomplete API. The user-edit response preserves both `entry.id` (message address) and the potentially different metadata-advanced `leafId` (concurrency token).
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/rpc/connection-handler.ts` owns mode action binding.
+- `packages/coding-agent/src/modes/rpc/rpc-client.ts` owns the public client's commands and decoded return types.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/connection-handler.ts`: extension `commandContextActions` beside navigation and assistant editing; dispatch is unchanged.
+- `packages/coding-agent/src/modes/rpc/rpc-client.ts`: result imports, navigation signature, and message-edit methods.
+
+## 2026-09-21 - Dispatch user-message edits and entry-addressed tree selection
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/connection-handler.ts` dispatches `edit_user_message`
+  through the same session-owned binding as assistant edits. It projects edited, unchanged,
+  cancelled, and aborted results, maps core errors through their `.code` accessor, and includes
+  the current leaf on successes (`data.leafId`) and refusals (`errorData.leafId`).
+- `packages/coding-agent/src/modes/rpc/connection-handler.ts` replaces the temporary `entryId`
+  refusal with core tree selection and its navigated/cancelled payload. Both addressing spellings
+  forward `expectedLeafId` unchanged; both/neither addressing remain errors. The legacy
+  `targetId` call and response shape remain intact.
+- Core selection chooses the parent of user/custom entries, including a null parent at the root.
+  Contrary to the earlier type entry's description, the shipped `targetId` path also applies that
+  rule; it is not a verbatim leaf move. `docs/rpc.md` corrects that claim and explains selection of
+  the current prompt after the core early-return fix. Tests preserve the real legacy response and
+  prove that both root and non-root prompt retries resubmit without duplicating the prompt.
+
+### Why
+
+`packages/coding-agent/src/modes/rpc/connection-handler.ts` must make the already-typed edit and
+selection operations reachable and let a stale client resynchronize without another request.
+
+### Why an extension could not handle it
+
+`packages/coding-agent/src/modes/rpc/connection-handler.ts` owns protocol dispatch and the routed
+session binding; an extension cannot implement these top-level command and error envelopes.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/connection-handler.ts`: message-edit cases, tree-navigation
+  dispatch, core error imports, and error response details.
+
+## 2026-09-21 - `edit_user_message`, and `navigate_tree` addressed by `entryId`
+
+### What changed
+
+- `rpc-types.ts` adds the `edit_user_message` command beside `edit_assistant_message`
+  (`{ entryId, text, expectedLeafId?, summarize?, customInstructions? }`) and its response member
+  carrying the new `EditUserMessageResult` - `edited | unchanged | cancelled`, mirroring
+  `EditAssistantMessageResult` field for field, `leafId` nullable on the two non-edited outcomes.
+- `navigate_tree` gains a second way to name its target: the shipped `targetId` moves the leaf to
+  that node verbatim, while the new `entryId` asks the host to apply the `/tree` selection rule of
+  `docs/sessions.md` (a user or custom target selects its PARENT and returns its text as
+  `editorText`; any other kind selects the entry itself; the root user message resets the leaf to
+  an empty conversation, `leafId: null`). The command is ONE union member intersected with
+  `{ entryId } | { targetId }`, so exactly one spelling is legal per record and `case
+  "navigate_tree"` still narrows to a single shape. Both spellings accept `expectedLeafId`.
+- `NavigateTreeResult` (`navigated | cancelled`) is the `entryId` payload; the shipped
+  `{ cancelled, editorText?, aborted?, summaryEntry? }` payload still answers `targetId`, so the
+  response member's `data` is the union of the two. Both now report `leafId: string | null` - the
+  shipped payload gained it additively, and `connection-handler.ts` fills it from
+  `sessionManager.getLeafId()`, so either spelling resynchronizes a client in one round trip.
+- `RPC_ERROR_NOT_USER = "not_user"` joins the ONE shared `RpcErrorCode` union beside
+  `RPC_ERROR_NOT_ASSISTANT`. The failure response stays the single catch-all member with
+  `errorCode?: string` - there is no per-command narrowing in this protocol, and introducing one
+  would be a breaking change to every error path. A command's codes are a documented SUBSET.
+- `connection-handler.ts` gains the two addressing refusals (`not both`, `requires entryId or
+  targetId`) that the command type already forbids but inbound JSON can still carry, plus ONE
+  placeholder branch that refuses an `entryId`-addressed navigation with `navigate_tree entryId
+  addressing is not dispatched yet`. The selection-rule dispatch and the `edit_user_message` case
+  land with the handler work: that branch is replaced there, the two refusals above it stay.
+
+### Why
+
+`AgentSession.editUserMessage` exists, but the only way to reach it over RPC would have been the
+interactive `/tree` selector, which no headless client has. A desktop client also cannot compute
+the parent of a user entry safely - it would have to reimplement the selection rule against a
+tree it only sees through `get_entries` - so the rule belongs on the host, reached by naming the
+entry the user clicked. `expectedLeafId` is on both spellings because a navigation is exactly as
+destructive to a stale window as an edit is: the leaf token the client last observed is the only
+thing that refuses a move made against a view another window has already changed.
+
+### Why an extension could not handle it
+
+The command union and the shared error-code union are the protocol itself. An extension cannot
+add a member to the type a client compiles against, and `extension_request` would hide the new
+operations behind an untyped envelope, which is the opposite of the contract a desktop client
+needs to generate its own types from.
+
+### Expected merge conflict zones
+
+- `rpc-types.ts` - the `RpcSessionCommand` / `RpcResponse` union additions and the `RpcErrorCode`
+  members; upstream edits near `edit_assistant_message` and `navigate_tree` meet this change.
+- `connection-handler.ts` - the `case "navigate_tree"` guard.
 
 ## 2026-09-19 — a pathless session now reserves the file it created (#1850)
 
