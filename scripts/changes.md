@@ -1,5 +1,23 @@
 # changes
 
+## 2026-09-21 - Reject changes to released changelog sections (#1884)
+
+### What changed
+
+- `scripts/check-pr-changelog.mjs` compares committed CHANGELOG sections against the PR merge base, rejecting released additions, edits and deletions with their path, line and section.
+
+### Why
+
+- `scripts/check-pr-changelog.mjs` previously accepted any changed changelog filename, including entries that could never appear in a future release. Only the existing Unreleased block's release stamp may introduce a new released section.
+
+### Why an extension could not handle it
+
+- `scripts/check-pr-changelog.mjs` runs in CI, outside the agent runtime.
+
+### Expected merge conflict zones
+
+- LOW: `scripts/check-pr-changelog.mjs` fact collection and verdict composition.
+
 ## 2026-09-21 - The lock generators allowlist the bumped @google/genai (senpi#1895)
 
 ### What changed
