@@ -1,5 +1,98 @@
 # mcp Extension Changes
 
+## 2026-09-21 - Share eligible connections in the in-process host (#1921)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/mcp/host-registry.ts`, `packages/coding-agent/src/core/extensions/builtin/mcp/shared-connection.ts` and `packages/coding-agent/src/core/extensions/builtin/mcp/shared-lease.ts` add host-owned shared transports and session-owned views. The host owns reconnect, aggregate idle/keep-alive, one catalog writer, notification fan-out and unambiguous in-flight elicitation routing.
+- `packages/coding-agent/src/core/extensions/builtin/mcp/sharing-policy.ts` and `packages/coding-agent/src/core/extensions/builtin/mcp/config.ts` preserve session-template provenance across interpolation and key physical connections by resolved transport/auth configuration and agent directory.
+- `packages/coding-agent/src/core/extensions/builtin/mcp/service-connection.ts` extracts connection creation/disposal from `packages/coding-agent/src/core/extensions/builtin/mcp/service.ts`; sharing is enabled only for an injected host registry. `packages/coding-agent/src/core/extensions/builtin/mcp/startup-race.ts` delegates shared cache refresh to the host.
+
+### Why
+
+- Equal eligible configurations previously opened one physical MCP transport per session. `packages/coding-agent/src/core/extensions/builtin/mcp/host-registry.ts`, `packages/coding-agent/src/core/extensions/builtin/mcp/shared-connection.ts` and `packages/coding-agent/src/core/extensions/builtin/mcp/shared-lease.ts` now retain one transport without allowing one session to close or renew another session's connection.
+- `packages/coding-agent/src/core/extensions/builtin/mcp/sharing-policy.ts` and `packages/coding-agent/src/core/extensions/builtin/mcp/config.ts` prevent cwd/session-dependent stdio servers from joining the pool, including after interpolation erases the original template.
+- `packages/coding-agent/src/core/extensions/builtin/mcp/service-connection.ts`, `packages/coding-agent/src/core/extensions/builtin/mcp/service.ts` and `packages/coding-agent/src/core/extensions/builtin/mcp/startup-race.ts` keep standalone lifecycle behavior and per-session exposure separate from host ownership.
+
+### Why an extension could not handle it
+
+- The builtin owns physical connection construction, SDK handlers and catalog writes. `packages/coding-agent/src/core/extensions/builtin/mcp/host-registry.ts`, `packages/coding-agent/src/core/extensions/builtin/mcp/shared-connection.ts`, `packages/coding-agent/src/core/extensions/builtin/mcp/shared-lease.ts`, `packages/coding-agent/src/core/extensions/builtin/mcp/service-connection.ts`, `packages/coding-agent/src/core/extensions/builtin/mcp/service.ts` and `packages/coding-agent/src/core/extensions/builtin/mcp/startup-race.ts` must coordinate at that boundary; an outside extension cannot multicast handlers or identify a call's owner.
+- Raw config provenance is available only in `packages/coding-agent/src/core/extensions/builtin/mcp/config.ts`; `packages/coding-agent/src/core/extensions/builtin/mcp/sharing-policy.ts` carries it without changing the persisted catalog hash.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/extensions/builtin/mcp/service.ts` connection reconciliation, `packages/coding-agent/src/core/extensions/builtin/mcp/service-connection.ts` connection factory and `packages/coding-agent/src/core/extensions/builtin/mcp/startup-race.ts` cache refresh.
+- `packages/coding-agent/src/core/extensions/builtin/mcp/host-registry.ts`, `packages/coding-agent/src/core/extensions/builtin/mcp/shared-connection.ts` and `packages/coding-agent/src/core/extensions/builtin/mcp/shared-lease.ts`: host ownership and request routing.
+- `packages/coding-agent/src/core/extensions/builtin/mcp/config.ts` interpolation and `packages/coding-agent/src/core/extensions/builtin/mcp/sharing-policy.ts` eligibility/identity. No SDK version or session protocol change.
+
+## 2026-09-21 - Host-owned connection leases with sharing disabled (#1915)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/mcp/host-registry.ts` adds object-owner reference counts, immediate final-detach disposal, owner enumeration and a typed unknown-owner error. `shareable` returns false for every configuration.
+- `packages/coding-agent/src/core/extensions/builtin/mcp/service.ts` obtains connections through an injected registry, or a new instance-owned registry for standalone services, and detaches leases during existing disposal.
+- `packages/coding-agent/src/core/extensions/builtin/mcp/service-types.ts` carries the optional registry in `McpSessionOptions`.
+
+### Why
+
+- `packages/coding-agent/src/core/extensions/builtin/mcp/host-registry.ts`, `packages/coding-agent/src/core/extensions/builtin/mcp/service.ts` and `packages/coding-agent/src/core/extensions/builtin/mcp/service-types.ts` establish explicit ownership before any future connection sharing. Equal configurations still create separate connections for different services.
+
+### Why an extension could not handle it
+
+- Connection construction and disposal in `packages/coding-agent/src/core/extensions/builtin/mcp/service.ts` are private to the builtin. The lease contract in `packages/coding-agent/src/core/extensions/builtin/mcp/host-registry.ts` and injection option in `packages/coding-agent/src/core/extensions/builtin/mcp/service-types.ts` must reach that owner.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/extensions/builtin/mcp/service.ts`: constructor, `#syncFromConfig` and `disposeEntryConnection`.
+- `packages/coding-agent/src/core/extensions/builtin/mcp/service-types.ts`: `McpSessionOptions`.
+- `packages/coding-agent/src/core/extensions/builtin/mcp/host-registry.ts`: future sharing policy and lifecycle routing. This change does not enable sharing or alter idle, reconnect, cache, keep-alive or elicitation behavior.
+
+## 2026-09-21 - Catalog cache writes bind to the attach-time agent dir (senpi#1904)
+
+### What changed
+
+- `service.ts`: `attachSession` resolves the agent dir once at attach time (`options.agentDir ?? getAgentDir()`) and threads the resolved value through the session options, so config loading, the auth plan, and every `McpConnectionEntry.agentDir` carry the attach-time directory instead of `undefined`.
+- `startup-race.ts`'s backgrounded `writeMcpCachedServer(entry.agentDir, ...)` (and every later reconnect rewrite through the same entry) therefore writes into the attach-time directory; `catalog-cache.ts`'s write-time `getAgentDir()` default is no longer reachable from a default-attach session.
+- `test/mcp/catalog-cache-agent-dir.test.ts` (new): attaches through the default path with the env at dir A, flips the env to dir B before the backgrounded catalog write resolves, and asserts the cache lands under A, never B.
+
+### Why
+
+- The default attach path (interactive/RPC sessions) passes no `agentDir` option, so entries carried `undefined` and the backgrounded cache write re-resolved the directory from the environment at write time. Any env change between attach and that write - per-test env restore racing a backgrounded connect being the observed case - deposited catalog entries into a foreign agent directory: a real agent dir's `cache/mcp-cache.json` carried `fixture` (2026-08-29) and `fx` (2026-08-31) entries written by test runs. A decoy-dir sentinel reproduced it on an unfixed tree: the quarantine-bypassing runner (`bun test`, which skips `test/setup.ts`) mutated the decoy's cache while the quarantined vitest run left it byte-identical. On the fixed tree the vitest run still leaves the decoy byte-identical, and `bun test` mutates it only through the one test that attaches with the ambient lanes resolved (extension-load's extension-declared case) - that write now follows the attach-time directory by design, which on that path is the ambient decoy on both trees; the env-flap class (every env-managed attach) no longer reaches the decoy. Shielding tests that attach with ambient lanes remains the quarantine's job (`test/setup.ts`, untouched).
+
+### Why an extension could not handle it
+
+- The connection entry, the startup-race continuation, and the cache write are private to the MCP builtin; no public extension API exposes or overrides the write-time directory.
+
+### Expected merge conflict zones
+
+- LOW: `service.ts` `attachSession` top (the session-options resolution and the four call sites that consume it).
+- LOW: `test/mcp/catalog-cache-agent-dir.test.ts` (new file).
+- MEDIUM: concurrent MCP PRs touching `service.ts` `#syncFromConfig` entry construction or the attach closure.
+
+## 2026-09-17 - The prompt build observes the deferred attach (senpi#1797)
+
+### What changed
+
+- `startup-race.ts`: the connect that the startup race backgrounds is now handed to the caller through a required `onDeferred` option, and `McpDeferredAttach` holds those continuations as the attach's completion signal. `MCP_ATTACH_SETTLE_TIMEOUT_MS` (5 s) bounds anyone waiting on it; a connect that fails still settles the attach and is logged there, where it is finally handled.
+- `service.ts`: `#syncFromConfig` tracks every backgrounded connect, `whenAttachSettled(timeoutMs)` exposes the bounded wait, and `dispose` drops the pending set.
+- `index.ts`: `before_agent_start` awaits `whenAttachSettled()` before `injectMcpInstructions`, so the system prompt is assembled from a settled catalog; a timeout logs one warning and the turn still goes out.
+- `test/mcp/attach-prompt-ordering.test.ts` (new): drives the production seam with a zero startup window (`SENPI_MCP_STARTUP_TIMEOUT_MS=0`), so the attach is always deferred, and pins the instructions block, the turn-1 tool payload, and the connection state at prompt-build time.
+
+### Why
+
+- `attachSession` resolves at the startup-race deadline, not at connect completion, so `before_agent_start` was awaiting a promise that says nothing about the server being read. The instructions snapshot taken at attach time then held the cached (or empty) generation for the whole session, and turn 1's payload carried no MCP tools. On a fast machine the connect won the race and hid it; senpi#1797 caught it on a 534 s CI shard, twice, on a branch whose diff touches no MCP file.
+- Reproduced deterministically with the existing product knob: with `SENPI_MCP_STARTUP_TIMEOUT_MS=0`, `test/mcp/instructions.test.ts > keeps same-session instructions byte-identical until a new session starts` fails on main at the same assertion CI failed on, and passes with this change.
+- The wait is bounded rather than open-ended because each connect is already bounded by the server's `connectTimeoutMs` (15 s default); 5 s is the point where the user's turn stops paying for a wedged server and takes the catalog on a later turn instead.
+
+### Why an extension could not handle it
+
+- The startup race, the single-flight attach promise, and the session instructions snapshot are all private to this builtin; nothing outside it can observe when a backgrounded connect has settled, and `before_agent_start` ordering inside the builtin is what decides the first turn's prompt.
+
+### Expected merge conflict zones
+
+- LOW: the `raceMcpStartupConnect` tail in `startup-race.ts` and the `raceMcpStartupConnect({...})` option block in `service.ts`.
+- LOW: the `before_agent_start` body in `index.ts` between the skills block and `injectMcpInstructions`.
+
 ## 2026-09-17 - Do not await attach inside session_start (senpi#1781)
 
 ### What changed

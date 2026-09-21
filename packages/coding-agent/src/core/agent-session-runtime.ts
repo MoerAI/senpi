@@ -3,9 +3,12 @@ import { basename, join, parse, resolve } from "node:path";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
+import type { HostMcpRegistry } from "./extensions/builtin/mcp/host-registry.ts";
 import type {
 	ProjectTrustContext,
 	ReplacedSessionContext,
+	SessionContext,
+	SessionKind,
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "./extensions/index.ts";
@@ -32,6 +35,19 @@ export interface AgentSessionLaunchProfile {
 	permissionPreset?: string;
 	creationModel?: { provider: string; modelId: string };
 	initialThinkingLevel?: string;
+	/**
+	 * Visibility class of this session (`open_session.kind`), absent for classic
+	 * launches. It reaches the extensions this session loads and nothing else: it
+	 * never takes part in auth, model or resource resolution.
+	 */
+	sessionKind?: SessionKind;
+	/** Opaque labels the opener attached (`open_session.context`), absent when none. */
+	sessionContext?: SessionContext;
+	/**
+	 * Per-session auto-titling (`open_session.auto_title`). When set, this session
+	 * ignores the host-wide `--auto-title-sessions` / appMode default.
+	 */
+	autoTitle?: boolean;
 }
 
 /**
@@ -44,6 +60,7 @@ export interface AgentSessionLaunchProfile {
 export type CreateAgentSessionRuntimeFactory = (options: {
 	cwd: string;
 	agentDir: string;
+	mcpRegistry?: HostMcpRegistry;
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;
 	projectTrustContext?: ProjectTrustContext;
@@ -150,6 +167,12 @@ export class AgentSessionRuntime {
 	 */
 	setBeforeSessionInvalidate(beforeSessionInvalidate?: () => void): void {
 		this.beforeSessionInvalidate = beforeSessionInvalidate;
+	}
+
+	/** Attachment transitions are ordered by the RPC entry's lifecycle mutex. */
+	async emitAttachmentEvent(type: "session_parked" | "session_resumed"): Promise<void> {
+		const runner = this.session.extensionRunner;
+		if (runner.hasHandlers(type)) await runner.emit({ type });
 	}
 
 	private async emitBeforeSwitch(

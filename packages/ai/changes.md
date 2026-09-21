@@ -1,3 +1,159 @@
+## 2026-09-21 - Migrate the test runner to Vitest 5 (senpi#1895)
+
+### What changed
+
+- `packages/ai/package.json`: Updated the test runner to Vitest 5.0.1.
+
+### Why
+
+- Run this workspace on the pinned Vitest 5 release.
+
+### Why an extension could not handle it
+
+- The package manager resolves development tools before extensions load.
+
+### Expected merge conflict zones
+
+- The development dependency pins in `packages/ai/package.json`.
+
+## 2026-09-20 - The image-model generator formats what it writes (senpi#1886)
+
+### What changed
+
+- `packages/ai/scripts/generate-image-models.ts` hands the file it just wrote to Biome
+  (`biome check --write`) before reporting success, resolving the binary from the
+  repository's own `node_modules/.bin` and falling back to `biome` on PATH.
+
+### Why
+
+- The serializer writes tabs by hand and uses `JSON.stringify` for `input`, `output` and
+  `cost`, which emits `["text","image"]`, quoted keys and two-space indentation. Biome wants
+  `["text", "image"]`, unquoted keys and tabs, so the emitted file never satisfied
+  `npm run check`. The shared `check` script used to run `biome check --write`, which
+  rewrote the file silently; #1443 made that gate read-only, and the release job is the first
+  thing that regenerates the catalog under the strict gate. Run 35520504862 failed at
+  `[release] error: npm run check failed` with the version already applied to 10 manifests,
+  so no release can complete until the generator's output is clean on its own.
+- Formatting through Biome rather than hand-matching its current style keeps a future Biome
+  upgrade from reintroducing the same drift.
+
+### Why an extension could not handle it
+
+- This is a build-time code generator invoked by `scripts/release-artifacts.mjs`; it runs
+  before any session exists and no extension surface participates in catalog generation.
+
+### Expected merge conflict zones
+
+- `packages/ai/scripts/generate-image-models.ts`: the import block and `main()`. Upstream
+  edits to this generator touch the same `writeFileSync` tail.
+
+## 2026-09-21 - Refresh the provider SDK pins (senpi#1895)
+
+### What changed
+
+- `packages/ai/package.json`: `@anthropic-ai/sdk` 0.123.0 -> 0.127.0, `@aws-sdk/client-bedrock-runtime` 3.1127.0 -> 3.1136.0, `@google/genai` 2.21.0 -> 2.23.0, `@bufbuild/protobuf` 2.14.0 -> 2.15.0, `@smithy/types` 4.17.2 -> 4.18.0, `typebox` 1.3.27 -> 1.3.34, `yaml` 2.9.0 -> 2.9.1 and `@types/node` 26.2.0 -> 26.6.2.
+
+### Why
+
+- The provider SDKs are fork-owned exact pins and the surface this package is built on; each moves to the newest release in the same minor that satisfies `min-release-age=2`. The `@anthropic-ai/sdk` line in the 2026-08-21 entry below ("stays at 0.91.1") is historical: the browser-bundle blocker it records is handled by the `anthropic-sdk-node-builtins` plugin in `scripts/check-browser-smoke.mjs`.
+
+### Why an extension could not handle it
+
+- Manifest dependency versions are resolved by the package manager before any extension loads.
+
+### Expected merge conflict zones
+
+- LOW: the dependency version block, on every upstream release bump.
+
+## 2026-09-18 - The catalog check tolerates a shard the aggregator no longer lists
+
+### What changed
+
+- `packages/ai/scripts/model-data.ts` excludes a shard a provider module imports from the
+  aggregator/shard equality check, the way it already excludes a fork-owned shard.
+- `packages/ai/test/model-data-imported-shard.test.ts` stages the committed catalog, drops
+  `kimi-coding` from the aggregator and requires `readModelDataStructure` not to throw.
+
+### Why
+
+- With the prune guard in place the shard survives a run that wrote none of them, but the freshly
+  written aggregator no longer lists it, so `readModelDataStructure` called it an extra shard and the
+  release failed a third time - after the prune failure it was meant to replace.
+
+### Why an extension could not handle it
+
+- The equality check is the generator's own consistency gate; only it knows which shards the run wrote.
+
+### Expected merge conflict zones
+
+- `packages/ai/scripts/model-data.ts` around `readModelDataStructure`'s shard comparison.
+
+## 2026-09-18 - Never prune a model shard a provider module imports
+
+### What changed
+
+- `packages/ai/scripts/model-shards.ts` gains `importedModelShards` and a third argument to
+  `isPrunableModelShard`: a shard a committed provider module imports is never prunable, whoever was
+  supposed to write it. `FORK_OWNED_MODEL_SHARDS` stays for shards no module imports.
+- `packages/ai/scripts/generate-models.ts` reads the provider modules beside the shards and passes the
+  imported set to the prune, so a provider models.dev has stopped describing keeps its catalog.
+- `packages/ai/test/model-shards.test.ts` adds the fresh-generation case: every imported shard survives a
+  run that wrote none of them. It fails without the guard.
+
+### Why
+
+- The release job regenerates catalogs before type-checking. models.dev no longer describes `kimi-coding`,
+  so the prune deleted `packages/ai/src/providers/kimi-coding.models.ts` while
+  `packages/ai/src/providers/kimi-coding.ts` still imported it, and two consecutive releases died on
+  `TS2307` with fifteen cascades. Ordinary CI type-checks the committed catalog instead of regenerating
+  it, and the existing ownership test compares against that same committed aggregator, so only the release
+  job could see it.
+
+### Why an extension could not handle it
+
+- The prune happens inside the generator's own write-and-sweep pass. Nothing outside it knows which shards
+  the run produced, so the decision to keep a shard has to be made where that set exists.
+
+### Expected merge conflict zones
+
+- `packages/ai/scripts/model-shards.ts` around `isPrunableModelShard`, and the prune loop in
+  `packages/ai/scripts/generate-models.ts`, if upstream reshapes the shard sweep.
+
+## 2026-09-18 - Generate the official B.AI chat catalog
+
+### What changed
+
+- `packages/ai/scripts/bai-models.json` records B.AI's published standard context, output, modality,
+  reasoning-level, and pricing metadata for the 56 chat models B.AI documents as active, sourced from each
+  `docs.b.ai/llmservice/models/<slug>/` page and the standard pricing table. Promotional, DeepSeek idle, and
+  long-cache rates are deliberately excluded.
+- `packages/ai/scripts/generate-models-bai.ts` converts that source into provider models with family-specific
+  API selection and B.AI endpoint shapes.
+- `packages/ai/scripts/generate-models.ts` adds the curated B.AI rows before the shared normalization and
+  generated-shard pipeline.
+- Regenerated `packages/ai/src/providers/data/bai.json`, `bai.models.ts`, `models.generated.ts`, and the model
+  data manifest. Image-only `gpt-image-2` is intentionally absent from the chat catalog.
+- `packages/ai/test/gpt-6-astra-context-window.test.ts` includes the B.AI shard in the cross-provider Astra
+  context-window invariant.
+- `packages/ai/scripts/generate-models.ts` re-derives `reasoning` for B.AI models after the shared
+  thinking-level passes, so a model that gains a selectable level cannot keep `reasoning: false` and silently
+  lose its reasoning payload at request time.
+
+### Why
+
+- B.AI `/v1/models` is credential-scoped and returns IDs only. The committed generated catalog is the
+  maintainable source for model capabilities and standard reference prices, while runtime discovery decides
+  which classified IDs the current key may use.
+
+### Why an extension could not handle it
+
+- Catalog generation and validation run before extensions load and feed every built-in provider consumer.
+
+### Expected merge conflict zones
+
+- LOW: one import and one append in `packages/ai/scripts/generate-models.ts`.
+- NONE: the B.AI generator source and metadata file are new fork-owned files.
+
 ## 2026-09-13 - Publish static provider module subpaths
 
 ### What changed

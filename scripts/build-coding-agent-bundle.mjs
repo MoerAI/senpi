@@ -12,8 +12,13 @@ const codingAgentDir = join(repoRoot, "packages", "coding-agent");
 const aiDistDir = join(repoRoot, "packages", "ai", "dist");
 const codingAgentDistDir = join(codingAgentDir, "dist");
 const bundleDir = join(codingAgentDistDir, "bundle");
+// undici's CacheStorage instantiates at module init and calls
+// worker_threads.markAsUncloneable, a Node >= 23 API that Bun 1.3.x lacks (#1806).
+// Every emitted file evaluates this prologue before any bundled module code.
+const runtimeGuards =
+	'{ const __piWorkerThreads = require("node:worker_threads"); if (typeof __piWorkerThreads.markAsUncloneable !== "function") { __piWorkerThreads.markAsUncloneable = () => {}; } }';
 const banner = {
-	js: 'import { createRequire as __piCreateRequire } from "node:module"; const require = __piCreateRequire(import.meta.url);',
+	js: `import { createRequire as __piCreateRequire } from "node:module"; const require = __piCreateRequire(import.meta.url); ${runtimeGuards}`,
 };
 const allowedExternalPackages = new Set([
 	"@earendil-works/chord",
@@ -26,6 +31,11 @@ const allowedExternalPackages = new Set([
 	"@earendil-works/pi-pty",
 	// Runtime-guarded Bun lock adapter; Node uses node:sqlite instead.
 	"bun:sqlite",
+	// Runtime-guarded host child reaper bindings; a Node host turns the reaper off.
+	"bun:ffi",
+	// Optional ws accelerators; kept external so the binding loader stays out of the bundle.
+	"bufferutil",
+	"utf-8-validate",
 	// linkedom's optional native canvas stays package-relative, with its JS fallback.
 	"canvas",
 	// Optional native accelerators. Their callers fall back to JavaScript when absent.
@@ -95,7 +105,19 @@ function commonBuildOptions() {
 		banner,
 		bundle: true,
 		define: { PI_BUNDLED_NODE: "true" },
-		external: ["@earendil-works/chord", "@silvia-odwyer/photon-node", "@earendil-works/pi-pty", "bun:sqlite", "canvas"],
+		external: [
+			"@earendil-works/chord",
+			"@silvia-odwyer/photon-node",
+			"@earendil-works/pi-pty",
+			"bun:sqlite",
+			"bun:ffi",
+			// ws resolves these native accelerators when they happen to be installed.
+			// They load their binding through node-gyp-build, whose computed require
+			// esbuild cannot analyse, so bundling them leaves an unresolvable external.
+			"bufferutil",
+			"canvas",
+			"utf-8-validate",
+		],
 		format: "esm",
 		legalComments: "none",
 		logLevel: "warning",
@@ -194,7 +216,17 @@ const lazyResult = await build({
 	entryPoints: {
 		anthropic: join(aiDistDir, "auth", "oauth", "anthropic.js"),
 		"bedrock-converse-stream": join(aiDistDir, "api", "bedrock-converse-stream.js"),
+		cursor: join(aiDistDir, "auth", "oauth", "cursor.js"),
+		"cursor-agent": join(aiDistDir, "api", "cursor-agent.js"),
+		devin: join(aiDistDir, "auth", "oauth", "devin.js"),
+		"devin-agent": join(aiDistDir, "api", "devin-agent.js"),
 		"github-copilot": join(aiDistDir, "auth", "oauth", "github-copilot.js"),
+		// `supervisor-route.js` defers this with a dynamic `import("./host-lifecycle.js")`
+		// so the RPC host graph stays out of every launch. `session-worker` is bundled
+		// here with splitting off, which leaves that specifier unresolved beside the
+		// emitted file - so the implementation has to exist there under that exact name,
+		// or `host ensure` dies with "Module not found .../chunks/host-lifecycle.js".
+		"host-lifecycle": join(codingAgentDistDir, "modes", "rpc", "host-lifecycle.js"),
 		"image-resize-worker": join(codingAgentDistDir, "utils", "image-resize-worker.js"),
 		"session-worker": join(codingAgentDistDir, "modes", "rpc", "session-worker.js"),
 		"kimi-coding": join(aiDistDir, "auth", "oauth", "kimi-coding.js"),

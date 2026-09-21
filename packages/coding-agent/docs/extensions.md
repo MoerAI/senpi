@@ -486,6 +486,31 @@ pi.on("session_info_changed", async (event, ctx) => {
 });
 ```
 
+#### session_parked / session_resumed
+
+These additive events describe attachment changes on a retained, in-process RPC
+session. `session_parked` fires once when its last client disconnects;
+`session_resumed` fires once when the first client reattaches to the still-open
+session. Additional attachments do not emit either event. Parking does not abort
+an active turn, close the session, or change its idle-eviction deadline.
+
+```typescript
+pi.on("session_parked", () => {
+  // Stop optional periodic work without discarding session state.
+});
+pi.on("session_resumed", () => {
+  // Restart periodic work; preserve any independent user-requested pause.
+});
+```
+
+Park and resume handlers run in transition order. Terminal file-monitor polling
+and prompt-cache keepalive pause while parked. The cache may expire during this
+pause; reattachment does not guarantee a warm cache. TUI sessions do not emit these
+events. Worker-runtime sessions have no in-host extension runner and currently
+do not emit them either. These extension events are distinct from the RPC wire
+`session_parked` record used when idle eviction or generation handoff releases a
+retained runtime.
+
 #### session_before_switch
 
 Fired before starting a new session (`/new`) or switching sessions (`/resume`).
@@ -1347,6 +1372,19 @@ Options:
 - `customInstructions`: Custom instructions for the summarizer
 - `replaceInstructions`: If true, `customInstructions` replaces the default prompt instead of being appended
 - `label`: Label to attach to the branch summary entry (or target entry if not summarizing)
+- `expectedLeafId`: The leaf observed when choosing the target. A moved leaf rejects with `AssistantEditError` (`reason: "stale-leaf"`, `code: "stale_leaf"`) before navigation.
+
+The positional form remains supported. You can also put the selected message's `entryId` and all options in the first argument:
+
+```typescript
+await ctx.navigateTree({
+  entryId: selectedEntry.id,
+  expectedLeafId: observedLeafId,
+  summarize: false,
+});
+```
+
+Both forms use the same tree-selection rule: user/custom entries select their parent; other entries select themselves. A root prompt selects an empty conversation. Address the selection by `entry.id`, never by `leafId`: extension metadata can advance the leaf beyond the message. Keep the observed leaf as the concurrency token rather than re-reading it when submitting a delayed action.
 
 ### ctx.editAssistantMessage(entryId, text, options?)
 
@@ -1365,6 +1403,22 @@ Options:
 - `summarize` / `customInstructions`: summarize the abandoned branch like `ctx.navigateTree`
 
 Rejections are typed: `SessionStreamingError` (`code: "streaming"`) while a response streams, and `AssistantEditError` with `reason` `not-found` / `not-assistant` / `empty` / `stale-leaf` (`code` gives the wire spelling). `unchanged: true` means the text matched the original and nothing was appended.
+
+### ctx.editUserMessage(entryId, text, options?)
+
+Replace a user prompt with an edited copy, preserving its attachments. The copy is appended under the original prompt's parent; the original prompt and its replies remain on an abandoned branch. No agent turn starts. Like assistant edits, this fires `session_before_tree` (cancellable) and `session_tree` and is available in RPC, print, and interactive command contexts, including host-backed interactive sessions.
+
+```typescript
+const result = await ctx.editUserMessage(selectedEntry.id, "The corrected prompt.", {
+  expectedLeafId: observedLeafId,
+  summarize: false,
+});
+// result: { cancelled: boolean; unchanged?: boolean; entryId?: string }
+```
+
+The option object is identical to `ctx.editAssistantMessage`: `summarize`, `customInstructions`, and `expectedLeafId`. The token is forwarded unchanged. Rejections are `UserEditError` with `reason` `not-found` / `not-user` / `empty` / `stale-leaf` (`code`: `not_found` / `not_user` / `empty` / `stale_leaf`), or `SessionStreamingError` (`code: "streaming"`). `unchanged: true` means nothing was appended; `cancelled: true` means the edit was cancelled.
+
+On an edit, `result.entryId` identifies the new message, not necessarily the current leaf: a `session_tree` extension can append metadata after the message. Use the message ID for later edits/selections and the separately observed leaf only for concurrency checks.
 
 ### ctx.switchSession(sessionPath, options?)
 
@@ -1509,6 +1563,35 @@ export default function (pi: ExtensionAPI) {
 ```
 
 ## ExtensionAPI Methods
+
+### pi.sessionKind / pi.sessionContext / pi.sharedHostEnabled
+
+Read-only facts about the session this extension instance was loaded for, available at factory time so an extension
+can decide what to register before it registers anything:
+
+| Property | Type | Value |
+|---|---|---|
+| `pi.cwd` | `string` | Absolute working directory of this session |
+| `pi.sharedHostEnabled` | `boolean` | Whether this session runs on a shared RPC host |
+| `pi.sessionKind` | `"interactive" \| "worker"` | Visibility class the opener chose (`open_session.kind`); `interactive` for classic launches and any open that omits it |
+| `pi.sessionContext` | `Readonly<Record<string, string>>` | Opaque labels the opener attached (`open_session.context`), or `{}` |
+
+```typescript
+export default function ({ pi }) {
+  // One extension set serves every session of a shared daemon; gate per session, not per host.
+  if (pi.sessionKind === "worker" && pi.sessionContext.role === "child") {
+    pi.registerTool(reportToParentTool);
+    return;
+  }
+  pi.registerCommand("review", reviewCommand);
+}
+```
+
+The engine never interprets `sessionContext`: it takes no part in authentication, model selection, resource loading
+or any other host decision, and it is republished only on `list_sessions { include_workers: true }`. Its caps are
+enforced at the RPC boundary (at most 32 keys matching `^[a-z][a-z0-9_]*$`, each value at most 16 KiB, at most 32 KiB
+of JSON in total), so an extension receives an already-validated map. Both values are frozen for the session's life;
+there is no setter. See [Session kind and context](rpc.md#session-kind-and-context-open_session) for the wire side.
 
 ### pi.on(event, handler)
 
@@ -2065,6 +2148,12 @@ pi.events.emit("my:event", { ... });
 ## Config reload
 
 Senpi's default-on `config-reload` builtin watches configured global surfaces and trusted project-local `.senpi` surfaces. A real content change requests the normal full session reload when the agent is idle; busy or compacting sessions defer it until a safe idle edge. When an extension vetoes the reload through `session_before_reload` (for example while subagents it owns are still running), the change also defers quietly: one `Hot-reload deferred: <reason>` notice per distinct veto reason, silent retries on later idle edges plus a periodic veto recheck, and the usual `Hot-reloading:`/`Hot-reloaded:` notifications only once the veto clears and the reload actually runs. Parseable built-in files (`settings.json`, `models.json`, and `keybindings.json`) are validated before reload, so a rejected edit keeps the running configuration active.
+
+> **Cost on a shared host:** the watcher runs per session. Each session's `config-reload` instance lazily spawns one
+> `node:worker_threads` Worker for recursive filesystem watching, so a host serving N sessions carries about N extra
+> OS threads and ~5 MB per session ([senpi#1794](https://github.com/code-yeongyu/senpi/issues/1794)). It is the
+> dominant per-session cost of a shared RPC daemon ([RPC: session runtime](rpc.md#session-runtime---session-runtime-in-processworker));
+> a host whose settings disable the builtin adds no thread per session at all.
 
 Configure it in `settings.json` with optional fields; omitted fields use the defaults shown here. Invalid `configReload` fields are ignored individually, so a malformed block falls back to these defaults rather than disabling watching:
 

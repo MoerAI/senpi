@@ -1,5 +1,103 @@
 # Local fork changes
 
+## 2026-09-21 - Take es-module-lexer 3 (senpi#1895)
+
+### What changed
+
+- `packages/coding-agent/package.json`: `es-module-lexer` 2.1.0 -> 3.0.2, with `package-lock.json`, `bun.lock`, the coding-agent install-lock and `publish-deps.lock.json` regenerated the repository way.
+
+### Why
+
+- 3.x is the maintained line (Node 18+, SIMD scanning, eval-free string decoding so the Wasm builds run under `--disallow-code-generation-from-strings`, TypeScript type-only edge lexing). The importer adaptation lives in `src/core/extensions/changes.md`.
+
+### Why an extension could not handle it
+
+- Dependency pins are resolved by the package manager and the publish pipeline, never by the runtime extension system.
+
+### Expected merge conflict zones
+
+- LOW: the dependency version block.
+
+## 2026-09-21 - Migrate the test runner to Vitest 5 (senpi#1895)
+
+### What changed
+
+- `packages/coding-agent/package.json`: Updated the test runner to Vitest 5.0.1.
+
+### Why
+
+- Run this workspace on the pinned Vitest 5 release.
+
+### Why an extension could not handle it
+
+- The package manager resolves development tools before extensions load.
+
+### Expected merge conflict zones
+
+- The development dependency pins in `packages/coding-agent/package.json`.
+
+## 2026-09-21 - Refresh the CLI dependency pins (senpi#1895)
+
+### What changed
+
+- `packages/coding-agent/package.json`: `@anthropic-ai/sdk` 0.123.0 -> 0.127.0, `@anthropic-ai/claude-agent-sdk` 0.3.259 -> 0.3.278, `@aws-sdk/client-bedrock-runtime` 3.1127.0 -> 3.1136.0, `@bufbuild/protobuf` 2.14.0 -> 2.15.0, `@smithy/types` 4.17.2 -> 4.18.0, `zod` 4.4.3 -> 4.6.5, `typebox` 1.3.27 -> 1.3.34, `ignore` 7.0.8 -> 7.0.9, `linkedom` 0.18.12 -> 0.18.13, `marked` 18.0.11 -> 18.0.13, `picomatch` 4.0.5 -> 4.0.7, `yaml` 2.9.0 -> 2.9.1, `get-east-asian-width` 1.6.0 -> 1.7.0 and `@types/node` 26.2.0 -> 26.6.2.
+
+### Why
+
+- These are the fork's exact runtime pins for the published CLI, refreshed to the newest release in the same minor that satisfies `min-release-age=2`. The eight `@anthropic-ai/claude-agent-sdk` platform packages are relocked with it, so `scripts/generate-claude-agent-sdk-platform-lock.mjs --check` still passes.
+
+### Why an extension could not handle it
+
+- The published tarball's dependency closure is resolved by the package manager and the publish pipeline, never by the runtime extension system.
+
+### Expected merge conflict zones
+
+- LOW: the dependency version block, on every upstream release bump.
+
+## 2026-09-20 - Boot the senpi command from the bundled entry (senpi#1868)
+
+### What changed
+
+- `packages/coding-agent/package.json`: `bin.senpi` now resolves to `dist/bundle/cli.js`, the same pre-linked tree `bin.pi` already resolved to. The unbundled `dist/` tree is still built and still published.
+- `packages/coding-agent/test/package-distribution.test.ts`: states the contract for every declared executable rather than one assertion per name, and updates the `bin.senpi` pin that held the old target.
+- `scripts/qa/fork-preservation-check.mjs`: the published-identity check expects the new target, so the fork's own bin stays pinned against an upstream merge.
+
+### Why
+
+- The bundle landed with `bin.pi` pointed at it; `senpi`, the name this fork installs and the one its users type, kept evaluating the module graph the bundle exists to replace. Measured on the installed package with a PTY harness whose ready mark is the editor echoing a typed probe: ready 6298 +/- 1192 ms on the unbundled entry against 1151 +/- 422 ms on the bundled one, with `processStart->main` 5284 +/- 1023 ms against 289 +/- 103 ms (n=10 interleaved per arm, every run exit code 0).
+- The two entries are interchangeable at the surface: `--version` matches and `--help` is byte-identical under both Node and Bun, and the bundled entry carries the same launcher work (Bun re-exec, startup compile cache, self-update bootstrap).
+
+### Why an extension could not handle it
+
+- Which file a declared executable resolves to is decided by the package manifest at install time, before any runtime or extension host exists.
+
+### Expected merge conflict zones
+
+- LOW: the `bin` block in `packages/coding-agent/package.json` if upstream renames or adds an executable; the executable assertions in `test/package-distribution.test.ts`; the identity block in `scripts/qa/fork-preservation-check.mjs`, which is fork-only.
+
+## 2026-09-18 - One reusable live-QA run for the in-process daemon, on real compiled binaries (#1782)
+
+### What changed
+
+- `packages/coding-agent/scripts/qa-rpc-socket/inprocess-daemon-qa.mjs` (new): the whole shared-daemon matrix as ONE runnable driver, printing one JSON line per step with a synchronous `writeFileSync(1, ...)` so a step that hangs has still printed everything before it. The cells, in order: two compiled generations whose `SENPI_BUILD_EPOCH` differ; `pi host ensure --json --launch-spec` into a throwaway agent directory; two `kind: "worker"` sessions with different `context`, each probed through its OWN extension instance (`probe.identity`); `list_sessions` with and without `include_workers`; fifty sessions with the daemon's thread count before and after; a retained session dropped at the socket and reopened (`attached: true`); two hundred `bash true` calls followed by the host's own `status --json` Z-count after a settle; and a generation handoff driven by the newer binary while a client is still connected - old connection still answering, session paths equal, transcripts monotonic, one socket inode change, and an ensure from the OLDER binary afterwards answering `reuse`. The LAST line is always the cleanup receipt (hosts stopped, hosts still alive, `pgrep -f rpc-host-fixture.mjs`, anything still naming the sandbox, sandbox removed), and a surviving host makes the run exit non-zero.
+- `packages/coding-agent/scripts/qa-rpc-socket/lib/compiled-generations.mjs` (new): the two binaries. `bun build --compile --define SENPI_BUILD_EPOCH=... --define SENPI_BUILD_SHA7=...` twice over the built bundle, one day apart, plus the `package.json` and `theme/*.json` a standalone resolves beside itself and the darwin ad-hoc re-sign - the same staging `scripts/build-binaries.sh` performs. `--older`/`--newer` accept two prebuilt binaries instead.
+- `packages/coding-agent/scripts/qa-rpc-socket/lib/daemon-sandbox.mjs` (new): the throwaway world one daemon is driven in - a real (symlink-resolved) short root so `<socket>.next-<generation>` fits `sun_path` and the host's own reported session paths compare equal, the launch spec with its probe extension, and the `pi host ...` spawn that answers one JSON line with an explicitly built environment.
+- `packages/coding-agent/scripts/qa-rpc-socket/lib/daemon-sessions.mjs` (new): the session vocabulary those cells drive over real socket connections - open (and an admission result that does not throw, so a cap stays a measurement), the per-session extension probe, `list_sessions`, one real turn awaited on the host's `agent_idle`, and the detach observation a retained session is re-opened after.
+
+### Why
+
+- The matrix had been run ad hoc, so its numbers could not be re-measured: a later change to the daemon would have needed the same hours of hand-driving to know whether context isolation, worker visibility, retention, child reaping or the handoff still held. It is now one command against two binaries a release would ship.
+- It runs on COMPILED binaries because the surfaces it measures only exist there: a standalone re-enters itself through `--internal-rpc-host-supervisor` rather than a script path, and the build epoch a generation handoff is decided on is a compile-time define that a source run does not carry.
+- The receipt is part of the contract rather than a convenience. A shared host outlives the client that started it, so a QA run that fails in the middle leaves a daemon serving a deleted sandbox; this driver stops every host it started, escalates to `SIGKILL` for one that will not stop, and reports what is left running.
+
+### Why an extension could not handle it
+
+- The subject is the engine's process lifecycle - which binary owns the socket, which generation serves it, which processes survive a run. None of it is reachable from inside an extension, which by then is already loaded into the very host under test.
+
+### Expected merge conflict zones
+
+- LOW: four new files under `packages/coding-agent/scripts/qa-rpc-socket/`. Nothing existing is edited; a conflict is possible only if upstream adds a file at one of those paths.
+
 ## 2026-09-17 - Build the bundled CLI the package declares as bin.pi, and skip completed scan migrations (senpi#1781)
 
 ### What changed

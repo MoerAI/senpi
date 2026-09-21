@@ -4,6 +4,7 @@ import type { Model, ThinkingSelection } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AuthStorage } from "./auth-storage.ts";
+import type { HostMcpRegistry } from "./extensions/builtin/mcp/host-registry.ts";
 import type { ServiceTier } from "./extensions/builtin/service-tier.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { drainPendingProviderRegistrations } from "./extensions/loader.ts";
@@ -44,6 +45,7 @@ export interface CreateAgentSessionServicesOptions {
 	agentDir?: string;
 	settingsManager?: SettingsManager;
 	modelRuntime?: ModelRuntime;
+	mcpRegistry?: HostMcpRegistry;
 	modelRuntimeSignal?: AbortSignal;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
@@ -176,23 +178,28 @@ export async function createAgentSessionServices(
 		cwd,
 		agentDir,
 		settingsManager,
+		mcpRegistry: options.mcpRegistry,
 	});
 	const { primary: modelRuntime } = await joinStartupBranches(
 		runtimePromise,
 		resourceLoader.reload(options.resourceLoaderReloadOptions),
 	);
 	const modelRegistry = new ModelRegistry(modelRuntime, authStorage);
+	modelRuntime.setSettingsManager(settingsManager);
 
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	const extensionsResult = resourceLoader.getExtensions();
+	const registeredProviders = new Set<string>();
 	// Replay registrations queued during extension loading in original call order
 	// so last-registration-wins holds across mixed legacy/native registrations.
 	for (const registration of drainPendingProviderRegistrations(extensionsResult.runtime)) {
 		try {
 			if (registration.kind === "config") {
 				void modelRuntime.registerProvider(registration.name, registration.config, { refresh: false });
+				registeredProviders.add(registration.name);
 			} else {
 				void modelRuntime.registerNativeProvider(registration.provider, { refresh: false });
+				registeredProviders.add(registration.provider.id);
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -202,7 +209,16 @@ export async function createAgentSessionServices(
 			});
 		}
 	}
-	await modelRuntime.refresh({ allowNetwork: false });
+	// A runtime built for this session refreshes everything it has, which is what
+	// it just composed. A runtime shared across a host's sessions already holds
+	// every provider earlier opens refreshed, so this open recomposes only what
+	// it added - an unscoped refresh there rebuilt every provider on every open,
+	// serialized on the one instance (senpi#1844).
+	if (options.modelRuntime === undefined) {
+		await modelRuntime.refresh({ allowNetwork: false });
+	} else if (registeredProviders.size > 0) {
+		await modelRuntime.refresh({ allowNetwork: false, providers: [...registeredProviders] });
+	}
 	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
 
 	return {

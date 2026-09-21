@@ -6,12 +6,12 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import { type Args, type Mode, normalizeSessionName, parseArgs, printHelp } from "./cli/args.ts";
+import { type Args, type Mode, normalizeSessionName, parseArgs, printHelp, resolveSessionRuntime } from "./cli/args.ts";
 import {
 	type AuthCheckResult,
 	checkProviderAuth,
@@ -29,7 +29,12 @@ import {
 	validateAuthCommandArgs,
 } from "./cli/auth-command.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
-import { dispatchAppServerCommand, dispatchConfigCommand, dispatchPackageCommand } from "./cli/deferred-commands.ts";
+import {
+	dispatchAppServerCommand,
+	dispatchConfigCommand,
+	dispatchHostCommand,
+	dispatchPackageCommand,
+} from "./cli/deferred-commands.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { resolveHelpExtensionFlags } from "./cli/help-extension-flags.ts";
 import { helpFlagsScope, isPlainHelpRequest, resolveHelpProjectTrust } from "./cli/help-fast-path.ts";
@@ -74,6 +79,7 @@ import {
 	type SessionCwdIssue,
 } from "./core/session-cwd.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
+import { collectSettingsDiagnosticsWithContext } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { shouldJoinSharedHost } from "./core/shared-host-policy.ts";
 import { printTimings, recordTiming, resetTimings, time } from "./core/timings.ts";
@@ -111,16 +117,6 @@ async function readPipedStdin(): Promise<string | undefined> {
 		});
 		process.stdin.resume();
 	});
-}
-
-function collectSettingsDiagnostics(
-	settingsManager: SettingsManager,
-	context: string,
-): AgentSessionRuntimeDiagnostic[] {
-	return settingsManager.drainErrors().map(({ scope, error }) => ({
-		type: "warning",
-		message: `(${context}, ${scope} settings) ${error.message}`,
-	}));
 }
 
 function collectAuthDiagnostics(authStorage: AuthStorage, context: string): AgentSessionRuntimeDiagnostic[] {
@@ -179,20 +175,24 @@ function toProjectTrustMode(appMode: AppMode): AppMode {
 /**
  * Interactive launches auto-title by default. RPC clients can opt in through
  * `auto_title_sessions`; every other non-interactive app mode opts in with
- * `--auto-title-sessions`. Sessions resumed with existing context messages are
- * never retitled, whatever the mode, capability, or flag.
+ * `--auto-title-sessions`. A per-session `open_session.auto_title`, when present,
+ * replaces that host-wide decision for that session only. Sessions resumed with
+ * existing context messages are never retitled, whatever the mode, capability,
+ * flag, or per-session override.
  */
 export function resolveAutoTitleSessions(
 	appMode: AppMode,
 	parsed: Args,
 	hasContextMessages: boolean,
 	clientCapabilities: readonly string[] = parseClientCapabilities(envValue("RPC_CLIENT_CAPABILITIES")),
+	sessionAutoTitle?: boolean,
 ): boolean {
+	if (hasContextMessages) return false;
+	if (sessionAutoTitle !== undefined) return sessionAutoTitle;
 	return (
-		(appMode === "interactive" ||
-			parsed.autoTitleSessions === true ||
-			(appMode === "rpc" && clientCapabilities.includes(AUTO_TITLE_SESSIONS_CAPABILITY))) &&
-		!hasContextMessages
+		appMode === "interactive" ||
+		parsed.autoTitleSessions === true ||
+		(appMode === "rpc" && clientCapabilities.includes(AUTO_TITLE_SESSIONS_CAPABILITY))
 	);
 }
 
@@ -705,6 +705,15 @@ export function createCliRuntimeFactory(
 		extensionFactories?: InlineExtension[];
 		startupSettingsManager?: SettingsManager;
 		startupLoadingIndicator?: ReturnType<typeof createStartupLoadingIndicator>;
+		/**
+		 * One model runtime for every session this factory creates. A shared host's
+		 * sessions all live in one agent dir, so they would each build an identical
+		 * runtime - ~100 ms of loop CPU per open that, concurrent, every open pays
+		 * N times over (senpi#1844). Provider registration is keyed by id and
+		 * merges, so replaying each session's extension providers into one runtime
+		 * is idempotent.
+		 */
+		modelRuntime?: ModelRuntime;
 	} = {},
 ): CreateAgentSessionRuntimeFactory {
 	const { parsed, cwd, agentDir, appMode } = configuration;
@@ -725,7 +734,15 @@ export function createCliRuntimeFactory(
 	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
 	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates);
 	const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
-	return async ({ cwd, agentDir, sessionManager, sessionStartEvent, projectTrustContext, launchProfile }) => {
+	return async ({
+		cwd,
+		agentDir,
+		sessionManager,
+		sessionStartEvent,
+		projectTrustContext,
+		launchProfile,
+		mcpRegistry,
+	}) => {
 		const isInitialRuntime = sessionStartEvent === undefined;
 		const projectTrustDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
 		const cachedProjectTrust = projectTrustByCwd.get(cwd);
@@ -742,6 +759,8 @@ export function createCliRuntimeFactory(
 			cwd,
 			agentDir,
 			settingsManager: runtimeSettingsManager,
+			...(local.modelRuntime === undefined ? {} : { modelRuntime: local.modelRuntime }),
+			mcpRegistry,
 			modelRuntimeSignal: AbortSignal.timeout(15_000),
 			extensionFlagValues: parsed.unknownFlags,
 			resourceLoaderReloadOptions: shouldResolveProjectTrust
@@ -776,6 +795,11 @@ export function createCliRuntimeFactory(
 					enableEnv: isTruthyEnvFlag(envValue("ENABLE_SHARED_HOST")),
 					settingEnabled: runtimeSettingsManager.getExperimentalSharedHost(),
 				}),
+				// Per-session identity reaches the extensions this session loads and stops
+				// there: it is deliberately NOT merged into `parsed`, so it can never move
+				// a model, an auth decision or a CLI flag.
+				sessionKind: launchProfile?.sessionKind,
+				sessionContext: launchProfile?.sessionContext,
 				additionalExtensionPaths: resolvedExtensionPaths,
 				additionalSkillPaths: resolvedSkillPaths,
 				additionalPromptTemplatePaths: resolvedPromptTemplatePaths,
@@ -794,7 +818,7 @@ export function createCliRuntimeFactory(
 		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 			...projectTrustDiagnostics,
 			...services.diagnostics,
-			...collectSettingsDiagnostics(settingsManager, "runtime creation"),
+			...collectSettingsDiagnosticsWithContext(settingsManager, "runtime creation"),
 			...collectExtensionLoadDiagnostics(resourceLoader.getExtensions().errors),
 		];
 
@@ -868,6 +892,7 @@ export function createCliRuntimeFactory(
 				parsed,
 				sessionManager.hasContextMessages(),
 				parseClientCapabilities(envValue("RPC_CLIENT_CAPABILITIES")),
+				launchProfile?.autoTitle,
 			),
 		});
 		const cliThinkingOverride = runtimeParsed.thinking !== undefined || cliThinkingFromModel;
@@ -941,6 +966,13 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
+	// The shared-daemon command: one JSON line on stdout and an exit code that classifies it, so it
+	// exits here rather than falling through into argument parsing and the interactive path.
+	const hostExitCode = await dispatchHostCommand(args);
+	if (hostExitCode !== undefined) {
+		process.exit(hostExitCode);
+	}
+
 	const parsed = parseArgs(args);
 	if (parsed.diagnostics.length > 0) {
 		for (const d of parsed.diagnostics) {
@@ -999,7 +1031,7 @@ export async function main(args: string[], options?: MainOptions) {
 	time("runMigrations");
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
-	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
+	reportDiagnostics(collectSettingsDiagnosticsWithContext(startupSettingsManager, "startup session lookup"));
 	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions);
 	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
 	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates);
@@ -1052,7 +1084,7 @@ export async function main(args: string[], options?: MainOptions) {
 		});
 		reportDiagnostics([
 			...services.diagnostics,
-			...collectSettingsDiagnostics(services.settingsManager, "model listing"),
+			...collectSettingsDiagnosticsWithContext(services.settingsManager, "model listing"),
 			...collectAuthDiagnostics(services.authStorage, "model listing"),
 		]);
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
@@ -1080,13 +1112,40 @@ export async function main(args: string[], options?: MainOptions) {
 	if (appMode === "rpc" && parsed.multiSession) {
 		if (options?.extensionFactories?.length)
 			throw new Error("Shared RPC workers require file-backed extensions; inline factories cannot cross isolates");
-		const workerConfiguration = { parsed, cwd, agentDir, appMode };
+		const runtimeConfiguration = { parsed, cwd, agentDir, appMode };
+		// Socket hosts (the machine-wide daemon) run every session IN this process:
+		// createHostCore selects the worker registry only when a workerConfiguration
+		// is passed, so withholding it is what selects the uncapped in-process registry.
+		const sessionRuntime = resolveSessionRuntime(parsed);
 		const { runMultiSessionHost } = await import("./modes/rpc/multi-session-host.ts");
+		// In-process sessions share the host's model runtime: one agent dir, one
+		// catalog. Worker sessions build their own inside the isolate - an object
+		// cannot cross that boundary - so the shared one is offered only here.
+		const hostModelRuntime =
+			sessionRuntime === "worker"
+				? undefined
+				: await ModelRuntime.create({
+						credentials: AuthStorage.create(join(agentDir, "auth.json")),
+						authPath: join(agentDir, "auth.json"),
+						agentDir,
+						modelsPath: join(agentDir, "models.json"),
+						signal: AbortSignal.timeout(15_000),
+					});
+		// The multi-session host below never returns, so the initTheme() call further
+		// down main() is unreachable on this path. Extensions load per open_session and
+		// read the theme proxy: the worker runtime initializes the theme inside each
+		// session worker, but the in-process runtime (the socket-host default) shares
+		// this process, so the host must initialize the theme before serving sessions -
+		// otherwise theme-touching extensions fail with "Theme not initialized. Call
+		// initTheme() first." (senpi#1894).
+		initTheme(startupSettingsManager.getTheme(), false);
 		printTimings();
 		await runMultiSessionHost({
 			agentDir,
-			createRuntime: createCliRuntimeFactory(workerConfiguration),
-			workerConfiguration,
+			createRuntime: createCliRuntimeFactory(runtimeConfiguration, {
+				...(hostModelRuntime === undefined ? {} : { modelRuntime: hostModelRuntime }),
+			}),
+			...(sessionRuntime === "worker" ? { workerConfiguration: runtimeConfiguration } : {}),
 			cwd,
 			creationModel:
 				parsed.provider && parsed.model ? { provider: parsed.provider, modelId: parsed.model } : undefined,
@@ -1201,6 +1260,7 @@ export async function main(args: string[], options?: MainOptions) {
 		printHelp(extensionFlags);
 		process.exit(0);
 	}
+	time("extensionFlags");
 	// Every full launch refreshes what `--help` reads, so the fast path stays warm without a help
 	// run of its own.
 	writeHelpFlagsCache({
@@ -1208,6 +1268,7 @@ export async function main(args: string[], options?: MainOptions) {
 		flags: extensionFlags,
 		extensionPaths: loadedExtensions.map((extension) => extension.resolvedPath),
 	});
+	time("helpFlagsCache");
 
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
 	let stdinContent: string | undefined;

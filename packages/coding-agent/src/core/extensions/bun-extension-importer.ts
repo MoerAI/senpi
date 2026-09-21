@@ -3,8 +3,11 @@ import { createRequire, isBuiltin } from "node:module";
 import { dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "es-module-lexer/js";
+import { isCommonJsFile, rewriteCommonJsImport } from "./bun-extension-commonjs.ts";
 import { ExtensionSourceError } from "./bun-extension-error.ts";
 import {
+	type CommonJsBody,
+	type CommonJsModule,
 	ExtensionGenerationDisposedError,
 	extensionNamespace,
 	type ModuleSource,
@@ -29,6 +32,10 @@ export function createBunExtensionImporter(
 ) {
 	const sources = new Map<string, ModuleSource>();
 	const commonJs = new Set<string>();
+	// Live `module` objects by id, registered while a CommonJS body runs: a require inside a
+	// cycle receives the partially built exports, as in Node, instead of an unset ESM default.
+	// A body that throws is evicted so a later require re-throws instead of seeing a half-built module.
+	const commonJsModules = new Map<string, CommonJsModule>();
 	const nativeRequire = createRequire(import.meta.url);
 	let active = true;
 	const assertActive = () => {
@@ -36,20 +43,39 @@ export function createBunExtensionImporter(
 	};
 	const moduleId = (filename: string) =>
 		`${extensionNamespace}:${registration.generation}/${encodeURIComponent(filename)}`;
+	const resolveTarget = (specifier: string, filename: string): { readonly id: string; readonly path?: string } => {
+		assertActive();
+		if (Object.hasOwn(virtualModules, specifier) || isBuiltin(specifier) || specifier.startsWith("bun:"))
+			return { id: specifier };
+		if (specifier.startsWith(`${extensionNamespace}:`)) return { id: specifier };
+		const path = specifier.startsWith("file:") ? fileURLToPath(specifier) : specifier;
+		const resolved = realpathSync(Bun.resolveSync(path, dirname(filename)));
+		return { id: moduleId(resolved), path: resolved };
+	};
 	const graph = {
 		assertActive,
 		resolve(specifier: string, filename: string): string {
-			assertActive();
-			if (Object.hasOwn(virtualModules, specifier) || isBuiltin(specifier) || specifier.startsWith("bun:"))
-				return specifier;
-			if (specifier.startsWith(`${extensionNamespace}:`)) return specifier;
-			const path = specifier.startsWith("file:") ? fileURLToPath(specifier) : specifier;
-			return moduleId(realpathSync(Bun.resolveSync(path, dirname(filename))));
+			return resolveTarget(specifier, filename).id;
 		},
 		require(specifier: string, filename: string): unknown {
 			const id = graph.resolve(specifier, filename);
+			const evaluating = commonJsModules.get(id);
+			if (evaluating !== undefined) return evaluating.exports;
 			const result: { readonly default?: unknown } = nativeRequire(id);
 			return commonJs.has(id) ? result.default : result;
+		},
+		evaluateCommonJs(filename: string, body: CommonJsBody): unknown {
+			assertActive();
+			const id = moduleId(filename);
+			const module: CommonJsModule = { exports: {} };
+			commonJsModules.set(id, module);
+			try {
+				body.call(module.exports, module.exports, module);
+			} catch (error) {
+				commonJsModules.delete(id);
+				throw error;
+			}
+			return module.exports;
 		},
 		load(filename: string): ModuleSource {
 			assertActive();
@@ -78,29 +104,48 @@ export function createBunExtensionImporter(
 			}
 			const [imports, , , hasModuleSyntax] = parse(contents, filename);
 			const edits: { readonly start: number; readonly end: number; readonly text: string }[] = [];
+			let commonJsImports = 0;
 			for (const edge of imports) {
-				if (edge.d >= 0) {
+				if (edge.type === "dynamic") {
 					// Replace the keyword, not its argument: nested expressions, templates,
 					// import attributes, and unavailable optional dependencies stay lazy.
-					edits.push({ start: edge.ss, end: edge.d, text: `${name}.import` });
-				} else if (edge.n !== undefined) {
-					edits.push({
-						start: edge.s - 1,
-						end: edge.e + 1,
-						text: JSON.stringify(graph.resolve(edge.n, filename)),
-					});
+					edits.push({ start: edge.importStart, end: edge.dynamicStart, text: `${name}.import` });
+				} else if (edge.type === "static" || edge.type === "reexport-star") {
+					const target = resolveTarget(edge.specifier, filename);
+					if (target.path !== undefined && isCommonJsFile(target.path)) {
+						// "import" and "export" are both six characters, so the clause is
+						// whatever sits between the keyword and the specifier in either form.
+						const clause = contents
+							.slice(edge.importStart + "import".length, edge.start - 1)
+							.replace(/\bfrom\s*$/, "");
+						// This branch replaces the whole statement, so the attributes between the
+						// specifier and the end of it have to travel with it: they pick the loader.
+						const attributes =
+							edge.attributesStart < 0 ? "" : contents.slice(edge.end + 1, edge.importEnd).replace(/;\s*$/, "");
+						edits.push({
+							start: edge.importStart,
+							end: edge.importEnd,
+							text: rewriteCommonJsImport(clause, target.id, `${name}Cjs${commonJsImports++}`, attributes),
+						});
+					} else {
+						edits.push({ start: edge.start - 1, end: edge.end + 1, text: JSON.stringify(target.id) });
+					}
 				}
 			}
 			for (const edit of edits.sort((a, b) => b.start - a.start)) {
 				contents = contents.slice(0, edit.start) + edit.text + contents.slice(edit.end);
 			}
-			// Runtime plugins load ESM, even for CommonJS source. A local module
-			// wrapper preserves synchronous export assignment.
-			if (!hasModuleSyntax) {
+			// A shebang is only a shebang on the first line, so it goes before any prologue.
+			contents = contents.replace(/^#![^\n]*\n/, "");
+			// Runtime plugins load ESM, even for CommonJS source. Node's module
+			// function wrapper preserves synchronous export assignment and keeps
+			// `exports` and `module` reassignable bindings with `this` as the exports
+			// object, as dependencies such as whatwg-url and jsdom require.
+			if (!hasModuleSyntax && extension !== ".mjs" && extension !== ".mts") {
 				commonJs.add(moduleId(filename));
-				contents = `const module = { exports: {} }; const exports = module.exports;\n${contents}\nexport default module.exports;`;
+				contents = `export default ${name}.commonJs(function (exports, module) {\n${contents}\n});`;
 			}
-			contents = `import { metadata as ${name}Factory } from "${extensionNamespace}:runtime";\nconst ${name} = ${name}Factory(${JSON.stringify(registration.generation)}, ${JSON.stringify(filename)});\n${contents.replace(/^#![^\n]*\n/, "")}`;
+			contents = `import { metadata as ${name}Factory } from "${extensionNamespace}:runtime";\nconst ${name} = ${name}Factory(${JSON.stringify(registration.generation)}, ${JSON.stringify(filename)});\n${contents}`;
 			const prepared = { contents, loader: "js" } satisfies ModuleSource;
 			sources.set(filename, prepared);
 			return prepared;
@@ -126,6 +171,7 @@ export function createBunExtensionImporter(
 			registration.dispose();
 			sources.clear();
 			commonJs.clear();
+			commonJsModules.clear();
 		},
 	};
 }

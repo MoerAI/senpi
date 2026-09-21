@@ -124,6 +124,10 @@ export class SessionWorkerClient {
 		return this.requests.activeCount > 0 || this.snapshot?.busy === true;
 	}
 
+	get handoffBusy(): boolean {
+		return this.requests.activeCount > 0 || (this.snapshot?.handoffBusy ?? this.snapshot?.busy) === true;
+	}
+
 	subscribeSettled(listener: () => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
@@ -269,11 +273,15 @@ export class SessionWorkerClient {
 		const sessionId = this.sessionId;
 		if (error === undefined || !writer || !sessionId) return;
 		this.terminalFailure = undefined;
-		writer.closeSession(sessionId, {
-			type: "response",
-			command: "close_session",
-			success: false,
-			error,
-		});
+		writer.closeSession(
+			sessionId,
+			{
+				type: "response",
+				command: "close_session",
+				success: false,
+				error,
+			},
+			"error",
+		);
 	}
 }

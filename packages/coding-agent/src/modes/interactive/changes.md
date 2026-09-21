@@ -1,3 +1,79 @@
+## 2026-09-21 - Bind extension user edits locally and through the interactive host
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: binds `editUserMessage` beside assistant edits, refreshes history only after a changed edit, and forwards navigation's caller-supplied `expectedLeafId`.
+- `packages/coding-agent/src/modes/interactive/interactive-host-runtime.ts`: forwards user edits to the host rather than the local shadow, restores core typed refusals from wire codes, refreshes history after edits, and returns `result.entry.id`, never the metadata-advanced `leafId`.
+
+### Why
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: the new extension capability must work in interactive mode as well as print and RPC.
+- `packages/coding-agent/src/modes/interactive/interactive-host-runtime.ts`: missing proxy methods fall through to the local session, so merely adding the mode binding would edit the wrong session. The client navigation return now includes a leaf, while the proxy's transport-loss cancellation remains a core-shaped result.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` owns command action construction and history refresh.
+- `packages/coding-agent/src/modes/interactive/interactive-host-runtime.ts` owns the session proxy and wire-to-core result/error translation.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `commandContextActions` navigation and assistant-edit neighbours.
+- `packages/coding-agent/src/modes/interactive/interactive-host-runtime.ts`: edit-related imports and proxy navigation/edit property cases.
+
+## 2026-09-20 - Surface a held model switch (senpi#1873)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` renders the new `model_change_pending` event as a warning and invalidates the footer, so a switch waiting for the next message to compact for it is visible rather than looking like nothing happened.
+
+### Why
+
+- #1873 stops refusing a switch onto a model that one compaction would make usable, and holds it instead. Without a surface the model selector would appear to do nothing: the picker closes, the footer still shows the old model, and no error is printed.
+
+### Why an extension could not handle it
+
+- The event is emitted by the session's admission path and consumed by the interactive event switch, which no extension can extend with a new case.
+
+### Expected merge conflict zones
+
+- LOW: the session-event switch in `interactive-mode.ts`, next to the `model_change_skipped` case.
+
+## 2026-09-20 - Share the ask-user answer-frame parser (#1857 I3)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-answer-chip.ts` re-exports the parser and frame type from the ask-user formatter. The chip's public exports remain unchanged.
+
+### Why
+
+- Restart recovery and transcript rendering must recognize the same frame. Separate copies could drift and cause answered questions to be presented again.
+
+### Why an extension could not handle it
+
+- The host's transcript component imports this parser directly; an external extension cannot change that import.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/components/ask-user-answer-chip.ts`: parser import and re-export.
+
+## 2026-09-20 - Restore question drafts after reload (#1857 I1)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` passes `initialDraft` to the blocking question component and uses it to initialize async question state.
+
+### Why
+
+- Reattaching the UI must restore the user's selections and comment rather than displaying a fresh question.
+
+### Why an extension could not handle it
+
+- The host owns creation of both question surfaces; the builtin already retains the draft but cannot seed the host's UI without this option.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: QuestionOverlayOptions, showQuestionOverlay, and showAsyncQuestion.
+
 ## 2026-09-17 - Remember the detected terminal background (senpi#1781)
 
 ### What changed
@@ -1236,3 +1312,29 @@
 - HIGH: `components/tool-execution.ts` and `components/assistant-message.ts` render paths; `components/status-indicator.ts` class set.
 - MEDIUM: `theme/theme.ts` validator and built-in theme loading; `components/scoped-models-selector.ts` toggle logic.
 - LOW: `chat-viewport.ts` options; `tui-renderer.ts` terminal construction; `components/index.ts` export list; `components/custom-editor.ts` padding overrides; `components/thinking-selector.ts` label text.
+
+## 2026-09-20 - Coalesce provider network failures (senpi#1874)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` routes live errors, summary retries, cancellation, and replay through `provider-error-presentation.ts`, which owns the displayed failure episode without changing stored messages.
+- `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts` keeps network diagnostics in expanded output rather than printing a raw envelope by default.
+- `packages/coding-agent/src/modes/interactive/components/assistant-message.ts` marks errors owned by the grouped notice so expansion does not repeat them on every failed assistant message.
+- `packages/coding-agent/src/modes/interactive/components/status-indicator.ts` adds a plain-language network retry status with the existing attempt count and countdown.
+
+### Why
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` appended each summary error and each plain provider envelope; its message-end handler also rendered raw errors before retry-start arrived.
+- `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts` replayed those same envelopes in full.
+- `packages/coding-agent/src/modes/interactive/components/assistant-message.ts` otherwise expanded all 17 failed messages even after their errors had been grouped.
+- `packages/coding-agent/src/modes/interactive/components/status-indicator.ts` already owned retry timing, so it remains the single transient status surface.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`, `packages/coding-agent/src/modes/interactive/components/assistant-message.ts`, `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts`, and `packages/coding-agent/src/modes/interactive/components/status-indicator.ts` own the built-in event-to-render path before an extension can replace its transcript output.
+
+### Expected merge conflict zones
+
+- MEDIUM: event cases and replay in `packages/coding-agent/src/modes/interactive/interactive-mode.ts`.
+- LOW: error descriptors in `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts` and retry wording in `packages/coding-agent/src/modes/interactive/components/status-indicator.ts`.
+- LOW: display ownership in `packages/coding-agent/src/modes/interactive/components/assistant-message.ts`.

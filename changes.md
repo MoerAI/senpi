@@ -1,5 +1,110 @@
 # changes — senpi-monorepo root
 
+## Unify the shared and evals Vitest runners (2026-09-21)
+
+### What changed
+
+- `package.json` pins the root development runner and its V8 coverage provider to 5.0.1 so the hoisted runner can load coverage.
+- `.gitignore` excludes the `.vitest/` artifact directory.
+- `package-lock.json` and `bun.lock` resolve Vitest and V8 coverage 5.0.1 across every workspace, including evals.
+- `package.json` overrides vitest-evals 0.17.0's Vitest peer edge to 5.0.1.
+- `bun.lock` retains configuration version 0 and the existing hoisted install layout.
+
+### Why
+
+- PTY and codemode invoke the hoisted runner without declaring it. A root pin makes their shared runner version explicit under both npm and Bun.
+- vitest-evals 0.17.0 declares Vitest `>=4 <5`. Its npm peer override makes the single-major installation explicit; runtime tests and TypeScript checks verify compatibility instead of preserving a split runner graph.
+- Bun hoists the harness beside the root runner even when a lock entry requests workspace nesting. Keeping every runner on 5.0.1 avoids mixed TaskMeta types without changing the native workflows' root dependency paths.
+
+### Why an extension could not handle it
+
+- Package managers select test runners and resolve peer dependencies before extensions load.
+
+### Expected merge conflict zones
+
+- The root development dependencies and generated dependency locks.
+
+## Run the two dev lanes through run-workspaces --parallel and drop concurrently (2026-09-21)
+
+### What changed
+
+- `package.json`: the root `dev` script is `node scripts/run-workspaces.mjs --parallel --workspace packages/ai --workspace packages/coding-agent dev`; the `concurrently` devDependency is removed and `shell-quote` 1.10.0 is declared as a root devDependency — three repository scripts import it directly but it only reached `node_modules` as `concurrently`'s transitive dependency (its version was already pinned by the root override). `package-lock.json` / `bun.lock` are regenerated the repository way (`bun.lock` stays `configVersion: 0`).
+
+### Why
+
+- `concurrently` was the last root script that bypassed the package-manager-agnostic runner from #1447; `npm run dev`, `bun run dev` and `pnpm run dev` now all start both lanes through the same driver, with prefixed output and one Ctrl-C reaching every lane (senpi#1895).
+
+### Why an extension could not handle it
+
+- Root scripts and the dependency closure are resolved by the package manager before any extension loads.
+
+### Expected merge conflict zones
+
+- The root `scripts.dev` line and the root devDependency block, on every upstream tooling bump.
+
+## Refresh the dependency pins and pin past the reachable advisories (2026-09-21)
+
+### What changed
+
+- `package.json`: the root `overrides` block moves `fast-uri` to 3.1.8, `brace-expansion` to 5.0.12 and `@anthropic-ai/sdk` to 0.127.0, and gains `express-rate-limit` 8.7.0, `hono` 4.13.8, `ip-address` 10.7.2, `qs` 6.16.0 and a nested `@earendil-works/gondolin` > `undici` 6.28.1. `@types/node` moves to 26.6.2, `@biomejs/biome` to 2.5.14 and `tsx` to 4.23.13.
+- `biome.json`: the `$schema` URL follows the Biome pin to 2.5.14.
+- `packages/telemetry/package.json`: `@types/node` moves to 26.6.2.
+
+### Why
+
+- Every advisory `npm audit` and `bun audit` could reach came in through a transitive edge the fork does not declare: `fast-uri` and `ajv`, and the `@modelcontextprotocol/sdk` subtree that carries `hono`, `qs` and `express-rate-limit` > `ip-address`. `scripts/regenerate-bun-lock-isolated.mjs` seeds its island with the committed `bun.lock`, so re-resolving only the npm lock left Bun on the vulnerable copies; declaring the versions as overrides moves both lockfiles together without drifting the 56 unrelated transitives a from-scratch Bun resolution touched.
+- `tsx` stops at 4.23.13 because 4.23.14 and 4.23.15 were both published 2026-09-20, inside the `.npmrc` `min-release-age=2` window npm enforces.
+
+### Why an extension could not handle it
+
+- Dependency resolution and formatter configuration are read by the package manager and the toolchain before any extension is loaded.
+
+### Expected merge conflict zones
+
+- LOW: the `overrides` block and the devDependency versions, on every upstream manifest bump.
+
+## Make B.AI credentials available to development environments (2026-09-18)
+
+### What changed
+
+- `.devcontainer/devcontainer.json` exposes an optional B.AI secret alongside the other provider keys.
+- `pi-test.sh`, `pi-test.ps1`, `test.sh`, and
+  `packages/coding-agent/scripts/qa-app-server/lib/env.mjs` scrub `BAI_API_KEY` from hermetic test processes.
+
+### Why
+
+- The native B.AI provider should work consistently in local checkouts and dev containers without storing
+  credentials in tracked files.
+
+### Why an extension could not handle it
+
+- Development environment bootstrapping and container secret declarations run before Senpi or its extensions.
+
+### Expected merge conflict zones
+
+- LOW: the provider-key arrays in the setup script and devcontainer secret block.
+
+## Root check verifies formatting instead of rewriting it (2026-09-17)
+
+### What changed
+
+- `package.json`: the root `check` script now runs `biome check --error-on-warnings .` (read-only) instead of `biome check --write --error-on-warnings .`, so format drift fails the script rather than being silently repaired. A new `check:fix` script keeps the autofix form (`biome check --write --error-on-warnings . && npm run check`) for local use.
+- `.husky/pre-commit`: runs `npm run check:fix`, preserving the hook's existing autofix-then-verify behavior now that `check` no longer writes.
+- `.github/workflows/releasability.yml`: drops the hand-inlined read-only biome step plus its verbatim copy of the remaining check sub-scripts and calls `npm run check` directly; that workaround existed only because `check` autofixed, and its copy had already drifted from the real chain (missing `check:entry-graphs` and `check:claude-sdk-platform-lock`).
+
+### Why
+
+- #1443: the CI `Static checks` job runs `npm run check`, whose leading `biome check --write` reformats offending files inside the runner and exits 0. The rewrite is discarded when the runner exits, so a formatting regression could never fail CI while drift accumulated on main. Root `AGENTS.md` also requires the local check and CI to stay in sync; with autofix in the shared script they disagreed by construction.
+
+### Why an extension could not handle it
+
+- The root `package.json` script chain, the Husky hook, and the workflow step are build-time and repository-policy gates that execute before any Senpi runtime loads; no runtime extension participates in them.
+
+### Expected merge conflict zones
+
+- LOW: the `check` script string in root `package.json` and the adjacent `check:fix` entry.
+- LOW: the check invocation line in `.husky/pre-commit`.
+
 ## claude-sdk-oauth re-login refreshes the slot; stored pool blocks bind to credential revisions (2026-09-17)
 
 ### What changed

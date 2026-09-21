@@ -586,6 +586,15 @@ export interface ProviderRequestPreparation {
 	transformHeaders(headers: ProviderHeaders): Promise<ProviderHeaders>;
 }
 
+export interface ExtensionTreeNavigationOptions {
+	summarize?: boolean;
+	customInstructions?: string;
+	replaceInstructions?: boolean;
+	label?: string;
+	/** The caller's last observed leaf, not the selected message's entry ID. */
+	expectedLeafId?: string;
+}
+
 /**
  * Extended context for command handlers.
  * Includes session control methods only safe in user-initiated commands.
@@ -609,10 +618,10 @@ export interface ExtensionCommandContext extends ExtensionContext {
 		options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
 	): Promise<{ cancelled: boolean }>;
 
-	/** Navigate to a different point in the session tree. */
+	/** Navigate by entry ID; the positional targetId form remains supported unchanged. */
 	navigateTree(
-		targetId: string,
-		options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
+		targetId: string | ({ entryId: string } & ExtensionTreeNavigationOptions),
+		options?: ExtensionTreeNavigationOptions,
 	): Promise<{ cancelled: boolean }>;
 
 	/**
@@ -622,6 +631,17 @@ export interface ExtensionCommandContext extends ExtensionContext {
 	 * Rejects with the same typed errors as `AgentSession.editAssistantMessage`.
 	 */
 	editAssistantMessage(
+		entryId: string,
+		text: string,
+		options?: { summarize?: boolean; customInstructions?: string; expectedLeafId?: string },
+	): Promise<{ cancelled: boolean; unchanged?: boolean; entryId?: string }>;
+
+	/**
+	 * Replace a user prompt with an edited copy, preserving attachments and the abandoned branch.
+	 * Uses the same options as editAssistantMessage; starts no turn. Rejects with UserEditError
+	 * (not-found, not-user, empty, stale-leaf) or SessionStreamingError, unchanged from core.
+	 */
+	editUserMessage(
 		entryId: string,
 		text: string,
 		options?: { summarize?: boolean; customInstructions?: string; expectedLeafId?: string },
@@ -908,6 +928,16 @@ export interface SessionInfoChangedEvent {
 	name: string | undefined;
 }
 
+/** Fired when the last client detaches from a retained in-process RPC session. */
+export interface SessionParkedEvent {
+	type: "session_parked";
+}
+
+/** Fired when the first client reattaches to an open, parked in-process RPC session. */
+export interface SessionResumedEvent {
+	type: "session_resumed";
+}
+
 /** Fired before switching to another session (can be cancelled) */
 export interface SessionBeforeSwitchEvent {
 	type: "session_before_switch";
@@ -1065,6 +1095,8 @@ export interface SessionTreeEvent {
 export type SessionEvent =
 	| SessionStartEvent
 	| SessionInfoChangedEvent
+	| SessionParkedEvent
+	| SessionResumedEvent
 	| SessionBeforeSwitchEvent
 	| SessionBeforeForkEvent
 	| SessionBeforeReloadEvent
@@ -1715,6 +1747,44 @@ export interface ResolvedCommand extends RegisteredCommand {
 }
 
 // ============================================================================
+// Session identity (per-session facts an extension is loaded with)
+// ============================================================================
+
+/**
+ * Engine-level visibility class of a session, chosen by whoever opened it
+ * (`open_session.kind`). `worker` sessions are machine-driven work (a task child, a
+ * team member) that clients do not list or mirror by default; every other session -
+ * classic launches, interactive opens, and any open that omits the field - is
+ * `interactive`.
+ */
+export type SessionKind = "interactive" | "worker";
+
+/**
+ * Opaque per-session labels the opener attached (`open_session.context`). The engine
+ * never interprets them: they carry no auth, no model and no resource decision, and
+ * exist so ONE host with ONE extension set can let an extension recognize the session
+ * it was loaded for.
+ */
+export type SessionContext = Readonly<Record<string, string>>;
+
+/** What a session opened without `context` sees - shared so no caller invents its own. */
+export const EMPTY_SESSION_CONTEXT: SessionContext = Object.freeze({});
+
+/** The per-session facts an extension factory may branch on at registration time. */
+export interface ExtensionSessionProfile {
+	readonly sharedHostEnabled: boolean;
+	readonly sessionKind: SessionKind;
+	readonly sessionContext: SessionContext;
+}
+
+/** The profile a classic launch (and any caller that names none) loads extensions with. */
+export const DEFAULT_EXTENSION_SESSION_PROFILE: ExtensionSessionProfile = Object.freeze({
+	sharedHostEnabled: false,
+	sessionKind: "interactive",
+	sessionContext: EMPTY_SESSION_CONTEXT,
+});
+
+// ============================================================================
 // Extension API
 // ============================================================================
 
@@ -1734,6 +1804,18 @@ export interface ExtensionAPI {
 	readonly cwd: string;
 	/** Effective shared-host capability for registration-time extension decisions. */
 	readonly sharedHostEnabled: boolean;
+	/**
+	 * Visibility class of the session this extension instance was loaded for
+	 * (`open_session.kind`). `interactive` for classic launches and every open that
+	 * omits the field.
+	 */
+	readonly sessionKind: SessionKind;
+	/**
+	 * Opaque labels the opener attached to this session (`open_session.context`), or
+	 * `{}` when it attached none. One extension set can therefore serve every session
+	 * of a shared host and still gate itself per session.
+	 */
+	readonly sessionContext: SessionContext;
 
 	// =========================================================================
 	// Event Subscription
@@ -1743,6 +1825,8 @@ export interface ExtensionAPI {
 	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
 	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): void;
+	on(event: "session_parked", handler: ExtensionHandler<SessionParkedEvent>): void;
+	on(event: "session_resumed", handler: ExtensionHandler<SessionResumedEvent>): void;
 	on(
 		event: "session_before_switch",
 		handler: ExtensionHandler<SessionBeforeSwitchEvent, SessionBeforeSwitchResult>,
@@ -2429,7 +2513,7 @@ export interface LoadedHookSources {
 
 /**
  * Actions for ExtensionCommandContext (ctx.* in command handlers).
- * Only needed for interactive mode where extension commands are invokable.
+ * Bound by interactive, print, and RPC modes where extension commands are invokable.
  */
 export interface ExtensionCommandContextActions {
 	waitForIdle: () => Promise<void>;
@@ -2442,15 +2526,13 @@ export interface ExtensionCommandContextActions {
 		entryId: string,
 		options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
 	) => Promise<{ cancelled: boolean }>;
-	navigateTree: (
-		targetId: string,
-		options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
-	) => Promise<{ cancelled: boolean }>;
+	navigateTree: (targetId: string, options?: ExtensionTreeNavigationOptions) => Promise<{ cancelled: boolean }>;
 	editAssistantMessage: (
 		entryId: string,
 		text: string,
 		options?: { summarize?: boolean; customInstructions?: string; expectedLeafId?: string },
 	) => Promise<{ cancelled: boolean; unchanged?: boolean; entryId?: string }>;
+	editUserMessage: ExtensionCommandContext["editUserMessage"];
 	switchSession: (
 		sessionPath: string,
 		options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },

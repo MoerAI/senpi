@@ -12,6 +12,176 @@
 
 ### Removed
 
+## [2026.9.21-2] - 2026-09-21
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- Updated the test runner to Vitest 5.0.1. ([#1895](https://github.com/code-yeongyu/senpi/issues/1895))
+
+### Fixed
+
+### Removed
+
+## [2026.9.21] - 2026-09-21
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- Updated the bundled dependencies: @anthropic-ai/sdk 0.123.0 -> 0.127.0, @aws-sdk/client-bedrock-runtime 3.1127.0 -> 3.1136.0, @google/genai 2.21.0 -> 2.23.0, @bufbuild/protobuf 2.14.0 -> 2.15.0, @smithy/types 4.17.2 -> 4.18.0, typebox 1.3.27 -> 1.3.34 and yaml 2.9.0 -> 2.9.1. ([#1895](https://github.com/code-yeongyu/senpi/issues/1895))
+
+### Fixed
+
+- Anthropic streams that report a `thinking_mismatch_allowed` input transformation no longer fail the type-check: @anthropic-ai/sdk 0.127.0 widened `input_transformations` into a union, and the streaming path now holds the union the SDK delivers. The interactive transcript still announces only `thinking_dropped` entries as dropped blocks. ([#1895](https://github.com/code-yeongyu/senpi/issues/1895))
+
+### Removed
+
+## [2026.9.20] - 2026-09-20
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Regenerating the image-model catalog leaves a file that passes `npm run check`. The generator wrote the entries with hand-written tabs and `JSON.stringify`, which spells arrays without a space after the comma and indents nested objects with two spaces, so the file it produced never matched the formatter. The shared `check` script used to rewrite it in place; once that autofix was removed, the release job became the first thing to regenerate the catalog under the strict gate and stopped there. The generator now formats the file before reporting success. ([#1886](https://github.com/code-yeongyu/senpi/issues/1886))
+
+### Removed
+
+## [2026.9.19-2] - 2026-09-19
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.19] - 2026-09-19
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.18-6] - 2026-09-18
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.18-5] - 2026-09-18
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.18-4] - 2026-09-18
+
+- Model catalog generation no longer prunes a provider shard that a committed provider module imports, so a provider models.dev stops describing cannot break the build at release time.
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.18-3] - 2026-09-18
+
+### Breaking Changes
+
+### Added
+
+- Built-in `bai` provider for B.AI: API-key auth via `BAI_API_KEY` or `/login bai`, credential-scoped
+  `GET /v1/models` discovery, and a generated catalog of the 56 chat models B.AI documents, routed to OpenAI
+  Responses, Anthropic Messages, or OpenAI Chat Completions per model.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.18-2] - 2026-09-18
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.18] - 2026-09-18
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.17-4] - 2026-09-17
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.17-3] - 2026-09-17
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
 ## [2026.9.17-2] - 2026-09-17
 
 ### Breaking Changes
@@ -437,6 +607,7 @@
 ### Added
 
 - `OAuthPrompt` and `OAuthSelectPrompt` carry an optional `signal` so login callbacks can observe a provider abandoning a prompt (for example a manual-code prompt raced against a local callback server) ([#1316](https://github.com/code-yeongyu/senpi/issues/1316)).
+
 ### Changed
 
 ### Fixed
@@ -680,6 +851,7 @@
 
 - Changed built-in xAI models to use the Responses API with encrypted reasoning replay and made Grok 4.6 the default xAI model ([#8124](https://github.com/earendil-works/pi/pull/8124) by [@Jaaneek](https://github.com/Jaaneek)).
 - Changed the Anthropic, Azure OpenAI, Google Generative AI, Google Vertex, Mistral, OpenAI Chat Completions, and OpenAI Responses adapters to send Pi's default `User-Agent` unless overridden ([#8305](https://github.com/earendil-works/pi/issues/8305)).
+
 ### Fixed
 
 - Fixed OpenAI-compatible Chat Completions reasoning replay to preserve and resend assistant-level `reasoning_details` (`reasoning.text`, `reasoning.summary`, and `reasoning.encrypted`) verbatim and in order ([#7994](https://github.com/earendil-works/pi/issues/7994)).
@@ -894,6 +1066,7 @@
   `<invoke name="mcp_49f0-Todo">` recovers into the registered `todo` tool
   call instead of rendering as literal text. Alias collisions between
   registered tools stay literal text.
+
 ### Removed
 
 ## [2026.8.18-2] - 2026-08-18
