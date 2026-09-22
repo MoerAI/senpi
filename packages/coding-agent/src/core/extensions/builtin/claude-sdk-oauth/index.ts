@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readByProviderId } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../../../../config.ts";
 import { FileAuthStorageBackend } from "../../../auth-storage.ts";
@@ -7,6 +8,7 @@ import type { ExtensionAPI } from "../../types.ts";
 import { registerClaudeAccountCommand } from "./account-command.ts";
 import { CLAUDE_SDK_OAUTH_PROVIDER_ID } from "./account-management.ts";
 import type { ClaudeSdkOauthCredential } from "./accounts.ts";
+import { CLAUDE_SDK_OAUTH_API_ID } from "./api-id.ts";
 import { createOAuthConfig } from "./oauth-login.ts";
 import { registerSessionRegistry } from "./session-registry-wiring.ts";
 import { type ClaudeSdkOauthProviderSettings, loadClaudeSdkOauthProviderSettingsFromDisk } from "./settings.ts";
@@ -38,7 +40,12 @@ function readStoredCredential(providerId: string): ClaudeSdkOauthCredential | un
 	if (!existsSync(authPath)) return undefined;
 	try {
 		const data = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, ClaudeSdkOauthCredential>;
-		return data[providerId];
+		// Read boundary (senpi#1989): this raw read bypasses AuthStorage, so it
+		// never sees the auth.json key migration. An auth.json still keyed by the
+		// legacy provider id would report the lane logged out with no error at
+		// all, so try the canonical key first and then the legacy spelling.
+		// `anthropic` is untouched by the rename and still resolves exactly.
+		return readByProviderId(data, providerId);
 	} catch {
 		return undefined;
 	}
@@ -48,8 +55,8 @@ export function registerClaudeSdkOauthExtension(pi: ExtensionAPI, deps: ClaudeSd
 	registerClaudeAccountCommand(pi);
 	registerSessionRegistry(pi);
 	pi.registerProvider(CLAUDE_SDK_OAUTH_PROVIDER_ID, {
-		baseUrl: CLAUDE_SDK_OAUTH_PROVIDER_ID,
-		api: CLAUDE_SDK_OAUTH_PROVIDER_ID,
+		baseUrl: CLAUDE_SDK_OAUTH_API_ID,
+		api: CLAUDE_SDK_OAUTH_API_ID,
 		models: MODELS,
 		streamSimple: streamClaudeSdkOauth,
 		// A verbatim `enabled: false` is the kill switch: the lane cannot serve, so

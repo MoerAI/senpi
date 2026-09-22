@@ -1,4 +1,210 @@
+## 2026-09-22 - normalize legacy provider ids at core read boundaries (senpi#1989)
+
+### What changed
+
+- `packages/coding-agent/src/core/auth-storage.ts`: every provider-keyed credential read (`read`, `get`, `getProviderEnv`, slot listing, and the standalone `readStoredCredential`) tries the canonical key and then the legacy spelling.
+- `packages/coding-agent/src/core/settings-manager.ts`: `getProviderConcurrencyLimit` reads `Settings.providers` through the same fallback; `migrateSettings` does not rewrite that block.
+- `packages/coding-agent/src/core/session-manager.ts`: all three model-restore paths (explicit `model_change`, the fallback window's `originalProvider`, the assistant-message echo) normalize on read, as does the explicit-selection comparison.
+- `packages/coding-agent/src/core/credential-accounts.ts`: the three subscription-lane comparisons compare normalized ids.
+- `packages/coding-agent/src/core/credential-pool/env-slots.ts`: `primaryEnvVar` compares normalized; `CLAUDE_CODE_OAUTH_TOKEN` is a frozen env-var name and is unchanged.
+- `packages/coding-agent/src/core/model-config.ts`: `models.json` overlay keys and `disabledProviders` are normalized on read, an explicit canonical entry wins over a legacy one, and the config carries non-fatal warnings with exactly ONE naming every id that moved.
+- `packages/coding-agent/src/core/model-runtime.ts`: `recomposeProvider` composes under the canonical id, and `getWarnings` surfaces the models.json notices.
+
+### Why
+
+A user upgrading across the rename has the LEGACY provider id written into auth.json, settings.json, models.json and their session files. Without these read boundaries each one detaches silently: credentials report the lane logged out, a configured `maxConcurrency` stops applying, a models.json overlay stops attaching, and an old session resumes on an unknown provider. Nothing here rewrites state - these are read-side fallbacks only.
+
+### Why an extension could not handle it
+
+All of these run inside core credential, settings, session and model-runtime plumbing, before and beneath the extension API.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/auth-storage.ts` accessor bodies.
+- `packages/coding-agent/src/core/session-manager.ts` the model-restore branches in `getSessionContextSettings`.
+- `packages/coding-agent/src/core/model-config.ts` the `parse` provider loop and the constructor signature (a warnings argument was added).
+
+## 2026-09-22 - reject a typed legacy provider id (senpi#1989)
+
+### What changed
+
+
+### Why
+
+Today a typed legacy id in `/login` falls through to `showLoginProviderSelector(undefined, providerRef)`, which opens a selector filtered to nothing - it reads as "this provider vanished" rather than "it was renamed". `--provider` would fail later with a generic message. Both now name the new id so the user can retype it. Config read from disk is normalized instead (todo 8) and never hard-errored.
+
+### Why an extension could not handle it
+
+CLI parsing and the interactive login command are core surfaces that run before and outside the extension API.
+
+### Expected merge conflict zones
+
+
+## 2026-09-22 - settings.json provider-key migration (senpi#1989)
+
+### What changed
+
+- `packages/coding-agent/src/core/settings-manager.ts`: `migrateSettings` now rewrites every provider-keyed settings field from the legacy subscription ids to the canonical ones on first parse - the settings block key (`claudeSdkOauthProvider` -> `anthropicSubscriptionProvider`, `openaiCodexProvider` -> `chatgptSubscriptionProvider`), `defaultProvider`, the provider prefix of `defaultModel`, every `favoriteModels` entry, the `${provider}/${id}` keys of `modelThinkingLevels`/`modelServiceTiers`/`modelLastOnThinkingLevels`, and every `retry.fallbackChains` key plus the providers named inside each rung. Driven by the shared `normalizeProviderId`/`normalizeModelRef` helpers so no second map drifts.
+
+### Why
+
+Existing users have the old subscription ids written into settings.json (defaultProvider, defaultModel, favourites, the per-model thinking/tier maps, fallback chains). After the provider rename an un-migrated settings file would silently lose those preferences - the planner would not find the renamed provider and would fall closed. The migration is idempotent (`normalize` is a no-op on canonical ids) and never hard-errors: an unrecognised shape is left untouched. The legacy settings-block key is still READ for at least two releases.
+
+### Why an extension could not handle it
+
+Settings are parsed and migrated inside SettingsManager before any extension loads; the provider-lane extensions read their block through `getGlobalSettings()`/`getProjectSettings()`, so the rename must happen at the migration seam, not in an extension.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/settings-manager.ts` `migrateSettings`, against any other settings migration added to the same hook.
+
+## 2026-09-22 - claude-sdk-oauth provider id renamed to anthropic-subscription in core resolution, accounts and fallback precedence (senpi#1989)
+
+### What changed
+
+- `packages/coding-agent/src/core/retry-fallback/expansion.ts`: `PROVIDER_PRECEDENCE` is `["anthropic-subscription", "anthropic", "kimi-coding"]` — the subscription lane holds the SAME rung (first) `claude-sdk-oauth` held. A pure string swap would have dropped it from the ordered table, and absent providers sort alphabetically last, demoting the subscription lane behind the metered `anthropic` API-key lane (reproduced as omo #8051/#8059). Order is preserved, not just membership.
+- `packages/coding-agent/src/core/retry-fallback/settings.ts`: comment names the lane by its new display name.
+- `packages/coding-agent/src/core/credential-accounts.ts`: the three provider-key comparisons (`===`/`!==`) use `"anthropic-subscription"`.
+- `packages/coding-agent/src/core/credential-pool/env-slots.ts`: the provider comparison moves to the new id; the returned `CLAUDE_CODE_OAUTH_TOKEN` env name is unchanged.
+- `packages/coding-agent/src/core/provider-display-names.ts`: `"anthropic-subscription": "Anthropic Subscription"` added beside `anthropic`.
+- `packages/coding-agent/src/core/agent-session.ts`: comment names the SDK-owned lane by its new id.
+
+### Why
+
+The id named an SDK integration detail rather than the thing a user signs in with. The wire api id `claude-sdk-oauth` and every persisted token (managed sentinel, compact entry type, compact-boundary diagnostic + schema, binding sidecar, `CLAUDE_CODE_OAUTH_TOKEN*` env vars, `claude_sdk_oauth_*` diagnostics) are deliberately NOT renamed — renaming any of them orphans data on existing installs. The precedence table is the one place a naive rename would have shipped a silent ordering regression, so it is pinned by `packages/coding-agent/test/suite/anthropic-subscription-rename.test.ts`.
+
+### Why an extension could not handle it
+
+`PROVIDER_PRECEDENCE` is a module-private table inside `core/retry-fallback/expansion.ts`, and the credential-account/env-slot comparisons run inside core credential plumbing before extension hooks see the provider key. The display-name map is core-owned (`BUILT_IN_PROVIDER_DISPLAY_NAMES`).
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/retry-fallback/expansion.ts` `PROVIDER_PRECEDENCE`, against any tie-break change.
+- `packages/coding-agent/src/core/provider-display-names.ts`, against any other provider addition.
+- `packages/coding-agent/src/core/credential-accounts.ts` provider comparisons, against pooled-account changes.
+
+## 2026-09-22 - auth.json provider-key migration (senpi#1989)
+
+### What changed
+
+- `packages/coding-agent/src/core/auth-provider-key-migration.ts` (new): `migrateLegacyProviderKeys` rewrites an auth.json credential stored under a legacy provider id to its canonical id, driven by `LEGACY_PROVIDER_IDS` from `@earendil-works/pi-ai`. Completion is derived from the data (a no-op once the legacy key is absent), not a migrations-state marker, so a load that skips the migration because the store is locked retries next time and an older binary re-introducing a legacy key still gets migrated.
+- `packages/coding-agent/src/core/auth-storage.ts`: the migration runs on the existing `parseStorageContent` write-back-once seam under the store lock, and the credential write became temp-file + rename at `0o600` with a timestamped backup taken from the original bytes.
+
+### Why
+
+Two subscription provider ids are being renamed (senpi#1989). Existing users have the old ids written into auth.json, so a load after the upgrade must rewrite the credential under the canonical key exactly once while keeping the user logged in. The managed sentinel is DERIVED from the provider id (`${providerId}-managed`), so `packages/ai/src/auth/pool/slots.ts` was widened to accept the legacy-derived material too - otherwise a pooled user's slots, which keep their sentinel values verbatim, become unauthenticatable and invisible.
+
+### Why an extension could not handle it
+
+auth.json is read and repaired inside the package before any extension loads; the pool sentinel check and the credential store are core, so an extension cannot migrate a key the store has already read under the old spelling.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/auth-storage.ts`, against any other change to the credential load/parse seam.
+## 2026-09-22 - chatgpt-subscription provider id in core resolution and display (senpi#1989)
+
+### What changed
+
+- `packages/coding-agent/src/core/model-resolver.ts`: provider-id comparisons and default-model selection use the new id.
+- `packages/coding-agent/src/core/provider-display-names.ts`: the built-in display map is keyed by the new id and renders "ChatGPT Subscription".
+- `packages/coding-agent/src/core/agent-session.ts`: session-level provider checks use the new id.
+
+### Why
+
+The OpenAI subscription provider id was renamed from `openai-codex` to `chatgpt-subscription` (senpi#1989): the old id named a CLI rather than the thing a user signs in with. These modules resolve or display that provider id at runtime, so they move with it. The wire api id `openai-codex-responses` is deliberately NOT renamed - it names the dialect, not the provider - and neither are file names or module paths.
+
+### Why an extension could not handle it
+
+The provider id is resolved inside the package before any extension loads, and these call sites compare or render it while building requests and UI. An extension cannot rewrite an id the package has already used.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/provider-display-names.ts`, against any other provider label change.
+
 # changes
+
+## 2026-09-22 - xAI provider default moves to grok-4.7 (senpi#1990)
+
+### What changed
+
+- `packages/coding-agent/src/core/model-resolver.ts`: `defaultModelPerProvider.xai` moves from `grok-4.5` to `grok-4.7`, porting upstream pi-mono 1a584a7a56 (`feat(ai,coding-agent): add Grok 4.7 support`) onto the fork's resolver, which still defaulted two versions behind. `test/model-resolver.test.ts` realigns with it: the xai-default assertion and the initial-selection fixture's synthetic xai model (`custom` + `defaultModelId`), because the provider-default branch resolves `defaultModelPerProvider.xai` against the runtime catalog and a `grok-4.5` fixture fell through to `first-available`.
+
+### Why
+
+- The catalog gained `xai/grok-4.7` (packages/ai shard regeneration in the same PR); the provider default tracks the current model.
+
+### Why an extension could not handle it
+
+- The provider default is core model-resolution state read during initial selection, before extension hooks can influence it.
+
+### Expected merge conflict zones
+
+- The `defaultModelPerProvider` xai entry on upstream syncs that also move the default.
+
+## 2026-09-22 - SessionManager.open can create under a caller-chosen id (senpi#1951)
+
+### What changed
+
+- `packages/coding-agent/src/core/session-manager.ts`: `static open(path, sessionDir?, cwdOverride?, options?)` now accepts `NewSessionOptions`, and the private constructor forwards them into `_setSessionFile`, which applies them at BOTH `_resetToNewSession` call sites: the branch where the path does not exist yet and the branch where the file exists but is empty. Opening an existing, non-empty session file reaches neither branch, so the header's id stays authoritative exactly as before. `SessionManager.create` already took the same options; this closes the asymmetry between the two constructors.
+
+### Why
+
+- The RPC host gained `open_session.durableSessionId`, which lets a caller that already owns a stable record id for the conversation create the session under that id instead of maintaining a second identity and a mapping. That value has to reach `_resetToNewSession`, and for the callers that matter it could not: a client naming its own session file always lands in `open`, not `create`, and with a not-yet-existing path `_setSessionFile` fell through to `_resetToNewSession()` with no options and minted a fresh uuidv7. The supplied id would have been silently dropped on precisely the path every real embedder uses.
+
+### Why an extension could not handle it
+
+- Session identity is assigned inside `SessionManager` before any extension is loaded for that session, and the id is written into the JSONL header the first flush persists. No extension hook runs early enough to influence it.
+
+### Expected merge conflict zones
+
+- `static open`'s parameter list and its `new SessionManager(...)` call, which previously passed `undefined` in the options slot.
+- The private constructor's `_setSessionFile(sessionFile, preloadedFileEntries)` call.
+- The `_setSessionFile` signature and its two `_resetToNewSession` call sites; upstream changes to the empty-file recovery branch land in the same lines.
+
+## 2026-09-21 - A WebSocket drop inside a credential pool no longer kills the turn (senpi#1628)
+
+### What changed
+
+- `packages/coding-agent/src/core/credential-pool/failover.ts`: `runCredentialFailover` guards one thing - the integrity of the single event stream the caller consumes - and no longer decides whether the turn may be replayed. After committed output it yields the provider's own terminal `error` event unchanged (partial content, usage, `provider_transport_failure` diagnostics intact) instead of throwing a synthesized error, and it never stamps `senpi:no-turn-retry:`. `CredentialFailoverError` is thrown only when an attempt threw with no event to forward and no slot is left; its message is the provider's text (the `suppressTurnRetry` option and field are gone). New `isStreamStart` option: once a start frame reached the caller, a replacement attempt's duplicate start is dropped so `agent-loop` keeps one message per stream.
+- `packages/coding-agent/src/core/credential-pool/rotation-events.ts` (new): `isCommittedRotationOutput` treats `start`, `text_start`, `thinking_start` and `toolcall_start` as pre-commit bookkeeping (default-DENY for everything else), `isRotationStreamStart`, `rotationErrorFromEvent`. `rotation-stream.ts` wires them.
+- `packages/coding-agent/src/core/credential-pool/classify.ts`: abnormal WebSocket closure (1006/1001/1011-1014), the runtime's bare `WebSocket error`, and the connect/liveness watchdog verdicts classify as `retry_same`; 1008 and 1009 stay `fail_request`.
+- `packages/coding-agent/src/core/agent-session.ts` `_terminalFailureText`, `modes/print-mode.ts`, `modes/interactive/components/assistant-render-descriptors.ts`: render through pi-ai's `describeProviderFailureForUser` (stall wording delegated, WebSocket interruptions worded for a person) and strip the marker from the raw fallback text. `extensions/builtin/compaction/deterministic-fallback.ts` re-exports pi-ai's `stripTurnRetrySuppressionPrefix` instead of owning a copy; `TURN_RETRY_SUPPRESSION_PREFIX` itself now lives in `packages/ai/src/utils/provider-failure-description.ts` and `auth/pool/failover.ts` re-exports it.
+- `packages/ai/src/api/websocket-transport-failure.ts` (new): a message-less `error` event defers to the `close` frame that follows (`WebSocket closed 1006 Connection ended`), bounded by a 250 ms grace; both Responses adapters use it.
+
+### Why
+
+- A Codex WebSocket drop in a multi-account pool ended the turn with `senpi:no-turn-retry:WebSocket error` and an empty assistant message. The runner rethrew after any event past `start` (a bare `thinking_start` already counted as committed), `lazyStream` turned the throw into a fresh message with no content or diagnostics, and the marker disabled both the same-model retry and the fallback chain that a single-key provider gets for the identical fault. A mid-stream stall with partial output IS retried by the session engine, so the marker made a transport drop strictly worse than a stall. In the plain streaming lanes no tool runs before the message completes, so the only thing in-lane rotation must protect is stream integrity; the Claude SDK lane, where tools execute mid-stream, keeps its own marker.
+
+### Why an extension could not handle it
+
+- The rotation runner, the retry predicates on `AgentSession`, and the transcript/print renderers are core; an extension sees the finished assistant message only after the marker has already suppressed recovery.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/credential-pool/failover.ts`: the attempt loop and the `CredentialFailoverError` constructor.
+- `packages/coding-agent/src/core/agent-session.ts`: the pi-ai import block and `_terminalFailureText`.
+- `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts`: the `error` branch of the stop-reason switch.
+
+## 2026-09-21 - Bun keeps its native fetch across HTTP dispatcher setup (#1890)
+
+### What changed
+
+- `packages/coding-agent/src/core/http-dispatcher.ts`: the global-install decision is the pure, injectable `shouldInstallUndiciGlobals({ versions, currentFetch, originalFetch, installedFetch })`. It answers `false` whenever `versions.bun` is set; the Node branch keeps the existing override-preservation rule. `configureHttpDispatcher` still installs the `EnvHttpProxyAgent` as undici's global dispatcher on every runtime.
+- `packages/coding-agent/test/suite/regressions/1890-bun-native-fetch.test.ts` pins both branches from one runner.
+
+### Why
+
+- The distributed CLI inlines npm undici, so `undici.install()` used to replace Bun's native `fetch` with undici's fetch running on Bun. On Bun 1.3.x that fetch delivers the response headers and then never a streamed body: a print-mode run of the 2026.9.20 bundle against a loopback Anthropic SSE server returns `HELLO` in 0.5s on Bun 1.4.2 and hangs past 45s on Bun 1.3.14 with the request already received. Every SSE model response on that runtime stalled after the headers.
+- Bun's own fetch honors `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`, which `applyHttpProxySettings` sets, and the agent loop bounds stalled streams through `getAgentStreamIdleTimeoutMs` / `getAgentStreamStartTimeoutMs`, both derived from the same `httpIdleTimeoutMs` setting. The undici `bodyTimeout` / `headersTimeout` therefore only ever guarded Node; on Bun they had applied solely where the install worked.
+- In source form `import "undici"` resolves to Bun's builtin shim, which has no `install`, so the package tests could not observe the bundle behaviour; the injected decision is the seam that can.
+
+### Why an extension could not handle it
+
+- `configureHttpDispatcher` runs from `cli-main.ts` / `rpc-entry.ts` before any extension loads, and restoring `globalThis.fetch` afterwards would leave the other replaced constructors and the installed marker behind.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/http-dispatcher.ts`: the `shouldInstallGlobals` computation at the end of `configureHttpDispatcher` and the new exported decision above it. Dispatcher construction, proxy handling, and the multi-session pin are unchanged.
 
 ## 2026-09-21 - Typed missing-entry tree navigation refusal (#1892 follow-up)
 

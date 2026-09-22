@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Message, TextContent, ThinkingSelection, Usage } from "@earendil-works/pi-ai";
+import { normalizeProviderId } from "@earendil-works/pi-ai";
 import { randomBytes, randomUUID } from "crypto";
 import {
 	appendFileSync,
@@ -498,7 +499,10 @@ function getSessionContextSettings(
 					preFallbackThinkingLevel = thinkingLevel;
 					preFallbackThinkingSelection = thinkingSelection;
 					if (entry.originalProvider && entry.originalModelId) {
-						model = { provider: entry.originalProvider, modelId: entry.originalModelId };
+						// Read boundary (senpi#1989): a session recorded by an earlier
+						// version carries the legacy provider id, so normalize on read.
+						// No rewrite is added here.
+						model = { provider: normalizeProviderId(entry.originalProvider), modelId: entry.originalModelId };
 						isModelSelectionExplicit = true;
 					}
 				}
@@ -517,13 +521,13 @@ function getSessionContextSettings(
 				// model id must not become an authoritative selection; the fallback-original restore
 				// above guards the same way, and a later assistant message still restores the model.
 				if (entry.provider && entry.modelId) {
-					model = { provider: entry.provider, modelId: entry.modelId };
+					model = { provider: normalizeProviderId(entry.provider), modelId: entry.modelId };
 					isModelSelectionExplicit = true;
 				}
 			}
 		} else if (entry.type === "message" && entry.message.role === "assistant" && !isInFallbackWindow) {
-			if (isModelSelectionExplicit && model?.provider === entry.message.provider) continue;
-			model = { provider: entry.message.provider, modelId: entry.message.model };
+			if (isModelSelectionExplicit && model?.provider === normalizeProviderId(entry.message.provider)) continue;
+			model = { provider: normalizeProviderId(entry.message.provider), modelId: entry.message.model };
 			isModelSelectionExplicit = false;
 		}
 	}
@@ -929,7 +933,7 @@ export class SessionManager {
 		});
 
 		if (sessionFile) {
-			this._setSessionFile(sessionFile, preloadedFileEntries);
+			this._setSessionFile(sessionFile, preloadedFileEntries, newSessionOptions);
 		} else if (preloadedFileEntries?.length) {
 			this._loadEntries(preloadedFileEntries, newSessionOptions);
 		} else {
@@ -959,7 +963,11 @@ export class SessionManager {
 		this._setSessionFile(sessionFile);
 	}
 
-	private _setSessionFile(sessionFile: string, preloadedFileEntries?: FileEntry[]): void {
+	private _setSessionFile(
+		sessionFile: string,
+		preloadedFileEntries?: FileEntry[],
+		newSessionOptions?: NewSessionOptions,
+	): void {
 		if (this.persist) reserveSessionWrite(resolvePath(sessionFile));
 		this.sessionFile = resolvePath(sessionFile);
 		this.mirrorTrimmed = false;
@@ -976,7 +984,8 @@ export class SessionManager {
 				}
 				// The explicit path is already granted above and keeps being written here:
 				// allocating a second path would take a grant no writer ever uses.
-				this._resetToNewSession();
+				// An empty file carries no identity yet, so a caller-supplied id still applies.
+				this._resetToNewSession(newSessionOptions);
 				this._rewriteFile();
 				this.flushed = true;
 				return;
@@ -1004,7 +1013,10 @@ export class SessionManager {
 			this.flushed = true;
 		} else {
 			// Same here: the explicit path from --session stays the only granted one.
-			this._resetToNewSession();
+			// The file does not exist yet, so this open CREATES the session: a caller-supplied
+			// id is the session's identity from here on. An EXISTING file never reaches this
+			// branch, which is why a supplied id can never overwrite a header id.
+			this._resetToNewSession(newSessionOptions);
 		}
 	}
 
@@ -2059,8 +2071,10 @@ export class SessionManager {
 	 * @param path Path to session file
 	 * @param sessionDir Optional session directory for /new or /branch. If omitted, derives from file's parent.
 	 * @param cwdOverride Optional cwd override instead of the session header cwd.
+	 * @param options Applied only when this open CREATES the session (the path does not exist
+	 * yet, or exists and is empty). An existing session file keeps the id in its header.
 	 */
-	static open(path: string, sessionDir?: string, cwdOverride?: string): SessionManager {
+	static open(path: string, sessionDir?: string, cwdOverride?: string, options?: NewSessionOptions): SessionManager {
 		const resolvedPath = resolvePath(path);
 		reserveSessionWrite(resolvedPath);
 		let header: SessionHeader | null = null;
@@ -2086,7 +2100,7 @@ export class SessionManager {
 		const cwd = cwdOverride ?? (header ? getSessionHeaderCwd(header) : undefined) ?? process.cwd();
 		// If no sessionDir provided, derive from file's parent directory
 		const dir = sessionDir ? normalizePath(sessionDir) : resolve(resolvedPath, "..");
-		return new SessionManager(cwd, dir, resolvedPath, true, undefined, preloadedFileEntries);
+		return new SessionManager(cwd, dir, resolvedPath, true, options, preloadedFileEntries);
 	}
 
 	/**

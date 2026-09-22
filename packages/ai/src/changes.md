@@ -1,3 +1,170 @@
+## 2026-09-22 - legacy provider id read helpers (senpi#1989)
+
+### What changed
+
+- `packages/ai/src/legacy-provider-ids.ts`: adds `legacyProviderIdsFor` (canonical id -> its legacy spellings) and `readByProviderId`, which reads a provider-keyed record by trying the canonical key first and then every legacy spelling that normalizes to it. Never throws and never rewrites.
+
+### Why
+
+Todo 8 normalizes the legacy provider id at every READ boundary. Each boundary needs the same "try canonical, then legacy" lookup, and a second copy of that map in each caller would drift. Providers that were never renamed (`anthropic`, `openai`) return no legacy spelling, so they resolve exactly and the subscription lane can never inherit the metered lane's state.
+
+### Why an extension could not handle it
+
+These helpers are consumed by core credential, settings, session and model-config code that runs before extensions load.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/legacy-provider-ids.ts`, against any other addition to the legacy-id surface.
+
+## 2026-09-22 - typed legacy provider id rejection (senpi#1989)
+
+### What changed
+
+- `packages/ai/src/legacy-provider-ids.ts`: adds `legacyProviderIdRejection`, which returns the error text for a TYPED legacy provider id (or one of the legacy DISPLAY NAMES `OpenAI Codex` / `Claude SDK OAuth`), naming the id it was renamed to. Case- and whitespace-insensitive, the way a typed argument is.
+
+### Why
+
+A user who types a legacy id must be told the id MOVED, not shown a generic "Unknown provider" or an empty filtered selector. This is the deliberate counterpart to todo 8: ids READ FROM DISK are normalized and never rejected, while ids the user TYPES are rejected by name. Keeping both behaviours driven by the same legacy map stops them drifting apart.
+
+### Why an extension could not handle it
+
+The rejection must fire inside CLI argument parsing and the interactive login command, both of which run before extensions can observe the input.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/legacy-provider-ids.ts`, against any other addition to the legacy-id surface.
+
+## 2026-09-22 - claude-sdk-oauth renamed to anthropic-subscription: the pooled-credential sentinel matcher stays legacy-aware (senpi#1989)
+
+### What changed
+
+- `packages/ai/src/auth/pool/slots.ts`: new `managedSentinelMaterials(providerId)` returns the canonical `<providerId>-managed` plus the legacy material of any renamed ancestor id (derived from `packages/ai/src/legacy-provider-ids.ts`), and `isManagedSentinelSlot` accepts EITHER material as long as both OAuth fields carry the same one. The sentinel VALUE stored inside credentials is NOT rewritten: credentials written before the rename keep `claude-sdk-oauth-managed` verbatim, and a matcher keyed only on the new id would stop recognizing those slots, resurrecting the poisoned-slot "Provider is not configured" deaths that `repairManagedSentinelSlots` exists to prune.
+- Guarded by `packages/ai/test/anthropic-subscription-rename.test.ts` (both materials match under `anthropic-subscription`; unrelated providers do not widen; the wire api id stays frozen on the prompt-cache ttl table).
+
+### Why
+
+The provider id `claude-sdk-oauth` moves to `anthropic-subscription` (display name "Claude SDK OAuth" -> "Anthropic Subscription") while every persisted token derived from the old id stays byte-identical. The managed-sentinel material is derived data written into stored credentials, so it is exactly the frozen half of the rename; the matcher is the moving half.
+
+### Why an extension could not handle it
+
+Slot repair runs inside `packages/ai`'s pooled-credential mutations (`repairManagedSentinelSlots`), which extensions never see; the sentinel material is compared before any extension hook fires.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/auth/pool/slots.ts` sentinel block, against any other pooled-credential change.
+- `packages/ai/src/legacy-provider-ids.ts`, whenever another provider id is renamed.
+
+## 2026-09-22 - openai-codex renamed to chatgpt-subscription (senpi#1989)
+
+### What changed
+
+- `packages/ai/src/providers/openai-codex.ts`: provider `id` -> `chatgpt-subscription`, `name` -> `ChatGPT Subscription`, OAuth label -> `ChatGPT Subscription (Plus/Pro)`. The function still returns `Provider<"openai-codex-responses">`.
+- `packages/ai/src/providers/openai-codex.models.ts`: the catalog aggregator flattens under the new provider id.
+- `packages/ai/src/types.ts`: `"chatgpt-subscription"` added to `KnownProvider`; `"openai-codex"` is RETAINED as a documented legacy member so configuration written by an older build still type-checks.
+- `packages/ai/src/auth/oauth/openai-codex.ts`: every user-visible label and error string now reads "ChatGPT Subscription", including the login select prompt.
+- `packages/ai/src/api/openai-responses.ts`, `packages/ai/src/api/openai-codex-responses.ts`, `packages/ai/src/api/azure-openai-responses.ts` and `packages/ai/src/api/openai-responses-shared.ts`: the provider comparisons that gate tool-call handling match `model.provider`, so each moved to the new id.
+- `packages/ai/src/live-api-gates.ts`: the env-switch map is keyed by PROVIDER ID, so its key moved with the provider.
+- Catalog data (`packages/ai/src/providers/data/openai-codex.json`, its manifest) carries the new provider id; `packages/ai/src/models.generated.ts` is regenerated output.
+
+### Why
+
+The id named a CLI rather than the thing a user signs in with, and the display name followed it. The wire api id `openai-codex-responses` is deliberately NOT renamed: it names the dialect (`https://chatgpt.com/backend-api`, `codex/responses/compact`), not the provider, and about ten runtime branches switch on it. `packages/ai/src/live-api-gates.ts` mattered more than it looks - renaming the provider without moving that key leaves a lookup that silently never matches, and it is invisible in CI because everything it gates is skipped by default (886 skips in this package).
+
+### Why an extension could not handle it
+
+The provider id is resolved inside this package before any extension loads: the catalog is keyed by it, `getModel` resolves through it, and the tool-call provider Sets compare `model.provider` during request construction. An extension cannot rename an id that the package has already used to build its own catalog.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/types.ts` `KnownProvider`, against any other provider addition.
+- `packages/ai/src/providers/data/*.json` and `packages/ai/src/models.generated.ts`, against any catalog regeneration.
+
+## 2026-09-22 - Canonical map for renamed provider ids (senpi#1989)
+
+### What changed
+
+- `packages/ai/src/legacy-provider-ids.ts` (new): frozen `LEGACY_PROVIDER_IDS` maps `openai-codex` -> `chatgpt-subscription` and `claude-sdk-oauth` -> `anthropic-subscription`. `normalizeProviderId` is an O(1) own-property hit that returns the input unchanged when the id is already canonical. `normalizeModelRef` splits on the first `/` only so a model id that itself contains `/` survives. `isLegacyProviderId` is `Object.hasOwn` on that map. Re-exported from `packages/ai/src/index.ts` and `packages/ai/src/compat.ts`. Nothing calls these functions yet.
+- Guarded by `packages/ai/test/legacy-provider-ids.test.ts`.
+
+### Why
+
+- Two provider ids are being renamed. Existing users have the old ids written into auth.json, settings.json, models.json, and session files, so every later read path will need to normalize. This module is the single canonical map both packages import so no second copy drifts. It lives in `packages/ai` because `packages/coding-agent` cannot be imported from here without a cycle.
+
+### Why an extension could not handle it
+
+- Auth, settings, models, and session files are read inside the package before any extension runs. A second map in an extension would drift from the rewrite every later task imports.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/legacy-provider-ids.ts`: the frozen map, whenever another provider id is renamed.
+- `packages/ai/src/index.ts` and `packages/ai/src/compat.ts`: the re-export lines.
+
+## 2026-09-22 - Hard account-quota exhaustion is terminal on the first failure (senpi#1969)
+
+### What changed
+
+- `packages/ai/src/utils/retry.ts`: new exported `USAGE_LIMIT_EXHAUSTION` constant holds the OpenAI hard-quota family — the structured codes `usage_limit_reached` and `usage_not_included` plus the exhaustion sentence "usage limit has been reached" — and `NON_RETRYABLE_PROVIDER_ERROR_PATTERN` includes its markers, so the 429 body `{"type":"usage_limit_reached","message":"The usage limit has been reached"}` classifies as non-retryable instead of matching the retryable `429`.
+- `packages/ai/src/utils/retry-profile/classifiers.ts`: `SENPI_STRUCTURED_TERMINAL_PROVIDER_CODES` consumes `USAGE_LIMIT_EXHAUSTION.codes`, so a failure carrying either provider code is terminal even when the message regexes are silent. The family is declared once in `utils/retry.ts` so the two lists cannot drift.
+
+### Why
+
+- A dead account cannot serve another request until its quota resets, so every same-account retry is guaranteed to fail; the turn stage burned `SENPI_DEFAULT_RETRY_PROFILE.turn.maxRetries` (5 extra attempts over ~60 s) before surfacing the terminal state.
+
+### Why an extension could not handle it
+
+- Retry classification runs inside `packages/ai`'s classifiers before any extension hook sees the failure; the pattern lists are compiled there.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/utils/retry.ts`: the `NON_RETRYABLE_PROVIDER_ERROR_PATTERN` array, whenever upstream adds quota wording.
+- `packages/ai/src/utils/retry-profile/classifiers.ts`: `SENPI_STRUCTURED_TERMINAL_PROVIDER_CODES`.
+
+## 2026-09-21 - WebSocket transport faults name their close code and read as plain language (senpi#1628)
+
+### What changed
+
+- `packages/ai/src/api/websocket-transport-failure.ts` (new): `createWebSocketTransportFailure` reports a message-bearing `error` event at once, defers a message-less one to the `close` frame that follows, and falls back to the generic `WebSocket error` after `WEBSOCKET_ERROR_CLOSE_GRACE_MS` (250 ms) so a runtime that never sends `close` still fails. `WebSocketCloseError`, `extractWebSocketCloseError` (with the 1009 "message too big" wording) and `extractWebSocketErrorMessage` live here.
+- `packages/ai/src/api/openai-codex-responses.ts`, `packages/ai/src/api/openai-responses.ts`: the connect and the streaming `error`/`close` listeners go through that helper; each adapter's private extractor pair and the Codex-only close-error class are removed. `parseWebSocket` disposes the pending grace on completion, abort and idle.
+- `packages/ai/src/utils/provider-failure-description.ts` (new): `TURN_RETRY_SUPPRESSION_PREFIX` (moved here from `auth/pool/failover.ts`, which now re-exports it), `stripTurnRetrySuppressionPrefix`, and `describeProviderFailureForUser`, which strips the marker, delegates stall watchdogs to `describeProviderStallForUser`, and words WebSocket closures, bare WebSocket errors and connect timeouts for a person with the same attempts/recovery options as the stall helper.
+- `packages/ai/src/utils/retry.ts`: `formatStallDuration` is exported for the new helper. `packages/ai/src/index.ts` exports the new module.
+
+### Why
+
+- Bun (and Node's undici client) fire an `error` event with no message for an unclean disconnect; only the `close` that follows carries `1006 Connection ended`. Failing on the first event threw the diagnosis away, and the raw text - prefixed with the session-internal `senpi:no-turn-retry:` marker - was what the user read as the outcome of the turn.
+- The marker constant moved into `utils/` because the `./utils/*` entry graph is budgeted at three files; importing it from `auth/pool` pulled the pool engine into every consumer of the description helper.
+
+### Why an extension could not handle it
+
+- The event pair is consumed inside the adapters' socket listeners before any message reaches the stream; an extension only sees the finished assistant message.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/api/openai-codex-responses.ts` and `packages/ai/src/api/openai-responses.ts`: `connectWebSocket` listeners and the `parseWebSocket` `onError`/`onClose` pair, whenever upstream touches the WebSocket transport.
+- `packages/ai/src/auth/pool/failover.ts`: the re-exported marker constant at the top of the file.
+
+## 2026-09-21 - Regional Kimi Code login (#1890)
+
+### What changed
+
+- `packages/ai/src/auth/oauth/kimi-region.ts` (new): the region table (`mainland-cn` -> `auth.kimi.com` + `api.kimi.com/coding`, `global` -> `auth.kimi.ai` + `api.kimi.ai/coding`, ids and hosts taken from the official Kimi Code CLI's `packages/oauth/src/region.ts`), the select prompt, `resolveKimiCodeEndpoints` (stored host > stored region > env host > env region > default), and `chooseKimiCodeLoginEndpoints` (env answers the prompt when it names a host or region).
+- `packages/ai/src/auth/oauth/kimi-coding.ts`: `login` asks the region unless the env answers it, and stores the choice as credential `env` (`KIMI_CODE_REGION`, or `KIMI_CODE_OAUTH_HOST` for a custom host). `refresh` exchanges at the credential's own host and carries the env forward, because a flat credential is replaced wholesale by `mergeRefreshed`. `toAuth` returns `baseUrl` only for the international region so a `models.json` `baseUrl` override keeps winning for the default one.
+- `packages/ai/src/providers/kimi-coding-auth.ts` (new) replaces `envApiKeyAuth` in `packages/ai/src/providers/kimi-coding.ts`: the API-key login asks the region before the key; `resolve` merges credential env over ambient env (the Cloudflare pattern) and routes by it. The path stays identity-header-free (#1504).
+- `packages/ai/src/auth/pool/slots.ts`: `CredentialSlot.env` carries provider-scoped values per account. `slotFromFlatCredentialNamed` copies a login's env into its slot, `projectSlot` overlays the slot's env on the flat projection, and `projectFlatFields` re-projects it when the mirrored slot is removed, so sibling accounts in different regions never share one.
+
+### Why
+
+- Both hosts serve separate accounts, and the flow only knew `auth.kimi.com` through an env override that nothing persisted: an international subscription could log in with `KIMI_CODE_OAUTH_HOST` set, then refresh at the wrong host and send every request to `api.kimi.com/coding`.
+
+### Why an extension could not handle it
+
+- The flow is a bundled `OAuthAuth` and the api-key auth is a provider field; an extension can register a second provider but cannot add a prompt to the shipped `kimi-coding` login or attach metadata to its stored credential.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/auth/oauth/kimi-coding.ts`: imports, `loginKimiCoding`, and the `refresh` / `toAuth` members of `kimiCodingOAuth`; the device and refresh request bodies are unchanged.
+- `packages/ai/src/auth/pool/slots.ts`: `CredentialSlot`, `slotFromFlatCredential*`, `projectFlatFields`, `projectSlot`.
+- `packages/ai/src/providers/kimi-coding.ts`: the `auth.apiKey` line.
+
 ## 2026-09-19 - A fork-owned provider survives a catalog regeneration
 
 ### What changed

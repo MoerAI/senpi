@@ -56,7 +56,7 @@ import type {
 import {
 	cleanupSessionResources,
 	cursorOverflowCompactionSettings,
-	describeProviderStallForUser,
+	describeProviderFailureForUser,
 	isClassifierRefusal,
 	isContextOverflow,
 	isCursorPayloadResourceExhausted,
@@ -71,6 +71,7 @@ import {
 	resetApiProviders,
 	shouldRetryOverflowWithoutCompact,
 	streamSimple,
+	stripTurnRetrySuppressionPrefix,
 } from "@earendil-works/pi-ai/compat";
 import { getCursorContextLimit } from "@earendil-works/pi-ai/utils/cursor-context-limit";
 import { extract429RetryAfterMs, parseRetryAfterMsMarker } from "@earendil-works/pi-ai/utils/retry-hint";
@@ -1251,7 +1252,7 @@ export class AgentSession {
 	 * Resolve the model used for compaction summarization. When the user sets a
 	 * `compaction.model` override ("provider/model"), that model is used for the
 	 * summarization call instead of the session model — this is what lets an
-	 * SDK-owned lane (claude-sdk-oauth) compact on a cheaper/different model.
+	 * SDK-owned lane (anthropic-subscription) compact on a cheaper/different model.
 	 * Any resolution failure (unset, malformed, unknown model) falls back to the
 	 * session model so compaction never silently breaks.
 	 */
@@ -5191,7 +5192,7 @@ export class AgentSession {
 		const previousReasoningBaseline = this.agent.state.reasoningBaseline;
 		const previousAbortServerSideFallback = this.agent.abortServerSideFallback;
 		this.agent.state.model = model;
-		if (!(model.id === "gpt-6-astra" && (model.provider === "openai" || model.provider === "openai-codex"))) {
+		if (!(model.id === "gpt-6-astra" && (model.provider === "openai" || model.provider === "chatgpt-subscription"))) {
 			this.agent.state.reasoningBaseline = undefined;
 		}
 		const scopedMatch = this._scopedModels.find((sm) => modelsAreEqual(sm.model, model));
@@ -5509,7 +5510,7 @@ export class AgentSession {
 			if (
 				isChanging &&
 				model?.id === "gpt-6-astra" &&
-				(model.provider === "openai" || model.provider === "openai-codex")
+				(model.provider === "openai" || model.provider === "chatgpt-subscription")
 			) {
 				this.agent.state.reasoningBaseline ??= previousLevel;
 				this.sessionManager.appendConfigurationUpdate(effectiveLevel);
@@ -6300,7 +6301,7 @@ export class AgentSession {
 			if (
 				latestConfigurationEffort !== undefined &&
 				modelAfterCompaction?.id === "gpt-6-astra" &&
-				(modelAfterCompaction.provider === "openai" || modelAfterCompaction.provider === "openai-codex")
+				(modelAfterCompaction.provider === "openai" || modelAfterCompaction.provider === "chatgpt-subscription")
 			) {
 				this.sessionManager.appendConfigurationUpdate(latestConfigurationEffort);
 			}
@@ -8223,19 +8224,21 @@ export class AgentSession {
 
 	/**
 	 * User-facing text for a turn that is really over. A provider-stream stall
-	 * carries the watchdog's own wording (`Provider stream start timed out after
-	 * 180000ms ...`), which the retry classifier needs on the message but which
-	 * explains nothing to the person reading the transcript and names no next
-	 * step (senpi#1740). Anything that is not a stall keeps its error verbatim.
+	 * or a transport drop carries the classifier's own wording (`Provider stream
+	 * start timed out after 180000ms ...`, `WebSocket closed 1006 ...`), which
+	 * the retry engine needs on the message but which explains nothing to the
+	 * person reading the transcript and names no next step (senpi#1740,
+	 * senpi#1628). Anything else keeps its error verbatim, minus the internal
+	 * replay marker.
 	 */
 	private _terminalFailureText(message: AssistantMessage, attempts: number): string | undefined {
 		const model = this.model ? `${this.model.provider}/${this.model.id}` : undefined;
 		return (
-			describeProviderStallForUser(message.errorMessage, {
+			describeProviderFailureForUser(message.errorMessage, {
 				attempts,
 				model,
 				recovery: this._retryFallback.hasConfiguredChain() ? "chain-exhausted" : "no-fallback-configured",
-			}) ?? message.errorMessage
+			}) ?? (message.errorMessage === undefined ? undefined : stripTurnRetrySuppressionPrefix(message.errorMessage))
 		);
 	}
 

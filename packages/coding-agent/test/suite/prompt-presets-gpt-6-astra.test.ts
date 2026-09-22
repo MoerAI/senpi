@@ -34,7 +34,7 @@ function buildPrompt(presetName: PromptPresetName, modelId: string): string {
 	const settings: PromptPresetSettings = { promptPreset: presetName };
 	const preset = resolvePreset(createModel(modelId), settings, {
 		cwd: "/repo",
-		selectedTools: ["eval", "read", "bash", "monitor", "task", "todo"],
+		selectedTools: ["eval", "read", "bash", "monitor", "task", "todo", "apply_patch"],
 		toolSnippets: { eval: "Run one persistent code cell." },
 		promptGuidelines: [],
 		contextFiles: [],
@@ -144,7 +144,7 @@ describe("GPT-6 Astra prompt preset", () => {
 	it.each([
 		{ id: "gpt-6-astra", provider: "openai", api: "openai-responses" as const },
 		{ id: "gpt-6-astra-fast", provider: "openai", api: "openai-responses" as const },
-		{ id: "gpt-6-astra", provider: "openai-codex", api: "openai-codex-responses" as const },
+		{ id: "gpt-6-astra", provider: "chatgpt-subscription", api: "openai-codex-responses" as const },
 		{ id: "gpt-6-astra-2026-09-01", provider: "openai", api: "openai-responses" as const },
 		{ id: "openai/gpt-6-astra", provider: "openrouter", api: "openai-completions" as const },
 		{ id: "openai.gpt-6-astra", provider: "amazon-bedrock", api: "bedrock-converse-stream" as const },
