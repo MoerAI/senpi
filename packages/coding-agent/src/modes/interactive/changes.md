@@ -1,3 +1,75 @@
+## 2026-09-23 — Wire visible-stderr observation into the interactive TUI (senpi#1879)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/tui-renderer.ts` passes `observeVisibleStderrWrites` into `ProcessTerminal` so mouse geometry follows the real stderr destination.
+
+### Why
+
+- Hidden diagnostics were observed above the interactive stderr redirect and duplicated the working frame.
+
+### Why an extension could not handle it
+
+- The interactive TUI factory owns `ProcessTerminal` construction; extensions cannot replace that observer.
+
+### Expected merge conflict zones
+
+- `createInteractiveTui` `ProcessTerminal` options. Keep `onExternalStdoutWrite: appendHiddenTuiStdout`.
+
+## 2026-09-22 - surface models.json provider-rename warnings (senpi#1989)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: renders `modelRuntime.getWarnings()` through `showWarning` at startup, beside the existing models.json error line.
+
+### Why
+
+A models.json written with the legacy provider ids still works (the keys are normalized on read), so it is NOT a load failure and must not use the models.json ERROR channel. The user still needs to be told once which ids moved so they can update the file.
+
+### Why an extension could not handle it
+
+Startup diagnostics are rendered by interactive mode itself; an extension cannot add a line to that startup sequence.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` the startup diagnostics block around the models.json error render.
+
+## 2026-09-22 - reject a typed legacy provider id in /login (senpi#1989)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `handleLoginCommand` rejects a typed legacy provider id, or one of the legacy display names, with a message naming the new id before it can reach the provider selector.
+
+### Why
+
+A typed legacy id previously fell through to `showLoginProviderSelector(undefined, providerRef)`, opening a selector filtered to nothing - which reads as "this provider vanished" rather than "it was renamed". Config read from disk is normalized instead (todo 8) and never hard-errored.
+
+### Why an extension could not handle it
+
+The login command is interactive mode's own command handler; an extension cannot intercept it before the selector opens.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` `handleLoginCommand`.
+
+## 2026-09-21 - Transcript explains transport drops and never renders the replay marker (senpi#1628)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts`: the `error` branch renders through pi-ai's `describeProviderFailureForUser` (stall wording delegated, WebSocket interruptions worded for a person, no recovery advice while a retry may still run); the raw `Error: ...` fallback and the `aborted` branch pass the text through `stripTurnRetrySuppressionPrefix`.
+
+### Why
+
+- `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts` printed `Error: senpi:no-turn-retry:WebSocket error` after a Codex WebSocket drop - the session-internal replay marker in front of a bare transport verdict, and nothing about what to do next.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts` is the transcript renderer; an extension can add entries but cannot rewrite how an assistant message's terminal error is drawn.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts`: the pi-ai import block and the `error`/`aborted` cases of the stop-reason switch.
+
 ## 2026-09-21 - Bind extension user edits locally and through the interactive host
 
 ### What changed
@@ -1338,3 +1410,27 @@
 - MEDIUM: event cases and replay in `packages/coding-agent/src/modes/interactive/interactive-mode.ts`.
 - LOW: error descriptors in `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts` and retry wording in `packages/coding-agent/src/modes/interactive/components/status-indicator.ts`.
 - LOW: display ownership in `packages/coding-agent/src/modes/interactive/components/assistant-message.ts`.
+
+## 2026-09-23 — Group consecutive exploration calls into one codex-style cell (senpi#2042)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts` builds the chat transcript as an `ExplorationTranscriptContainer` and replays saved assistant messages through `replayAssistantTools`, so all four places that append a `ToolExecutionComponent` (streaming tool call, `tool_execution_start`, the late `tool_execution_end` append, and `renderSessionItems` replay) feed the same projection.
+- `packages/coding-agent/src/modes/interactive/components/exploration-transcript-container.ts` (new) projects consecutive built-in `read`/`grep`/`find`/`ls` cards into one `ExplorationGroup` at render time; any other tool, assistant text, or user message closes the group. The original cards stay the transcript children, `pendingTools` keeps routing results to them, and the projection never owns or disposes them.
+- `packages/coding-agent/src/modes/interactive/components/exploration-group.ts` (new) renders the codex exploring cell: `• Exploring`/`• Explored` (plus ` · N failed`), then `Read a.ts, b.ts` (deduplicated basenames), `Search <pattern>[ in <dir>]`, `List <dir>`, capped at eight body lines with `… +K more`. The tool-expand key or a click on the header shows the original cards unchanged.
+- `packages/coding-agent/src/modes/interactive/components/exploration-call.ts` (new) classifies a card as an exploration call only when it uses the classic presentation and the built-in renderers.
+- `packages/coding-agent/src/modes/interactive/replay-assistant-tools.ts` (new) places text and thinking between tool calls where the live stream places them, so replayed sessions render the same groups as live ones.
+- `packages/coding-agent/src/modes/interactive/components/tool-execution.ts` exposes a read-only `presentationSnapshot`; `packages/coding-agent/src/modes/interactive/components/assistant-message.ts` exposes `isExplorationDetail` for empty or hidden-thinking heads that may sit inside a group; `packages/coding-agent/src/modes/interactive/tool-progress.ts` exports `toolSpinnerGlyph` so the exploring header reuses the tool spinner glyphs.
+
+### Why
+
+- Agents read one file in several ranges and then search and list; each call rendered its own card, so the transcript was mostly read cards. Codex shows the same work as one exploring cell with file names only. senpi#1881 tried a range/count summary and was closed; this lands the codex shape instead.
+
+### Why an extension could not handle it
+
+- The transcript container, the tool-card construction sites, and the session replay path are private to `packages/coding-agent/src/modes/interactive/interactive-mode.ts`; an extension can replace one tool's renderer but cannot merge several cards or change how history is replayed.
+
+### Expected merge conflict zones
+
+- MEDIUM: the chat container construction and the assistant branch of `renderSessionItems` in `packages/coding-agent/src/modes/interactive/interactive-mode.ts`.
+- LOW: the added getters in `packages/coding-agent/src/modes/interactive/components/tool-execution.ts` and `packages/coding-agent/src/modes/interactive/components/assistant-message.ts`, and the spinner helper in `packages/coding-agent/src/modes/interactive/tool-progress.ts`.

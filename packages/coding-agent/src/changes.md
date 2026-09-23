@@ -1,5 +1,23 @@
 # changes
 
+## 2026-09-21 - Print mode explains transport drops and never prints the replay marker (senpi#1628)
+
+### What changed
+
+- `packages/coding-agent/src/modes/print-mode.ts`: the text-mode error line goes through pi-ai's `describeProviderFailureForUser` (stall wording delegated, WebSocket interruptions worded for a person) and the raw fallback is passed through `stripTurnRetrySuppressionPrefix`.
+
+### Why
+
+- `packages/coding-agent/src/modes/print-mode.ts` printed the assistant's `errorMessage` verbatim, so a Codex WebSocket drop ended a `-p` run with `senpi:no-turn-retry:WebSocket error` on stderr - an internal classifier token in front of a transport verdict.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/print-mode.ts` owns the one-shot exit path; no extension event runs between the final assistant message and the stderr write.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/print-mode.ts`: the pi-ai import line and the text-mode error branch.
+
 ## 2026-09-21 - Announce supersession and park attached RPC sessions (#1933)
 
 ### What changed
@@ -2598,8 +2616,8 @@ other provider-bound image transport behavior that owns the same payload path.
 
 - Real-CLI QA (senpi-qa Channel 2, TUI in a pty, isolated sandbox, `PI_OFFLINE=1`): with Fable 5 served only by
   `claude-sdk-oauth` and no `retry.fallbackChains` configured, `/fallback` renders
-  `claude-sdk-oauth/claude-fable-5 -> kimi-coding/k3:max, claude-sdk-oauth/claude-opus-5:xhigh,
-  claude-sdk-oauth/claude-opus-4-8:xhigh` where the previous default produced no chain at all. That QA run is
+  `anthropic-subscription/claude-fable-5 -> kimi-coding/k3:max, anthropic-subscription/claude-opus-5:xhigh,
+  anthropic-subscription/claude-opus-4-8:xhigh` where the previous default produced no chain at all. That QA run is
   what surfaced both the fan-out cap and the display scoping above; neither was visible to unit fixtures.
 
 ### Expected merge conflict zones on next upstream sync
@@ -3664,4 +3682,18 @@ The instrumented transitions (`_emit`, queue internals, `RequiredCompactionError
 ### Expected merge conflict zones
 
 - LOW: `resolveSessionDirectory` and the spawn context construction in `experimental/{server,process,source-resolver}.ts`; upstream only touches these for new composition features.
+
+## OpenAI usage_limit_reached 429 pins the billing fallback (2026-09-22)
+
+### What changed
+
+- `core/retry-fallback/billing.ts`: `BILLING_ERROR_PATTERN` also matches the OpenAI hard-quota exhaustion family — `usage_limit_reached`, `usage_not_included`, "usage limit has been reached" — so the hard-error fallback branch classifies that 429 as `billing` and pins the fallback for the rest of the session instead of leaving it revertable. The family is inlined to keep the module import-free; its single source of truth is `USAGE_LIMIT_EXHAUSTION` in `@earendil-works/pi-ai`'s `utils/retry.ts` (senpi#1969).
+
+### Why
+
+- The account is out of quota, so neither a retry nor a cooldown-expiry revert into the same account can recover it; the session model must not thrash back into the dead primary after the billing cooldown. A configured fallback chain still takes over on the FIRST failure (the senpi-default profile's terminal policy is `immediate-if-eligible`, and the assistant message keeps `stopReason: "error"`), so the switch is pinned as billing-class and survives cooldown expiry; with no chain configured the turn fails on the first attempt.
+
+### Expected merge conflict zones on next upstream sync
+
+- LOW: the single pattern list in `core/retry-fallback/billing.ts`; the module is fork-local.
 

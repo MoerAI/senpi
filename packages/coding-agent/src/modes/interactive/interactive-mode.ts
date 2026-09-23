@@ -7,7 +7,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { type AuthEvent, type AuthPrompt, contentText, modelsAreEqual } from "@earendil-works/pi-ai";
+import {
+	type AuthEvent,
+	type AuthPrompt,
+	contentText,
+	legacyProviderIdRejection,
+	modelsAreEqual,
+} from "@earendil-works/pi-ai";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent, Usage } from "@earendil-works/pi-ai/compat";
 import type {
 	AutocompleteItem,
@@ -174,6 +180,7 @@ import { CustomMessageComponent } from "./components/custom-message.ts";
 import { DaxnutsComponent } from "./components/daxnuts.ts";
 import { DynamicBorder } from "./components/dynamic-border.ts";
 import { EarendilAnnouncementComponent } from "./components/earendil-announcement.ts";
+import { ExplorationTranscriptContainer } from "./components/exploration-transcript-container.ts";
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
@@ -194,11 +201,7 @@ import {
 	formatAuthSelectorProviderType,
 	OAuthSelectorComponent,
 } from "./components/oauth-selector.ts";
-import {
-	DEFAULT_TAIL_BUDGET,
-	DEFAULT_WARM_CHUNK_SIZE,
-	ProgressiveTranscriptContainer,
-} from "./components/progressive-transcript-container.ts";
+import { DEFAULT_TAIL_BUDGET, DEFAULT_WARM_CHUNK_SIZE } from "./components/progressive-transcript-container.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
 import { SettingsSelectorComponent } from "./components/settings-selector.ts";
@@ -244,6 +247,7 @@ import {
 	isNetworkProviderMessage,
 	ProviderErrorPresentation,
 } from "./provider-error-presentation.ts";
+import { replayAssistantTools } from "./replay-assistant-tools.ts";
 import { isRiskyMainModel, RISKY_MAIN_MODEL_WARNING } from "./risky-main-model-warning.ts";
 import { DEFAULT_SMOOTH_FPS, StreamingRevealController } from "./streaming-reveal.ts";
 import {
@@ -1157,7 +1161,7 @@ export class InteractiveMode {
 		// Resuming a long session paints a bounded, fully-styled tail first and warms
 		// the earlier history in background chunks, so /resume is not blocked on
 		// Markdown-rendering every persisted message before the first frame.
-		this.chatContainer = new ProgressiveTranscriptContainer({
+		this.chatContainer = new ExplorationTranscriptContainer({
 			tailBudget: DEFAULT_TAIL_BUDGET,
 			warmChunkSize: DEFAULT_WARM_CHUNK_SIZE,
 			requestRender: () => this.ui.requestRender(),
@@ -1805,6 +1809,10 @@ export class InteractiveMode {
 		const modelsJsonError = this.session.modelRuntime.getError();
 		if (modelsJsonError) {
 			this.showError(`models.json error: ${modelsJsonError}`);
+		}
+
+		for (const warning of this.session.modelRuntime.getWarnings()) {
+			this.showWarning(warning);
 		}
 
 		if (modelFallbackMessage) {
@@ -6107,31 +6115,13 @@ export class InteractiveMode {
 			const message = item;
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
-				this.addMessageToChat(message);
-				// Render tool call components
-				for (const content of message.content) {
-					if (content.type === "toolCall") {
-						const component = this.createToolExecutionComponent(content.name, content.id, content.arguments);
-						component.setExpanded(this.toolOutputExpanded);
-						this.chatContainer.addChild(component);
-
-						if (message.stopReason === "aborted" || message.stopReason === "error") {
-							let errorMessage: string;
-							if (message.stopReason === "aborted") {
-								errorMessage =
-									abortedMessageForRendering(message, 0, undefined).errorMessage || "Provider request failed";
-							} else {
-								errorMessage = message.errorMessage || "Error";
-							}
-							component.updateResult({
-								content: [{ type: "text", text: errorMessage }],
-								isError: true,
-							});
-						} else {
-							renderedPendingTools.set(content.id, component);
-						}
-					}
-				}
+				replayAssistantTools(message, {
+					expanded: this.toolOutputExpanded,
+					addMessage: (part) => this.addMessageToChat(part),
+					addChild: (component) => this.chatContainer.addChild(component),
+					createTool: (name, id, args) => this.createToolExecutionComponent(name, id, args),
+					pending: renderedPendingTools,
+				});
 				if (message.stopReason !== "aborted" && message.stopReason !== "error") {
 					this.maybeShowAssistantDiagnostics?.(message);
 					const miss = cacheMisses.get(message);
@@ -8409,6 +8399,17 @@ export class InteractiveMode {
 	private async handleLoginCommand(providerRef?: string): Promise<void> {
 		if (!providerRef) {
 			this.showLoginAuthTypeSelector();
+			return;
+		}
+
+		// A TYPED legacy provider id (or its old display name) is rejected by name
+		// so the user learns the new id (senpi#1989). Without this it falls through
+		// to a filtered selector that matches nothing, which reads as "this provider
+		// vanished" rather than "it was renamed". Ids read from disk are normalized
+		// instead and never reach here.
+		const rejection = legacyProviderIdRejection(providerRef);
+		if (rejection) {
+			this.showError(rejection);
 			return;
 		}
 

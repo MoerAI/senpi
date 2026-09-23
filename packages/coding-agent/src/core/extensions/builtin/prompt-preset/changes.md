@@ -1,5 +1,134 @@
 # prompt-preset Extension Changes
 
+## 2026-09-23 - GPT presets: the test decision replaces test-first
+
+### What changed
+
+- `test-decision.ts` (new): one shared `TEST_DECISION` directive rendered by both GPT full-core presets. Read the existing tests first as the behavior of record (a test that contradicts the intent is a finding, not a test to edit green); reproduce a bug before fixing it; the run proves the change, and a test is added only where the repository keeps tests for this behavior AND a regression would otherwise pass unnoticed, sized like its neighbors and never restating the change.
+- `gpt-5.6.ts`: `TEST_FIRST` deleted; rule id `test-first` -> `test-decision`, concern `test-first` -> `tests`; the directive moved from the end of `## Pragmatism & Scope` into `## Verification`, between the validator line and the shared Test Discipline block. Rendered constant 409 -> 363 chars.
+- `gpt-6-astra.ts`: `TEST_FIRST` deleted; same id/concern rename; the directive keeps its `## Verification` slot. 359 -> 363 chars (+4; the exemption list is gone, the decision criterion is new).
+- `test/suite/prompt-presets-gpt-5-6.test.ts`, `prompt-presets-gpt-6-astra.test.ts`: rule-id -> concern/section maps updated; the two cross-preset leak checks skip `test-decision` because it is single-sourced on purpose; the 5.6 case that asserted `apply_patch` under a "drops the anti-test default" title is renamed to what it checks.
+
+### Why
+
+- Test-first made a test the proof of every change with a seam. Any simple edit inside a tested module has a seam, so the rule mandated tests that could only restate the change; the harness then grew counter-rules (`prompt-behavior-coverage`, reviewer slop passes) to catch them, and the Astra header itself recorded "over-tests small changes". The decision now sits where an engineer makes it, with two observable conditions instead of a ritual order. The Claude and Kimi presets already carried this stance in their Scope paragraph ("commit tests only where the task asks for them or the repository already keeps tests for that kind of change"); this brings the GPT presets in line and removes the contradiction between presets.
+- Per the GPT-5.6 guide's simplify-first doctrine, the change deletes a process instruction and its exemption list; the only growth is the decision criterion.
+
+### Why an extension could not handle it
+
+The directive is preset core text; a user extension could only append a contradicting rule after it.
+
+### Expected merge conflict zones
+
+- `gpt-5.6.ts` / `gpt-6-astra.ts`: the rule-id unions, the `*_RULES` arrays, and the `## Verification` template block. Fork-only files; no upstream counterpart.
+
+## 2026-09-23 - GPT-6 Sol / Luna resolve to the GPT-6 family preset
+
+### What changed
+
+- `presets.ts`: `hasGpt6AstraSignal` / `isGpt6AstraModel` become `hasGpt6FamilySignal` / `isGpt6FamilyModel`, matching `gpt-6-(astra|sol|luna)` with the same delimiter-boundary shape (prefixed ids such as `openai/gpt-6-sol`, `openai-gpt-6-luna`, `global.openai.gpt-6-sol`, suffixed `-fast` / dated snapshots / `:batch`, and the display names). The dispatch still returns `"gpt-6-astra"`; no new `PromptPresetName` and no new prompt file, because the rendered Astra core names no model and OpenAI's guide covers the family with one set of practices. Bare `gpt-6`, `gpt-6-mini`, `gpt-6.1` and near-miss words (`gpt-6-solaris`, `gpt-6-lunar`) stay unmatched.
+- `test/suite/prompt-presets-gpt-6-family.test.ts`: id-shape matrix for Sol and Luna, display-name resolution, byte-identical prompt against Astra (and no `Astra` token in it), 5.6 ids stay on `gpt-5.6`, non-family ids stay out, the preset and `getApplyPatchWireMode` agree on the three Responses APIs (#1891 class), and every Sol/Luna row in the generated catalogs resolves.
+
+### Why
+
+Before this change a `gpt-6-sol` or `gpt-6-luna` session (the new catalog rows in this release) ran on the generic senpi prompt while Astra ran on the GPT-6 core, even though the family shares one prompting guide and the same tool gate (apply_patch freeform) already applied to all three.
+
+### Why an extension could not handle it
+
+Preset matching is this extension; a user extension could only re-implement the whole dispatch.
+
+### Expected merge conflict zones
+
+- `presets.ts`: the GPT-6 matcher block near the top and the first branch of `resolvePresetName`.
+
+## 2026-09-22 - Claude Opus 5.5 preset
+
+### What changed
+
+- `claude-opus-5-5.ts`: new full-core preset via `corePrompt`. Anthropic's "Prompting Claude Opus 5.5" guide says Opus 5 prompts carry over, so the text is the dieted `claude-opus-5` core with the guide's coding-agent deltas applied at one home each (prompt-engineering A/B/C pass, nothing appended without replacing something):
+  - Style: the guide's "Unattended agentic runs" section documents that 5.5 ends turns with text while work is still owed - a summary that announces the next step, an offer to continue unless told otherwise, a list of non-blocking decisions, or a milestone report - and that it responds to instructions naming those stops plus the stops that are wanted. The Opus 5 "check your last paragraph" sentence covered only the first and is replaced by a paragraph naming all four and the two legitimate stops (destructive action, user-only input), with status notes riding on the next tool call.
+  - Working the Task: "Explore context in multi-app workflows" (look through the sources that could bear on a loosely specified task before changing anything) folded into the existing read-wide sentence; the Opus 5 delegation-cap paragraph reframed around "Time signals for multi-agent harnesses" (time spent is a cost; hand out only tracks whose parallel run finishes the task sooner).
+  - Deliberately absent: think-carefully / reasoning-in-text lines (thinking is always on; `reasoning_extraction` is a refusal category), thinking-disabled artifact mitigations (thinking cannot be disabled), effort guidance (harness setting), pasted-content tags (user-message contract), frontend anti-pattern lists (project context owns design rules).
+  - Probe (o200k, eval+monitor+task+todo selected, `/tmp/preset-probe-opus55-20260922/probe.ts`): claude-opus-5 1899 -> claude-opus-5-5 2002 tokens; the +103 is the stop-discipline paragraph after a trim pass (2023 before it).
+- `presets.ts`: `isClaudeOpus55Model` (`opus-5-5` / `opus-5.5` markers, so Bedrock profiles, Vertex `@default`, and OpenRouter's dotted id all resolve) checked BEFORE the generic `opus-5` substring, which would otherwise swallow it; `claude-opus-5-5` dispatch case.
+- `settings.ts`: `claude-opus-5-5` joins `PromptPresetName` and `VALID_PRESETS`.
+- Tests: `test/suite/prompt-presets-claude-opus-5-5.test.ts` (id shapes, 5 stays on 5, settings force, catalog sweep), `prompt-presets-claude-opus-5.test.ts` excludes 5.5 from its catalog sweep and negative list, `brand-identity.test.ts` lists the new file and builder.
+
+### Why
+
+- `claude-opus-5-5` ids matched the `opus-5` substring and silently received the Opus 5 prompt, which lacks the turn-ending discipline the 5.5 guide documents as the model's new failure shape in unattended runs.
+
+### Why an extension could not handle it
+
+- Preset matching and the per-model cores live inside this builtin.
+
+### Expected merge conflict zones
+
+- LOW: `presets.ts` matcher block and dispatch switch; `settings.ts` union.
+
+## 2026-09-22 - Render the File operations block from the active toolset (#1968)
+
+### What changed
+
+- `file-operations.ts`: `buildFileOperationsTuning({ toolNames })` now takes the session's active tool names and renders the verb that session actually has. `resolveFileMutationRouting()` returns `apply-patch` when `apply_patch` is active, `edit-write` naming whichever of `edit`/`write` are active, and `none` when the session cannot mutate files at all. The `read` paragraph, the `grep`-tool paragraph, and codex's "do not re-read after a successful `apply_patch`" guard are each emitted only when their tool is present; the anti-heredoc/`sed -i`/`awk -i`/inline-python guard rides the mutation sentence, so it appears in both editing branches.
+- All eight callers pass it: `gpt-5.ts`, `gpt-5.2.ts`, `gpt-5.3-codex.ts` and `gpt-5.4.ts` thread `options.selectedTools` through their tuning builder; `gpt-5.5.ts`, `gpt-5.6.ts`, `gpt-6-astra.ts` and `grok-4.5.ts` read `context.tools` inside their `corePrompt` override.
+- `grok-4.5.ts` no longer names `apply_patch` in its CEO role text either - the trivial-fix sentence just says to do them directly, leaving the File operations block as the single source of routing truth.
+- Tests: new `test/suite/regressions/1968-file-operations-capability-routing.test.ts` pins the routing data and the invariant that a rendered preset never names a tool absent from its session. `prompt-presets-extension.test.ts` asserts each GPT preset in both session shapes instead of only asserting that `apply_patch` appears; `prompt-presets-grok-4-5.test.ts` had pinned the defect (`expect(prompt).toContain("apply_patch")` for a model that can never have it) and now asserts the opposite; the GPT-5.6 and GPT-6 Astra suites build with a patch-capable session.
+
+### Why
+
+- The block was emitted from preset identity, not capability. #1891 was one visible instance (a gateway-prefixed GPT id got the preset but not the tool, and the session stalled on `Tool apply_patch is registered but inactive`); #1942 stopped that deadlock by hedging the sentence into "when `apply_patch` is active ... otherwise ...", which left the cause in place and made the text name both tools in every session, so one of them was always absent.
+- A second instance ships today: `grok-4.5.ts` calls this block while `apply_patch` is gated to GPT ids, which `grok-4.6.ts` already documents as the reason it dropped the call, and this file's own `AGENTS.md` already listed as an anti-pattern. A GPT preset pinned onto `anthropic-messages`/`bedrock-converse-stream`, or forced through the `promptPreset` setting, hits the same thing.
+- The hedge also fought this file's documented wording rule. Positive routing beats a conditional the model has to resolve, and the block exists precisely because GPT's pretraining prior toward `sed`/heredoc is too strong for a weak instruction.
+
+### Why an extension could not handle it
+
+- The instruction and every preset that renders it live inside this builtin.
+
+### Expected merge conflict zones
+
+- MEDIUM: `file-operations.ts` - the whole builder is now parameterized.
+- LOW: the eight preset call sites, each a one-line argument change.
+- LOW: `grok-4.5.ts` role sentence.
+
+## Grok 4.7 preset reusing Grok 4.6 verbatim (2026-09-22, senpi#1990)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/prompt-preset/grok-4.7.ts`: standalone preset holding a VERBATIM copy of the Grok 4.6 prompt text — every section and string byte-identical, no import from grok-4.6.ts. Grok 4.7 has no prompt tuning yet, so any wording difference from the 4.6 prompt is a defect; the copy (not a delegation) is deliberate so this file is already the editable starting point when 4.7 gets its own tuning, and `test/suite/prompt-presets-grok-4-7.test.ts`'s byte-equality assertion is the load-bearing guard against the two copies drifting until then.
+- `packages/coding-agent/src/core/extensions/builtin/prompt-preset/presets.ts`: `hasGrok47Signal` / `isGrok47Model` in the existing regex family (same shapes as 4.6, minor version 7 — also covers Venice's dashed `grok-4-7`), a `grok-4.7` branch in `resolvePresetName` ahead of the 4.6 branch, and a `buildPreset` case.
+- `packages/coding-agent/src/core/extensions/builtin/prompt-preset/settings.ts`: `grok-4.7` joins `PromptPresetName` and `VALID_PRESETS`.
+- `packages/coding-agent/test/suite/prompt-presets-grok-4-7.test.ts`: id-shape routing (incl. aggregator + dashed ids), byte-identical 4.6/4.7 builds, 4.6-stays-4.6 negatives, settings force, and catalog-wide coverage.
+
+### Why
+
+- `grok-4.7` ids matched neither the 4.5 nor the 4.6 matcher, so the model silently fell through to the untuned dynamic prompt.
+
+### Why an extension could not handle it
+
+- Preset registration is this builtin's own dispatch table.
+
+### Expected merge conflict zones
+
+- LOW: `presets.ts` branch order and `settings.ts` preset list on upstream syncs.
+## 2026-09-21 - Route file edits through active tools (#1891)
+
+### What changed
+
+- `file-operations.ts`: the shared GPT instruction requires `apply_patch` when active and otherwise routes to available `edit`/`write` tools.
+
+### Why
+
+- The #1891 reproduction showed an unconditional patch-only instruction could demand an inactive tool. Unsupported APIs and custom ids must retain their available editing surface.
+
+### Why an extension could not handle it
+
+- The instruction is produced inside this builtin's shared preset helper.
+
+### Expected merge conflict zones
+
+- LOW: `file-operations.ts` file-mutation instruction.
+
 ## Kimi K2.8 Preview preset + Kimi Code rolling-id routing (2026-09-18)
 
 ### What changed
@@ -580,7 +709,6 @@ Presets are core-owned prompt builders; the proportionality rule belongs in the 
 ### Expected merge conflict zones on next upstream sync
 
 - LOW: `gpt-5.6.ts` is fork-only; conflicts only if upstream adds its own GPT-5.6 preset.
-
 
 ## Claude Opus 5 dieted full-core rewrite (2026-07-24)
 

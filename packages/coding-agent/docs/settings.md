@@ -83,12 +83,12 @@ Permission rules are a confirmation policy, not a sandbox. Senpi, extensions, pa
 |---------|------|---------|-------------|
 | `defaultProvider` | string | - | Startup provider (e.g., `"anthropic"`, `"openai"`; saved with Ctrl+S in `/model`, or edited manually) |
 | `defaultModel` | string | - | Startup model ID (saved with Ctrl+S in `/model`, or edited manually) |
-| `recommendedModels` | string[] | `kimi-k3`, `gpt-6-astra`, `gpt-5.6-sol`, `claude-fable-5-1`, `claude-opus-5`, `glm-5.2` | Preferred default model ids in priority order. Built-in thinking levels are kimi-k3/`max`, GPT-6 Astra/`high`, GPT-5.6 Sol/`medium`, claude-fable-5-1/`high`, claude-opus-5/`xhigh`, glm-5.2/`max`. Override the list or disable auto-switch with `--no-recommended-models` / `warnings.offRecommendedModel`. |
+| `recommendedModels` | string[] | `kimi-k3`, `gpt-6-astra`, `gpt-5.6-sol`, `claude-fable-5-1`, `claude-opus-5-5`, `glm-5.2` | Preferred default model ids in priority order. Built-in thinking levels are kimi-k3/`max`, GPT-6 Astra/`high`, GPT-5.6 Sol/`medium`, claude-fable-5-1/`high`, claude-opus-5-5/`max`, glm-5.2/`max`. Override the list or disable auto-switch with `--no-recommended-models` / `warnings.offRecommendedModel`. |
 | `defaultThinkingLevel` | string | - | Startup thinking level (saved with Ctrl+S in `/thinking`, or edited manually): `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` |
 | `modelThinkingLevels` | object | - | Per-model reasoning effort memory (`"provider/id": "level"`) |
 | `modelLastOnThinkingLevels` | object | - | Per-model last non-off reasoning level, used by `/reasoning on` to restore the previous effort |
 | `modelServiceTiers` | object | - | Per-model service tier memory (`"provider/id": "auto" \| "priority"`) |
-| `promptPreset` | string | `"auto"` | Force a system prompt preset: `"auto"`, `"kimi-k2-6"`, `"kimi-k2-7"`, `"kimi-k2-8"`, `"kimi-k3"`, `"glm-5.2"`, `"glm-5.3"`, `"grok-4.5"`, `"grok-4.6"`, `"claude-fable-5"`, `"claude-fable-5-1"`, `"claude-opus-5"`, `"claude-opus-4-5"`, `"claude-opus-4-6"`, `"claude-opus-4-7"`, `"claude-opus-4-8"`, `"deepseek-v4-flash"`, `"deepseek-v4-flash-0731"`, `"deepseek-v4-1-flash"`, `"deepseek-v4-pro"`, `"gpt-5"`, `"gpt-5.2"`, `"gpt-5.3-codex"`, `"gpt-5.4"`, `"gpt-5.5"`, `"gpt-5.6"`, or `"gpt-6-astra"` |
+| `promptPreset` | string | `"auto"` | Force a system prompt preset: `"auto"`, `"kimi-k2-6"`, `"kimi-k2-7"`, `"kimi-k2-8"`, `"kimi-k3"`, `"glm-5.2"`, `"glm-5.3"`, `"grok-4.5"`, `"grok-4.6"`, `"grok-4.7"`, `"claude-fable-5"`, `"claude-fable-5-1"`, `"claude-opus-5-5"`, `"claude-opus-5"`, `"claude-opus-4-5"`, `"claude-opus-4-6"`, `"claude-opus-4-7"`, `"claude-opus-4-8"`, `"deepseek-v4-flash"`, `"deepseek-v4-flash-0731"`, `"deepseek-v4-1-flash"`, `"deepseek-v4-pro"`, `"gpt-5"`, `"gpt-5.2"`, `"gpt-5.3-codex"`, `"gpt-5.4"`, `"gpt-5.5"`, `"gpt-5.6"`, or `"gpt-6-astra"` |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses, compaction or branch-summary usage, and provider recovery diagnostics such as dropped Anthropic thinking blocks |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level. Anthropic, Google, and Bedrock use these natively. OpenAI-compatible models use them when `compat.thinkingTokenBudgetField` (or `supportsThinkingTokenBudget`) is set. |
@@ -291,7 +291,7 @@ Keep `retry.provider.maxRetries` at `0` unless provider-level retries are explic
 
 #### Model fallback chains
 
-`retry.fallbackChains` maps a primary-model selector to an ordered list of fallback selectors. A selector is `provider/model` with an optional `:thinking-level` suffix, or a bare `model` id that applies to every provider serving that model family. Bare selectors expand against the models you actually have: providers holding an OAuth credential are preferred, then a fixed precedence order, and OpenRouter is never chosen by expansion. Senpi ships bare default chains for `claude-fable-5-1` and `claude-fable-5` - `claude-opus-5:max`, then `claude-opus-4-8:max`, then `claude-opus-4-6:max` - so Fable 5.1 and Fable 5 keep a fallback chain whichever provider serves them, and a fallback never leaves the Anthropic family; set a key to `[]` to opt out entirely, or set one `provider/claude-fable-5-1` key to override just that provider. For example, this switches Fable 5.1 to Kimi K3 at `max` thinking when an eligible failure occurs:
+`retry.fallbackChains` maps a primary-model selector to an ordered list of fallback selectors. A selector is `provider/model` with an optional `:thinking-level` suffix, or a bare `model` id that applies to every provider serving that model family. Bare selectors expand against the models you actually have: providers holding an OAuth credential are preferred, then a fixed precedence order, and OpenRouter is never chosen by expansion. Senpi ships bare default chains for `claude-fable-5-1` and `claude-fable-5` - `claude-opus-5-5:max`, then `claude-opus-5:max`, `claude-opus-4-8:max`, and `claude-opus-4-6:max` - and for `claude-opus-5-5` - `claude-opus-5:max`, then `claude-opus-4-8:max`, then `claude-opus-4-6:max` - so Fable 5.1, Fable 5 and Opus 5.5 keep a fallback chain whichever provider serves them, and a fallback never leaves the Anthropic family; set a key to `[]` to opt out entirely, or set one `provider/claude-fable-5-1` key to override just that provider. For example, this switches Fable 5.1 to Kimi K3 at `max` thinking when an eligible failure occurs:
 
 ```json
 {
@@ -363,7 +363,7 @@ When unset, senpi leaves provider payloads unchanged. This setting currently app
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `claudeSdkOauthProvider.enabled` | boolean | `false` | Enable the ambient (host-CLI-derived) lane of `claude-sdk-oauth`. Env override: `SENPI_CLAUDE_SDK_OAUTH_ENABLED`. Explicit senpi-side logins (stored OAuth accounts in `auth.json`, `CLAUDE_CODE_OAUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN_<n>` env accounts) keep the provider available with this unset |
+| `anthropicSubscriptionProvider.enabled` | boolean | `false` | Enable the ambient (host-CLI-derived) lane of `anthropic-subscription`. Env override: `SENPI_CLAUDE_SDK_OAUTH_ENABLED`. Explicit senpi-side logins (stored OAuth accounts in `auth.json`, `CLAUDE_CODE_OAUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN_<n>` env accounts) keep the provider available with this unset |
 | `cursorCliOauthProvider.enabled` | boolean | `false` | Enable the `cursor-cli-oauth` fallback lane and automatic native credential bootstrap. Env override: `SENPI_CURSOR_CLI_OAUTH_ENABLED` |
 | `providers.<id>.maxConcurrency` | number | unlimited | Cap the streaming requests senpi keeps in flight against one provider, keyed by registry provider id (`anthropic`, `openai`, ...). `0`, a negative value, a fraction, or an absent key all mean unlimited |
 
@@ -383,7 +383,7 @@ Both ambient-auth providers are explicit opt-in: a vendor CLI being logged in on
 
 ```json
 {
-  "claudeSdkOauthProvider": {
+  "anthropicSubscriptionProvider": {
     "enabled": true
   },
   "cursorCliOauthProvider": {
@@ -560,11 +560,11 @@ Only `session_shutdown` is bounded; other extension events (including ask-user a
 ```json
 {
   "modelThinkingLevels": {
-    "openai-codex/gpt-5.6-sol": "xhigh",
+    "chatgpt-subscription/gpt-5.6-sol": "xhigh",
     "anthropic/claude-fable-5-1": "high"
   },
   "modelServiceTiers": {
-    "openai-codex/gpt-5.6-sol": "priority"
+    "chatgpt-subscription/gpt-5.6-sol": "priority"
   }
 }
 ```
@@ -605,7 +605,7 @@ The service tier on outgoing requests is resolved as:
 2. The model catalog's `compat.serviceTier`
 3. `openai.serviceTier` (the global OpenAI setting)
 
-The per-model `modelServiceTiers` memory is not part of that resolution: it applies to OpenAI Codex
+The per-model `modelServiceTiers` memory is not part of that resolution: it applies to ChatGPT Subscription
 models only, through fast mode. It acts as the session-start default for `/fast` (a remembered
 `"priority"` starts the session fast) and as an explicit `"auto"` opt-out of a catalog-inherited
 priority tier, which keeps `service_tier` off the wire. Under a `:priority` pin the memory has no

@@ -6,14 +6,92 @@
 
 ### Added
 
+### Changed
+
+- Dense one-line JavaScript eval cells are previewed in the TUI broken at statement, block, and long-array boundaries with indentation, keeping the original tokens and comments. Unparseable, non-JavaScript, and already readable cells are shown as sent, and the code that runs is unchanged. ([#2050](https://github.com/code-yeongyu/senpi/issues/2050))
+- The `eval` `summary` guide asks for a progress update saying what the agent is doing and why, in the language the user writes in, and summaries no longer have a length limit (the 80-character truncation is gone). A collapsed eval block shows the first three summary lines; expanding it shows the rest. ([#2050](https://github.com/code-yeongyu/senpi/issues/2050))
+- Codemode CI tests use at most two fork workers, matching the coding-agent suite's interpreter-heavy test scheduling. Test deadlines, assertions, and local worker defaults are unchanged. ([#2039](https://github.com/code-yeongyu/senpi/issues/2039))
+
+### Fixed
+
+- The eval schema now explains that runs require an explicit language, and invalid language values produce a distinct error from an omitted language; `peek` and `stop` remain language-free ([#1395](https://github.com/code-yeongyu/senpi/issues/1395)).
+
+### Removed
+
+## [2026.9.23-2] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.23] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.22-4] - 2026-09-22
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.22-3] - 2026-09-22
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.22-2] - 2026-09-22
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- `wake_source_state` (live detached eval cells) is now published on the rpc channel as well as the in-process event bus, so out-of-process consumers see live cells the way the TUI footer does (#1943).
+
+### Removed
+
+## [2026.9.22] - 2026-09-21
+
+### Breaking Changes
+
+### Added
+
 - `eval` runs up to `maxDetachedCells` background cells per session (default 15, `SENPI_CODEMODE_MAX_DETACHED_CELLS`) and queues same-language cells on their kernel instead of rejecting them; `list` observes live and recent cells, and resetting a busy language refuses with `eval_kernel_busy_reset_refused` instead of stopping live work. ([#1908](https://github.com/code-yeongyu/senpi/issues/1908))
 - `agent()` forwards `isolated`, `apply`, and `merge` when the task host advertises isolation. Hosts that do not still drop those options with the existing warning. A foreground call whose isolation did not apply now raises instead of looking successful; with `handle: true` the isolation result arrives on completion. ([#1910](https://github.com/code-yeongyu/senpi/issues/1910))
 
 ### Changed
 
 ### Fixed
-
-- The eval schema now explains that runs require an explicit language, and invalid language values produce a distinct error from an omitted language; `peek` and `stop` remain language-free ([#1395](https://github.com/code-yeongyu/senpi/issues/1395)).
 
 ### Removed
 

@@ -1,3 +1,254 @@
+## 2026-09-23 - claudeCodeVersion follows the pinned claude-agent-sdk (senpi#2033)
+
+### What changed
+
+- `packages/ai/src/api/anthropic-messages.ts`: `claudeCodeVersion` goes from `2.1.251` to `2.1.280`, so the OAuth client's `user-agent` header is `claude-cli/2.1.280`, the Claude Code version `@anthropic-ai/claude-agent-sdk` 0.3.280 ships.
+- `packages/ai/test/anthropic-oauth-claude-code-version.test.ts`: the floor moves to 2.1.280. `packages/coding-agent/test/suite/regressions/2033-claude-code-version-currency.test.ts` fails whenever this constant and the installed SDK's `claudeCodeVersion` differ.
+
+### Why
+
+Claude Opus 5.5 rejects OAuth requests that advertise Claude Code below 2.1.280 (`claude_code_version_too_old`). oh-my-openagent raised the constant with an install-time byte rewrite, and that rewrite never runs under `ignore-scripts=true` or Bun's blocked-postinstall default, so those installs kept sending 2.1.251.
+
+### Why an extension could not handle it
+
+The header is built inside the Anthropic client before any extension hook runs.
+
+### Expected merge conflict zones
+
+- LOW: the single `claudeCodeVersion` constant near the top of `api/anthropic-messages.ts`.
+
+## 2026-09-23 - GPT-6 Sol / Luna id inference for map-less rows
+
+### What changed
+
+- `packages/ai/src/models.ts`: `XHIGH_MODEL_IDS` and `OPENAI_MAX_MODEL_IDS` gain `gpt-6-sol` and `gpt-6-luna`, so a custom provider that ships either id without a `thinkingLevelMap` still surfaces `xhigh` and `max` on the OpenAI-compatible APIs. `inferOpenAIThinkingLevelMap` stays Astra-only: Sol and Luna document `none`, so their `off` level remains selectable.
+- Catalog rows and generator changes for the same release are tracked in `packages/ai/changes.md`.
+
+### Why
+
+The generated catalogs carry explicit maps, but `models.json` entries and gateway rows for the new tiers carry none; without the id families the two top efforts disappeared on those routes (`test/gpt-6-family-catalog.test.ts`, map-less block).
+
+### Why an extension could not handle it
+
+Effort inference runs inside the model registry before any extension hook sees the model.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/models.ts`: the `XHIGH_MODEL_IDS` / `OPENAI_MAX_MODEL_IDS` constant block.
+
+## 2026-09-22 - Claude Opus 5.5 request compat: no disabled thinking, no forced tool_choice
+
+### What changed
+
+- `packages/ai/src/api/anthropic-messages.ts`: `DISABLED_THINKING_REJECTING_MODEL_MARKERS` gains `opus-5-5` / `opus-5.5`, so rows with no generated compat (a `models.json` entry, a gateway row) never send `thinking.type: "disabled"` and pin effort `low` for a thinking-off turn instead.
+- `packages/ai/src/api/bedrock-converse-stream.ts`: `rejectsDisabledThinking` matches the same two markers for Bedrock application inference profiles that carry no catalog metadata.
+- `packages/ai/src/utils/prompt-cache-ttl.ts`: `getAnthropicCompat` defaults `supportsForcedToolChoice` to `false` for `claude-opus-5-5` / `claude-opus-5.5` ids alongside Fable and Mythos, so `tool_choice: any` / `{type: "tool"}` is omitted from the request rather than round-tripping a 400.
+- Catalog rows and generator changes for the same release are tracked in `packages/ai/changes.md`.
+
+### Why
+
+Claude Opus 5.5 (2026-09-22) returns 400 for `thinking.type` `disabled` and `enabled` alike and for `tool_choice` `any` / `tool`; on Opus 5 both were accepted. Verified against the live Models API (`thinking.types.enabled.supported: false`). The generated catalog encodes the facts as compat, but `models.json` entries and third-party gateway rows carry no generated compat, so the family fact has to live in the providers as well.
+
+### Why an extension could not handle it
+
+The request shape is built inside the Messages and Bedrock providers before any extension hook runs.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/api/anthropic-messages.ts`: the family-marker constant block near the top of the file.
+- `packages/ai/src/api/bedrock-converse-stream.ts`: `rejectsDisabledThinking`.
+- `packages/ai/src/utils/prompt-cache-ttl.ts`: the forced-tool-choice family regex.
+
+## 2026-09-22 - rename the subscription-provider symbols and modules (senpi#1989)
+
+### What changed
+
+- `packages/ai/src/providers/openai-codex.ts` -> `packages/ai/src/providers/chatgpt-subscription.ts` and `packages/ai/src/providers/openai-codex.models.ts` -> `packages/ai/src/providers/chatgpt-subscription.models.ts`; `packages/ai/src/auth/oauth/openai-codex.ts` -> `packages/ai/src/auth/oauth/chatgpt-subscription.ts`; the catalog shard `packages/ai/src/providers/data/.manifest.json` regenerated for the renamed shard.
+- `packages/ai/src/index.ts` and `packages/ai/src/bun-oauth.ts`: exports follow the renamed modules and symbols.
+- `packages/ai/src/providers/all.ts`: imports and the provider factory name follow the rename.
+- `packages/ai/src/auth/oauth/load.ts`: the lazy OAuth module id and its dynamic import follow the renamed file.
+- `packages/ai/src/api/openai-codex-responses.ts`: only the debug-stats SYMBOL renamed (`OpenAICodexWebSocketDebugStats` -> `ChatGptSubscriptionWebSocketDebugStats`). The module path, the `openai-codex-responses` api id and `OpenAICodexResponsesOptions` are FROZEN and unchanged.
+
+### Why
+
+The provider ids were renamed in earlier commits; the symbols, module names and the catalog shard still spelled the old ids, so the tree read as though two different providers existed. This commit is behaviour-free: every persisted VALUE is byte-identical, including the seven frozen tokens and the `LEGACY_PROVIDER_IDS` map keys. Symbols that HOLD a frozen value were renamed while their string contents were not, and symbols that NAME the wire api were left alone entirely.
+
+### Why an extension could not handle it
+
+These are the ai package's own provider factories, OAuth module registry and export surface, all resolved before any extension loads.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/providers/all.ts` and `packages/ai/src/index.ts` export lists, against any other provider addition.
+- `packages/ai/src/auth/oauth/load.ts` module map, against any other OAuth provider.
+
+## 2026-09-22 - legacy provider id read helpers (senpi#1989)
+
+### What changed
+
+- `packages/ai/src/legacy-provider-ids.ts`: adds `legacyProviderIdsFor` (canonical id -> its legacy spellings) and `readByProviderId`, which reads a provider-keyed record by trying the canonical key first and then every legacy spelling that normalizes to it. Never throws and never rewrites.
+
+### Why
+
+Todo 8 normalizes the legacy provider id at every READ boundary. Each boundary needs the same "try canonical, then legacy" lookup, and a second copy of that map in each caller would drift. Providers that were never renamed (`anthropic`, `openai`) return no legacy spelling, so they resolve exactly and the subscription lane can never inherit the metered lane's state.
+
+### Why an extension could not handle it
+
+These helpers are consumed by core credential, settings, session and model-config code that runs before extensions load.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/legacy-provider-ids.ts`, against any other addition to the legacy-id surface.
+
+## 2026-09-22 - typed legacy provider id rejection (senpi#1989)
+
+### What changed
+
+- `packages/ai/src/legacy-provider-ids.ts`: adds `legacyProviderIdRejection`, which returns the error text for a TYPED legacy provider id (or one of the legacy DISPLAY NAMES `OpenAI Codex` / `Claude SDK OAuth`), naming the id it was renamed to. Case- and whitespace-insensitive, the way a typed argument is.
+
+### Why
+
+A user who types a legacy id must be told the id MOVED, not shown a generic "Unknown provider" or an empty filtered selector. This is the deliberate counterpart to todo 8: ids READ FROM DISK are normalized and never rejected, while ids the user TYPES are rejected by name. Keeping both behaviours driven by the same legacy map stops them drifting apart.
+
+### Why an extension could not handle it
+
+The rejection must fire inside CLI argument parsing and the interactive login command, both of which run before extensions can observe the input.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/legacy-provider-ids.ts`, against any other addition to the legacy-id surface.
+
+## 2026-09-22 - claude-sdk-oauth renamed to anthropic-subscription: the pooled-credential sentinel matcher stays legacy-aware (senpi#1989)
+
+### What changed
+
+- `packages/ai/src/auth/pool/slots.ts`: new `managedSentinelMaterials(providerId)` returns the canonical `<providerId>-managed` plus the legacy material of any renamed ancestor id (derived from `packages/ai/src/legacy-provider-ids.ts`), and `isManagedSentinelSlot` accepts EITHER material as long as both OAuth fields carry the same one. The sentinel VALUE stored inside credentials is NOT rewritten: credentials written before the rename keep `claude-sdk-oauth-managed` verbatim, and a matcher keyed only on the new id would stop recognizing those slots, resurrecting the poisoned-slot "Provider is not configured" deaths that `repairManagedSentinelSlots` exists to prune.
+- Guarded by `packages/ai/test/anthropic-subscription-rename.test.ts` (both materials match under `anthropic-subscription`; unrelated providers do not widen; the wire api id stays frozen on the prompt-cache ttl table).
+
+### Why
+
+The provider id `claude-sdk-oauth` moves to `anthropic-subscription` (display name "Claude SDK OAuth" -> "Anthropic Subscription") while every persisted token derived from the old id stays byte-identical. The managed-sentinel material is derived data written into stored credentials, so it is exactly the frozen half of the rename; the matcher is the moving half.
+
+### Why an extension could not handle it
+
+Slot repair runs inside `packages/ai`'s pooled-credential mutations (`repairManagedSentinelSlots`), which extensions never see; the sentinel material is compared before any extension hook fires.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/auth/pool/slots.ts` sentinel block, against any other pooled-credential change.
+- `packages/ai/src/legacy-provider-ids.ts`, whenever another provider id is renamed.
+
+## 2026-09-22 - openai-codex renamed to chatgpt-subscription (senpi#1989)
+
+### What changed
+
+- `packages/ai/src/providers/chatgpt-subscription.ts`: provider `id` -> `chatgpt-subscription`, `name` -> `ChatGPT Subscription`, OAuth label -> `ChatGPT Subscription (Plus/Pro)`. The function still returns `Provider<"openai-codex-responses">`.
+- `packages/ai/src/providers/chatgpt-subscription.models.ts`: the catalog aggregator flattens under the new provider id.
+- `packages/ai/src/types.ts`: `"chatgpt-subscription"` added to `KnownProvider`; `"openai-codex"` is RETAINED as a documented legacy member so configuration written by an older build still type-checks.
+- `packages/ai/src/auth/oauth/chatgpt-subscription.ts`: every user-visible label and error string now reads "ChatGPT Subscription", including the login select prompt.
+- `packages/ai/src/api/openai-responses.ts`, `packages/ai/src/api/openai-codex-responses.ts`, `packages/ai/src/api/azure-openai-responses.ts` and `packages/ai/src/api/openai-responses-shared.ts`: the provider comparisons that gate tool-call handling match `model.provider`, so each moved to the new id.
+- `packages/ai/src/live-api-gates.ts`: the env-switch map is keyed by PROVIDER ID, so its key moved with the provider.
+- Catalog data (`packages/ai/src/providers/data/chatgpt-subscription.json`, its manifest) carries the new provider id; `packages/ai/src/models.generated.ts` is regenerated output.
+
+### Why
+
+The id named a CLI rather than the thing a user signs in with, and the display name followed it. The wire api id `openai-codex-responses` is deliberately NOT renamed: it names the dialect (`https://chatgpt.com/backend-api`, `codex/responses/compact`), not the provider, and about ten runtime branches switch on it. `packages/ai/src/live-api-gates.ts` mattered more than it looks - renaming the provider without moving that key leaves a lookup that silently never matches, and it is invisible in CI because everything it gates is skipped by default (886 skips in this package).
+
+### Why an extension could not handle it
+
+The provider id is resolved inside this package before any extension loads: the catalog is keyed by it, `getModel` resolves through it, and the tool-call provider Sets compare `model.provider` during request construction. An extension cannot rename an id that the package has already used to build its own catalog.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/types.ts` `KnownProvider`, against any other provider addition.
+- `packages/ai/src/providers/data/*.json` and `packages/ai/src/models.generated.ts`, against any catalog regeneration.
+
+## 2026-09-22 - Canonical map for renamed provider ids (senpi#1989)
+
+### What changed
+
+- `packages/ai/src/legacy-provider-ids.ts` (new): frozen `LEGACY_PROVIDER_IDS` maps `openai-codex` -> `chatgpt-subscription` and `claude-sdk-oauth` -> `anthropic-subscription`. `normalizeProviderId` is an O(1) own-property hit that returns the input unchanged when the id is already canonical. `normalizeModelRef` splits on the first `/` only so a model id that itself contains `/` survives. `isLegacyProviderId` is `Object.hasOwn` on that map. Re-exported from `packages/ai/src/index.ts` and `packages/ai/src/compat.ts`. Nothing calls these functions yet.
+- Guarded by `packages/ai/test/legacy-provider-ids.test.ts`.
+
+### Why
+
+- Two provider ids are being renamed. Existing users have the old ids written into auth.json, settings.json, models.json, and session files, so every later read path will need to normalize. This module is the single canonical map both packages import so no second copy drifts. It lives in `packages/ai` because `packages/coding-agent` cannot be imported from here without a cycle.
+
+### Why an extension could not handle it
+
+- Auth, settings, models, and session files are read inside the package before any extension runs. A second map in an extension would drift from the rewrite every later task imports.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/legacy-provider-ids.ts`: the frozen map, whenever another provider id is renamed.
+- `packages/ai/src/index.ts` and `packages/ai/src/compat.ts`: the re-export lines.
+
+## 2026-09-22 - Hard account-quota exhaustion is terminal on the first failure (senpi#1969)
+
+### What changed
+
+- `packages/ai/src/utils/retry.ts`: new exported `USAGE_LIMIT_EXHAUSTION` constant holds the OpenAI hard-quota family — the structured codes `usage_limit_reached` and `usage_not_included` plus the exhaustion sentence "usage limit has been reached" — and `NON_RETRYABLE_PROVIDER_ERROR_PATTERN` includes its markers, so the 429 body `{"type":"usage_limit_reached","message":"The usage limit has been reached"}` classifies as non-retryable instead of matching the retryable `429`.
+- `packages/ai/src/utils/retry-profile/classifiers.ts`: `SENPI_STRUCTURED_TERMINAL_PROVIDER_CODES` consumes `USAGE_LIMIT_EXHAUSTION.codes`, so a failure carrying either provider code is terminal even when the message regexes are silent. The family is declared once in `utils/retry.ts` so the two lists cannot drift.
+
+### Why
+
+- A dead account cannot serve another request until its quota resets, so every same-account retry is guaranteed to fail; the turn stage burned `SENPI_DEFAULT_RETRY_PROFILE.turn.maxRetries` (5 extra attempts over ~60 s) before surfacing the terminal state.
+
+### Why an extension could not handle it
+
+- Retry classification runs inside `packages/ai`'s classifiers before any extension hook sees the failure; the pattern lists are compiled there.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/utils/retry.ts`: the `NON_RETRYABLE_PROVIDER_ERROR_PATTERN` array, whenever upstream adds quota wording.
+- `packages/ai/src/utils/retry-profile/classifiers.ts`: `SENPI_STRUCTURED_TERMINAL_PROVIDER_CODES`.
+
+## 2026-09-21 - WebSocket transport faults name their close code and read as plain language (senpi#1628)
+
+### What changed
+
+- `packages/ai/src/api/websocket-transport-failure.ts` (new): `createWebSocketTransportFailure` reports a message-bearing `error` event at once, defers a message-less one to the `close` frame that follows, and falls back to the generic `WebSocket error` after `WEBSOCKET_ERROR_CLOSE_GRACE_MS` (250 ms) so a runtime that never sends `close` still fails. `WebSocketCloseError`, `extractWebSocketCloseError` (with the 1009 "message too big" wording) and `extractWebSocketErrorMessage` live here.
+- `packages/ai/src/api/openai-codex-responses.ts`, `packages/ai/src/api/openai-responses.ts`: the connect and the streaming `error`/`close` listeners go through that helper; each adapter's private extractor pair and the Codex-only close-error class are removed. `parseWebSocket` disposes the pending grace on completion, abort and idle.
+- `packages/ai/src/utils/provider-failure-description.ts` (new): `TURN_RETRY_SUPPRESSION_PREFIX` (moved here from `auth/pool/failover.ts`, which now re-exports it), `stripTurnRetrySuppressionPrefix`, and `describeProviderFailureForUser`, which strips the marker, delegates stall watchdogs to `describeProviderStallForUser`, and words WebSocket closures, bare WebSocket errors and connect timeouts for a person with the same attempts/recovery options as the stall helper.
+- `packages/ai/src/utils/retry.ts`: `formatStallDuration` is exported for the new helper. `packages/ai/src/index.ts` exports the new module.
+
+### Why
+
+- Bun (and Node's undici client) fire an `error` event with no message for an unclean disconnect; only the `close` that follows carries `1006 Connection ended`. Failing on the first event threw the diagnosis away, and the raw text - prefixed with the session-internal `senpi:no-turn-retry:` marker - was what the user read as the outcome of the turn.
+- The marker constant moved into `utils/` because the `./utils/*` entry graph is budgeted at three files; importing it from `auth/pool` pulled the pool engine into every consumer of the description helper.
+
+### Why an extension could not handle it
+
+- The event pair is consumed inside the adapters' socket listeners before any message reaches the stream; an extension only sees the finished assistant message.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/api/openai-codex-responses.ts` and `packages/ai/src/api/openai-responses.ts`: `connectWebSocket` listeners and the `parseWebSocket` `onError`/`onClose` pair, whenever upstream touches the WebSocket transport.
+- `packages/ai/src/auth/pool/failover.ts`: the re-exported marker constant at the top of the file.
+
+## 2026-09-21 - Regional Kimi Code login (#1890)
+
+### What changed
+
+- `packages/ai/src/auth/oauth/kimi-region.ts` (new): the region table (`mainland-cn` -> `auth.kimi.com` + `api.kimi.com/coding`, `global` -> `auth.kimi.ai` + `api.kimi.ai/coding`, ids and hosts taken from the official Kimi Code CLI's `packages/oauth/src/region.ts`), the select prompt, `resolveKimiCodeEndpoints` (stored host > stored region > env host > env region > default), and `chooseKimiCodeLoginEndpoints` (env answers the prompt when it names a host or region).
+- `packages/ai/src/auth/oauth/kimi-coding.ts`: `login` asks the region unless the env answers it, and stores the choice as credential `env` (`KIMI_CODE_REGION`, or `KIMI_CODE_OAUTH_HOST` for a custom host). `refresh` exchanges at the credential's own host and carries the env forward, because a flat credential is replaced wholesale by `mergeRefreshed`. `toAuth` returns `baseUrl` only for the international region so a `models.json` `baseUrl` override keeps winning for the default one.
+- `packages/ai/src/providers/kimi-coding-auth.ts` (new) replaces `envApiKeyAuth` in `packages/ai/src/providers/kimi-coding.ts`: the API-key login asks the region before the key; `resolve` merges credential env over ambient env (the Cloudflare pattern) and routes by it. The path stays identity-header-free (#1504).
+- `packages/ai/src/auth/pool/slots.ts`: `CredentialSlot.env` carries provider-scoped values per account. `slotFromFlatCredentialNamed` copies a login's env into its slot, `projectSlot` overlays the slot's env on the flat projection, and `projectFlatFields` re-projects it when the mirrored slot is removed, so sibling accounts in different regions never share one.
+
+### Why
+
+- Both hosts serve separate accounts, and the flow only knew `auth.kimi.com` through an env override that nothing persisted: an international subscription could log in with `KIMI_CODE_OAUTH_HOST` set, then refresh at the wrong host and send every request to `api.kimi.com/coding`.
+
+### Why an extension could not handle it
+
+- The flow is a bundled `OAuthAuth` and the api-key auth is a provider field; an extension can register a second provider but cannot add a prompt to the shipped `kimi-coding` login or attach metadata to its stored credential.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/auth/oauth/kimi-coding.ts`: imports, `loginKimiCoding`, and the `refresh` / `toAuth` members of `kimiCodingOAuth`; the device and refresh request bodies are unchanged.
+- `packages/ai/src/auth/pool/slots.ts`: `CredentialSlot`, `slotFromFlatCredential*`, `projectFlatFields`, `projectSlot`.
+- `packages/ai/src/providers/kimi-coding.ts`: the `auth.apiKey` line.
+
 ## 2026-09-19 - A fork-owned provider survives a catalog regeneration
 
 ### What changed
@@ -205,7 +456,7 @@
 - `packages/ai/src/api/openai-codex-responses.ts`: `parseWebSocket` runs the heartbeat for the life of the request and fails the stream with the liveness error (socket closed `liveness_timeout`). `WebSocketLike` gains optional `readyState` and `ping`; the Bun proxy-aware wrapper forwards both, so `isWebSocketReusable` sees the inner socket's state on Bun. Parked connections are now watched: `parkSessionWebSocket` attaches `close`/`error` listeners that evict the cache entry immediately (`parked_close`), `unparkSessionWebSocket` detaches them on reuse, and the idle TTL goes through the same `evictSessionWebSocket`.
 - `packages/ai/src/api/openai-responses.ts`: `parseWebSocket` runs the same heartbeat; this transport had no idle bound of its own at all.
 - `packages/ai/src/utils/retry.ts`: `PROVIDER_STREAM_STALL_ERROR_PATTERN` accepts the liveness wording, so the failure takes the bounded same-model stall retry like the agent-loop idle timeout does.
-- Tests: `packages/ai/test/openai-codex-websocket-liveness.test.ts` (dead after two unanswered pings well inside the idle budget; pongs alone keep a silent stream alive; no ping API leaves the idle timeout in charge; a parked socket that closes is evicted even without `readyState`), `packages/ai/test/openai-codex-websocket-bun-wrapper.test.ts` (the Bun wrapper never reuses a closed or non-open parked socket), and two classifier rows in `retry.test.ts`.
+- Tests: `packages/ai/test/chatgpt-subscription-websocket-liveness.test.ts` (dead after two unanswered pings well inside the idle budget; pongs alone keep a silent stream alive; no ping API leaves the idle timeout in charge; a parked socket that closes is evicted even without `readyState`), `packages/ai/test/chatgpt-subscription-websocket-bun-wrapper.test.ts` (the Bun wrapper never reuses a closed or non-open parked socket), and two classifier rows in `retry.test.ts`.
 
 ### Why
 
@@ -1700,9 +1951,9 @@ The divergence lives in core wiring, package identity, or build plumbing that ex
   `supportsThinkingTokenBudget` budget field upstream generalized is retained through the shared
   resolver rather than the pin's inline compat table.
 - `packages/ai/src/api/openai-codex-responses.ts`: the fork splits WebSocket fallback/debug state into
-  `openai-codex-responses/fallback-state.ts` and re-exports `OpenAICodexWebSocketDebugStats` from there;
-  ChatGPT account identity resolves through `extractOpenAiCodexAccountId` with an `accountId ?? apiKey`
-  affinity fallback, cache-affinity headers come from `applyOpenAICodexCacheAffinityHeaders`, the same
+  `openai-codex-responses/fallback-state.ts` and re-exports `ChatGptSubscriptionWebSocketDebugStats` from there;
+  ChatGPT account identity resolves through `extractChatGptSubscriptionAccountId` with an `accountId ?? apiKey`
+  affinity fallback, cache-affinity headers come from `applyChatGptSubscriptionCacheAffinityHeaders`, the same
   `supportsMax`/`supportsXhigh`/`clampMaxForOpenAI` ladder applies, and `extraBody` merges under
   `OPENAI_RESPONSES_RESERVED_BODY_KEYS`.
 - `packages/ai/src/api/azure-openai-responses.ts`: accepts upstream's `tool_choice` forwarding while
@@ -1828,7 +2079,7 @@ The divergence lives in core wiring, package identity, or build plumbing that ex
   `hasKimiTextToolCallRecovery`, the XTML recovery stream parser), context provenance,
   `env-api-keys`, `auth/headers`, prompt-cache TTL constants, server-fallback receipts, stop details,
   tool-pair repair, visible text, block symbols (`kCursorExecResolved`), wire identity
-  (`getWireIdentity` / `setWireIdentity`, the senpi branding seam), and `extractOpenAiCodexAccountId`.
+  (`getWireIdentity` / `setWireIdentity`, the senpi branding seam), and `extractChatGptSubscriptionAccountId`.
 
 ### Why
 
@@ -2144,7 +2395,7 @@ The divergence lives in core wiring, package identity, or build plumbing that ex
 - `packages/ai/src/api/azure-openai-responses.ts`: `max` maps through `supportsMax` (clamped to `high`
   otherwise), `thinkingLevelMap` wins for adapter options, and `cacheRetention: "none"` omits
   `prompt_cache_key`.
-- `packages/ai/src/api/openai-prompt-cache.ts`: `applyOpenAICodexCacheAffinityHeaders()` applies the
+- `packages/ai/src/api/openai-prompt-cache.ts`: `applyChatGptSubscriptionCacheAffinityHeaders()` applies the
   complete Codex affinity tuple (`session-id`, `thread-id`, `x-client-request-id`) beside the clamped
   `prompt_cache_key`.
 
@@ -2198,7 +2449,7 @@ The divergence lives in core wiring, package identity, or build plumbing that ex
   `wire-identity.ts` module (default token `senpi`).
 - `packages/ai/src/api/openai-codex-responses.ts` builds the Codex `originator` and `User-Agent` from
   the dynamic identity instead of the previously hardcoded `senpi` strings.
-- `packages/ai/src/auth/oauth/openai-codex.ts` derives the OAuth flow's default `originator` from the
+- `packages/ai/src/auth/oauth/chatgpt-subscription.ts` derives the OAuth flow's default `originator` from the
   same identity.
 
 ### Why
@@ -2216,7 +2467,7 @@ The divergence lives in core wiring, package identity, or build plumbing that ex
 
 - LOW: additive root exports in `packages/ai/src/index.ts`.
 - MEDIUM: `packages/ai/src/api/openai-codex-responses.ts` header builders and the originator default in
-  `packages/ai/src/auth/oauth/openai-codex.ts`, where upstream hardcodes `pi`.
+  `packages/ai/src/auth/oauth/chatgpt-subscription.ts`, where upstream hardcodes `pi`.
 
 ## Request-option and content contract: metadata hooks, affinity, native blocks (2026-08-07)
 
@@ -3059,7 +3310,7 @@ LOW in `auth/types.ts` (additive optional field on `OAuthAuth`); LOW in `models.
 
 ### Coverage
 
-- `../test/openai-codex-fallback-recovery.test.ts` proves the immediate SSE
+- `../test/chatgpt-subscription-fallback-recovery.test.ts` proves the immediate SSE
   cooldown boundary, post-cooldown WebSocket recovery, and immediate recovery
   after production cleanup.
 - Existing Codex stream tests retain the post-start no-fallback guard,
@@ -3095,7 +3346,7 @@ LOW in `auth/types.ts` (additive optional field on `OAuthAuth`); LOW in `models.
 
 ### Coverage
 
-- `../test/openai-codex-cache-affinity.test.ts` drives the real SSE and
+- `../test/chatgpt-subscription-cache-affinity.test.ts` drives the real SSE and
   WebSocket request builders, pins the complete header/body mapping, and
   preserves the disabled-cache boundary.
 
@@ -4156,12 +4407,12 @@ provider request builders in `packages/ai`, below any extension-visible surface.
 ## 2026-05-11 - Senpi-branded Codex originator and User-Agent
 
 ### What changed and why
-- `providers/openai-codex-responses.ts` `buildBaseCodexHeaders()`: changed the hardcoded `originator: "pi"` and the `User-Agent: "pi (…)"` string to `"senpi"`. Upstream chose `"pi"` as the Codex CLI identity; this fork's identity is `senpi`.
-- `auth/oauth/openai-codex.ts` `createAuthorizationFlow()`: changed the default `originator` parameter from `"pi"` to `"senpi"` and updated the JSDoc on `loginOpenAICodex` accordingly. Callers can still pass their own originator.
+- `providers/chatgpt-subscription-responses.ts` `buildBaseCodexHeaders()`: changed the hardcoded `originator: "pi"` and the `User-Agent: "pi (…)"` string to `"senpi"`. Upstream chose `"pi"` as the Codex CLI identity; this fork's identity is `senpi`.
+- `auth/oauth/chatgpt-subscription.ts` `createAuthorizationFlow()`: changed the default `originator` parameter from `"pi"` to `"senpi"` and updated the JSDoc on `loginChatGptSubscription` accordingly. Callers can still pass their own originator.
 
 ### Files modified
-- `providers/openai-codex-responses.ts`
-- `auth/oauth/openai-codex.ts`
+- `providers/chatgpt-subscription-responses.ts`
+- `auth/oauth/chatgpt-subscription.ts`
 
 ### Why the higher-level extension system couldn't handle this alone
 - The originator + User-Agent headers are built inside `pi-ai`'s Codex header constructor before the request leaves the library. Coding-agent extensions cannot intercept the header construction step.
@@ -4222,7 +4473,7 @@ provider request builders in `packages/ai`, below any extension-visible surface.
 - `providers/openai-responses.ts`
 - `providers/openai-completions.ts`
 - `providers/azure-openai-responses.ts`
-- `providers/openai-codex-responses.ts`
+- `providers/chatgpt-subscription-responses.ts`
 - `providers/mistral.ts`
 - `providers/google.ts`
 - `providers/google-vertex.ts`

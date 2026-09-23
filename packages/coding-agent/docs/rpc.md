@@ -279,6 +279,13 @@ the moment it does not, it applies the same drain to itself: park each retained 
 release its claims, and exit when it holds no attached session. Nothing else changes - a session mid-turn
 still finishes, and a client still attached is still served.
 
+That check separates a name that was TAKEN OVER from a name that is GONE, because the evidence differs in
+strength. A different entry at the path proves supersession on sight and drains immediately. An absent entry
+proves only that nobody is serving the name, so it has to be seen on several consecutive checks before it
+counts, and a check that cannot answer resets the count rather than adding to it. Either way the outcome is
+the same drain: an unlinked socket name can never accept a connection again, so the generation behind it is
+unreachable no matter why the name went away.
+
 `stopHost({ socket, agentDir, drain?, force? })` ends a generation: `drain: true` is always permitted (it
 ends no work, it only stops the host from taking new work), while a hard stop requires a host that reports
 no open sessions, or `force: true`. A hard stop also drops that generation's registration (the pointer and
@@ -593,7 +600,12 @@ Environment overrides beat the file, and invalid values fall through to the next
 (`transient`|`persistent`) and `SENPI_RPC_HOST_IDLE_EXIT_MS` (positive integer milliseconds).
 
 The host exits only after the window elapses with NO attached client connections and NO active turns — continuously.
-Any connection or agent turn resets the window, so a busy host never exits, and the exit itself is clean: the RPC host
+Any connection or agent turn resets the window, so a busy host never exits. The supervisor learns about turns through
+its observer connection to the host; while that connection is unhealthy it cannot see turns, so it treats activity as
+unknown and keeps the host open as if a turn were running — but only for one idle window, during which it keeps
+reconnecting. An observer that stays unhealthy for longer than the window stops counting as busy, and the connection
+count alone decides from there. A `persistent` host has an infinite window and so keeps its infinite benefit of the
+doubt. The exit itself is clean: the RPC host
 receives SIGTERM first, flushes pending output, removes its socket, and the supervisor then removes `host.pid` and
 `settings.json` (the stderr log stays for diagnostics). After an idle exit, the next `ensureHost()` transparently
 starts a fresh host. `get_protocol_info` over the public socket behaves exactly as before; the supervisor is
@@ -880,7 +892,7 @@ Response-level `sessionId` = opaque **routing handle**, unique per process epoch
 In the response `error` field, machine-matchable:
 
 - `unknown_session`
-- `session_closing`
+- `session_closing` (an entry whose owner is tearing down). A worker that FAILS while its session is being opened is not that case and reports `open_failed` carrying the worker's own reason, so the code a client matches on always names what actually happened.
 - `session_path_in_use` (path held by an opening or quarantined owner; a fully-open current owner is attached instead, an owner whose teardown is already in flight is waited out on the in-process runtime, and a path a live owner has superseded is released rather than held). A path held by ANOTHER GENERATION of the daemon carries `errorData { owner: { instanceId, pid, processStartTime, sessionPath, current }, retry_after_ms: 2000 }`: that generation is still writing the file and is parking it, so the open is a retry, not a failure. Only a claim whose owner serves the socket (`current: true`) or still has a client attached refuses an open at all - a superseded, attachment-less claim is reclaimed instead
 - `session_reservation_limit` (this worker already holds 64 live session paths; the open or session replacement was refused without disturbing the existing session)
 - `missing_session_id` (session-scoped command without `sessionId` in multi mode)
@@ -1326,7 +1338,7 @@ Response:
 
 #### set_fast_mode
 
-Turn fast mode (the OpenAI Codex `priority` service tier) on or off for the active model. The choice is remembered
+Turn fast mode (the ChatGPT Subscription `priority` service tier) on or off for the active model. The choice is remembered
 per model, so a later session on the same model starts the same way; `enabled: false` records an explicit `"auto"`
 so it also overrides a tier inherited from the model catalog.
 
@@ -1343,7 +1355,7 @@ Response:
   "data": {
     "enabled": true,
     "serviceTier": "priority",
-    "provider": "openai-codex",
+    "provider": "chatgpt-subscription",
     "modelId": "gpt-5.6-sol"
   }
 }
@@ -1357,7 +1369,7 @@ The command returns an error instead of a silent no-op when the request cannot b
 
 | Situation | `error` |
 |-----------|---------|
-| Active model is not an OpenAI Codex model | `Fast mode is only available for OpenAI Codex models.` |
+| Active model is not a ChatGPT Subscription model | `Fast mode is only available for ChatGPT Subscription models.` |
 | `enabled: false` while the model selection pins `:priority` | `Fast mode is fixed by the active model selection's priority tier.` |
 | `enabled` is not a boolean | `set_fast_mode requires a boolean 'enabled' field.` |
 
@@ -2209,7 +2221,7 @@ command, a retry fallback, or a session restore.
 ```json
 {
   "type": "model_changed",
-  "model": {"provider": "openai-codex", "id": "gpt-5.6-sol", "...": "..."},
+  "model": {"provider": "chatgpt-subscription", "id": "gpt-5.6-sol", "...": "..."},
   "thinkingLevel": "xhigh",
   "source": "cycle"
 }

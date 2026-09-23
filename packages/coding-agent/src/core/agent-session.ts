@@ -32,7 +32,11 @@ import type {
 	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { ProviderRetryWatchdogAbortError, prepareAgentToolCall } from "@earendil-works/pi-agent-core";
+import {
+	ProviderRetryWatchdogAbortError,
+	prepareAgentToolCall,
+	resolveToolNameAlias,
+} from "@earendil-works/pi-agent-core";
 import {
 	contentText,
 	providerNotConfiguredMessage,
@@ -56,7 +60,7 @@ import type {
 import {
 	cleanupSessionResources,
 	cursorOverflowCompactionSettings,
-	describeProviderStallForUser,
+	describeProviderFailureForUser,
 	isClassifierRefusal,
 	isContextOverflow,
 	isCursorPayloadResourceExhausted,
@@ -71,6 +75,7 @@ import {
 	resetApiProviders,
 	shouldRetryOverflowWithoutCompact,
 	streamSimple,
+	stripTurnRetrySuppressionPrefix,
 } from "@earendil-works/pi-ai/compat";
 import { getCursorContextLimit } from "@earendil-works/pi-ai/utils/cursor-context-limit";
 import { extract429RetryAfterMs, parseRetryAfterMsMarker } from "@earendil-works/pi-ai/utils/retry-hint";
@@ -128,7 +133,7 @@ import {
 import { areExperimentalFeaturesEnabled } from "./experimental.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
-import { CLAUDE_SDK_OAUTH_PROVIDER_ID } from "./extensions/builtin/claude-sdk-oauth/account-management.ts";
+import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./extensions/builtin/anthropic-subscription/account-management.ts";
 import {
 	type ModelUsabilityAdmission,
 	ModelUsabilityBudgetError,
@@ -1251,7 +1256,7 @@ export class AgentSession {
 	 * Resolve the model used for compaction summarization. When the user sets a
 	 * `compaction.model` override ("provider/model"), that model is used for the
 	 * summarization call instead of the session model — this is what lets an
-	 * SDK-owned lane (claude-sdk-oauth) compact on a cheaper/different model.
+	 * SDK-owned lane (anthropic-subscription) compact on a cheaper/different model.
 	 * Any resolution failure (unset, malformed, unknown model) falls back to the
 	 * session model so compaction never silently breaks.
 	 */
@@ -1322,15 +1327,9 @@ export class AgentSession {
 
 	private _installAgentToolHooks(): void {
 		this.agent.resolveUnknownToolCall = (toolName) => {
-			let service: ReturnType<typeof getToolSearchService>;
-			try {
-				service = getToolSearchService();
-			} catch {
-				return undefined;
-			}
-			const catalogTool = service.getCatalog().some((doc) => doc.name === toolName);
-			if (!catalogTool || !this._activateLazyTool(toolName)) return undefined;
-			return this.agent.state.tools.find((tool) => tool.name === toolName);
+			const resolvedName = resolveToolNameAlias(toolName, this._callableToolNames());
+			if (resolvedName === undefined || !this._activateLazyTool(resolvedName)) return undefined;
+			return this.agent.state.tools.find((tool) => tool.name === resolvedName);
 		};
 		this._bindToolSearchRemovedHints();
 
@@ -3223,6 +3222,25 @@ export class AgentSession {
 	 * `allowLazyActivation` hard stop, then invoke activators in registration order.
 	 * The caller re-resolves the tool from the active registry before execution.
 	 */
+	private _callableToolNames(): string[] {
+		const names = this.agent.state.tools.map((tool) => tool.name);
+		for (const [name, { definition }] of this._toolDefinitions) {
+			const exposure = normalizeToolExposure(definition);
+			if (exposure.exposure === "search" && exposure.allowLazyActivation) names.push(name);
+		}
+		return [...names, ...this._toolSearchCatalogNames()];
+	}
+
+	private _toolSearchCatalogNames(): string[] {
+		try {
+			return getToolSearchService()
+				.getCatalog()
+				.map((doc) => doc.name);
+		} catch {
+			return [];
+		}
+	}
+
 	private _activateLazyTool(toolName: string): boolean {
 		const definition = this._toolDefinitions.get(toolName)?.definition;
 		if (!definition) return false;
@@ -5191,7 +5209,7 @@ export class AgentSession {
 		const previousReasoningBaseline = this.agent.state.reasoningBaseline;
 		const previousAbortServerSideFallback = this.agent.abortServerSideFallback;
 		this.agent.state.model = model;
-		if (!(model.id === "gpt-6-astra" && (model.provider === "openai" || model.provider === "openai-codex"))) {
+		if (!(model.id === "gpt-6-astra" && (model.provider === "openai" || model.provider === "chatgpt-subscription"))) {
 			this.agent.state.reasoningBaseline = undefined;
 		}
 		const scopedMatch = this._scopedModels.find((sm) => modelsAreEqual(sm.model, model));
@@ -5509,7 +5527,7 @@ export class AgentSession {
 			if (
 				isChanging &&
 				model?.id === "gpt-6-astra" &&
-				(model.provider === "openai" || model.provider === "openai-codex")
+				(model.provider === "openai" || model.provider === "chatgpt-subscription")
 			) {
 				this.agent.state.reasoningBaseline ??= previousLevel;
 				this.sessionManager.appendConfigurationUpdate(effectiveLevel);
@@ -6300,7 +6318,7 @@ export class AgentSession {
 			if (
 				latestConfigurationEffort !== undefined &&
 				modelAfterCompaction?.id === "gpt-6-astra" &&
-				(modelAfterCompaction.provider === "openai" || modelAfterCompaction.provider === "openai-codex")
+				(modelAfterCompaction.provider === "openai" || modelAfterCompaction.provider === "chatgpt-subscription")
 			) {
 				this.sessionManager.appendConfigurationUpdate(latestConfigurationEffort);
 			}
@@ -8143,7 +8161,7 @@ export class AgentSession {
 	 * escalate to the fallback chain when that budget runs out.
 	 */
 	private _isClaudeSdkSameModelRemintError(message: AssistantMessage): boolean {
-		if (this.model?.provider !== CLAUDE_SDK_OAUTH_PROVIDER_ID) return false;
+		if (this.model?.provider !== ANTHROPIC_SUBSCRIPTION_PROVIDER_ID) return false;
 		return this._isClaudeSdkSessionLockError(message) || this._isClaudeSdkInvalidRequestError(message);
 	}
 
@@ -8155,8 +8173,8 @@ export class AgentSession {
 	 */
 	private _isClaudeSdkAuthMissError(message: AssistantMessage): boolean {
 		return (
-			this.model?.provider === CLAUDE_SDK_OAUTH_PROVIDER_ID &&
-			message.errorMessage === providerNotConfiguredMessage(CLAUDE_SDK_OAUTH_PROVIDER_ID)
+			this.model?.provider === ANTHROPIC_SUBSCRIPTION_PROVIDER_ID &&
+			message.errorMessage === providerNotConfiguredMessage(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID)
 		);
 	}
 
@@ -8223,19 +8241,21 @@ export class AgentSession {
 
 	/**
 	 * User-facing text for a turn that is really over. A provider-stream stall
-	 * carries the watchdog's own wording (`Provider stream start timed out after
-	 * 180000ms ...`), which the retry classifier needs on the message but which
-	 * explains nothing to the person reading the transcript and names no next
-	 * step (senpi#1740). Anything that is not a stall keeps its error verbatim.
+	 * or a transport drop carries the classifier's own wording (`Provider stream
+	 * start timed out after 180000ms ...`, `WebSocket closed 1006 ...`), which
+	 * the retry engine needs on the message but which explains nothing to the
+	 * person reading the transcript and names no next step (senpi#1740,
+	 * senpi#1628). Anything else keeps its error verbatim, minus the internal
+	 * replay marker.
 	 */
 	private _terminalFailureText(message: AssistantMessage, attempts: number): string | undefined {
 		const model = this.model ? `${this.model.provider}/${this.model.id}` : undefined;
 		return (
-			describeProviderStallForUser(message.errorMessage, {
+			describeProviderFailureForUser(message.errorMessage, {
 				attempts,
 				model,
 				recovery: this._retryFallback.hasConfiguredChain() ? "chain-exhausted" : "no-fallback-configured",
-			}) ?? message.errorMessage
+			}) ?? (message.errorMessage === undefined ? undefined : stripTurnRetrySuppressionPrefix(message.errorMessage))
 		);
 	}
 

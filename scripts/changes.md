@@ -1,4 +1,60 @@
+## 2026-09-23 - Claude Code model-support report in the release and nightly gates (senpi#2053)
+
+### What changed
+
+- `scripts/check-claude-code-model-support.mjs` (new): lists Anthropic catalog Claude ids the pinned bundled Claude Code binary does not embed (`--strict` exits 1); `--sdk-currency` exits 1 when `@anthropic-ai/claude-agent-sdk` trails the newest published release.
+- `scripts/release-artifacts.mjs`: `runClaudeCodeModelSupportReport` runs the report (non-strict); `scripts/release.mjs` calls it right after `runGenerateModels`.
+- `.github/workflows/releasability.yml`: `model-catalog-regen` runs the report `--strict` after regeneration; new `claude-sdk-currency` job, wired into `report-failure`. `.github/workflows/ci.yml`: new `claude-executable-windows` job in the `Check and test` fan-in.
+
+### Why
+
+- The release regenerates the catalog from the network after PR CI ran, so a new Claude id can enter there; the log and the nightly gate must say when the pinned Claude Code does not know it (oh-my-openagent#8700).
+
+### Why an extension could not handle it
+
+- Release and CI tooling, not runtime behavior.
+
+### Expected merge conflict zones
+
+- LOW: the import list and the artifact-step sequence in `scripts/release.mjs`; `scripts/release-artifacts.mjs` beside `runGenerateImageModels`; the job lists of `ci.yml` and `releasability.yml`.
+
+## 2026-09-22 - point the bundle oauth module map at the renamed provider module (senpi#1989)
+
+### What changed
+
+- `scripts/build-coding-agent-bundle.mjs`: the bundled OAuth module map key and its dist path follow the provider rename (`openai-codex` -> `chatgpt-subscription`), matching the renamed `packages/ai/src/auth/oauth/chatgpt-subscription.ts`.
+
+### Why
+
+The bundle resolves OAuth modules by provider id. Leaving the map keyed by the old id while the module file moved would break OAuth module resolution in the bundled binary only - the workspace build would still pass, so the failure would surface after packaging rather than in CI.
+
+### Why an extension could not handle it
+
+The bundle script runs at build time, outside the extension runtime entirely.
+
+### Expected merge conflict zones
+
+- `scripts/build-coding-agent-bundle.mjs` oauth module map, against any other bundled OAuth provider.
+
 # changes
+
+## 2026-09-22 - Compiled loader probe pins one module generation per source version (senpi#1948)
+
+### What changed
+
+- `compiled-extension-fixtures.ts`: the compiled loader probe now asserts that two `loadExtensions` calls over unchanged source share one module generation (same `moduleToken`, `factoryRuns` [1, 2]), that a second session cwd does not fork it, and that editing an imported source recompiles it (new token, `factoryRuns` back to 1). It no longer calls `clearExtensionCache`, so the freshness leg proves automatic invalidation inside a shipped binary.
+
+### Why
+
+- The probe pinned the previous contract, where every `loadExtensions` call built a new generation. That is the defect senpi#1948 fixes: a module registry cannot evict, so a per-load generation leaked the whole extension graph per session on a shared host.
+
+### Why an extension could not handle it
+
+- The probe runs the compiled loader itself; no extension can observe the generation the host compiles it under.
+
+### Expected merge conflict zones
+
+- The assertion block at the end of `compiledLoaderProbeSource`, whenever upstream changes loader caching.
 
 ## 2026-09-21 - run-workspaces gains --parallel with prefixed lanes and shared signal forwarding (senpi#1895)
 
@@ -1303,3 +1359,23 @@ daemon's stderr log was empty because it is truncated on each generation start.
 
 Unbundled 36/36. Bundled: ensure -> `start` (socket present), ensure -> `reuse` (same
 pid), stop -> `stopped` (socket removed).
+
+## fix(bundle): file-attribute imports resolve to absolute paths (senpi#2028)
+
+### What changed
+
+- `scripts/bundle-file-attribute-plugin.mjs` (new, moved out of `scripts/build-coding-agent-bundle.mjs`): each `import(..., { with: { type: "file" } })` becomes a wrapper module that imports the esbuild-emitted asset path and exports `fileURLToPath(new URL(emittedPath, import.meta.url))`.
+- `scripts/bundle-file-attribute-plugin.test.mjs`: builds a fixture in both release layouts (split main bundle, unsplit sibling build) and runs it on Node and Bun from an unrelated cwd.
+- `scripts/node-bundle-smoke.test.ts`: the bundled CLI lists the `gpt-image-gen` skill with an existing path and prints no missing-skill notice, and the bundle keeps exactly the two `claudeCodeVersion="X.Y.Z"` declarations (the `anthropic-messages-*` chunk and `session-worker.js`) that a downstream installer rewrites in place.
+
+### Why
+
+- esbuild's `file` loader inlines a path relative to the output file that contains it (`"../SKILL-<hash>.md"`), while Bun's native import returns an absolute path. Consumers `existsSync` the value, which resolved against `process.cwd()`, so every published install printed `[imagegen] bundled skill not found` and dropped the skill.
+
+### Why an extension could not handle it
+
+- Release bundling is build tooling, not runtime behavior.
+
+### Expected merge conflict zones
+
+- NONE: fork-only scripts.
