@@ -8,6 +8,56 @@
 
 ### Changed
 
+- Codemode CI tests use at most two fork workers, matching the coding-agent suite's interpreter-heavy test scheduling. Test deadlines, assertions, and local worker defaults are unchanged. ([#2039](https://github.com/code-yeongyu/senpi/issues/2039))
+
+### Fixed
+
+### Removed
+
+## [2026.9.23-2] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.23] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.22-4] - 2026-09-22
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.22-3] - 2026-09-22
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
 ### Fixed
 
 ### Removed

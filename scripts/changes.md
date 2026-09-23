@@ -1,3 +1,21 @@
+## 2026-09-22 - point the bundle oauth module map at the renamed provider module (senpi#1989)
+
+### What changed
+
+- `scripts/build-coding-agent-bundle.mjs`: the bundled OAuth module map key and its dist path follow the provider rename (`openai-codex` -> `chatgpt-subscription`), matching the renamed `packages/ai/src/auth/oauth/chatgpt-subscription.ts`.
+
+### Why
+
+The bundle resolves OAuth modules by provider id. Leaving the map keyed by the old id while the module file moved would break OAuth module resolution in the bundled binary only - the workspace build would still pass, so the failure would surface after packaging rather than in CI.
+
+### Why an extension could not handle it
+
+The bundle script runs at build time, outside the extension runtime entirely.
+
+### Expected merge conflict zones
+
+- `scripts/build-coding-agent-bundle.mjs` oauth module map, against any other bundled OAuth provider.
+
 # changes
 
 ## 2026-09-22 - Compiled loader probe pins one module generation per source version (senpi#1948)
@@ -1321,3 +1339,23 @@ daemon's stderr log was empty because it is truncated on each generation start.
 
 Unbundled 36/36. Bundled: ensure -> `start` (socket present), ensure -> `reuse` (same
 pid), stop -> `stopped` (socket removed).
+
+## fix(bundle): file-attribute imports resolve to absolute paths (senpi#2028)
+
+### What changed
+
+- `scripts/bundle-file-attribute-plugin.mjs` (new, moved out of `scripts/build-coding-agent-bundle.mjs`): each `import(..., { with: { type: "file" } })` becomes a wrapper module that imports the esbuild-emitted asset path and exports `fileURLToPath(new URL(emittedPath, import.meta.url))`.
+- `scripts/bundle-file-attribute-plugin.test.mjs`: builds a fixture in both release layouts (split main bundle, unsplit sibling build) and runs it on Node and Bun from an unrelated cwd.
+- `scripts/node-bundle-smoke.test.ts`: the bundled CLI lists the `gpt-image-gen` skill with an existing path and prints no missing-skill notice, and the bundle keeps exactly the two `claudeCodeVersion="X.Y.Z"` declarations (the `anthropic-messages-*` chunk and `session-worker.js`) that a downstream installer rewrites in place.
+
+### Why
+
+- esbuild's `file` loader inlines a path relative to the output file that contains it (`"../SKILL-<hash>.md"`), while Bun's native import returns an absolute path. Consumers `existsSync` the value, which resolved against `process.cwd()`, so every published install printed `[imagegen] bundled skill not found` and dropped the skill.
+
+### Why an extension could not handle it
+
+- Release bundling is build tooling, not runtime behavior.
+
+### Expected merge conflict zones
+
+- NONE: fork-only scripts.

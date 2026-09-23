@@ -1,5 +1,23 @@
 # Local fork changes
 
+## 2026-09-23 - claude-agent-sdk 0.3.280 (senpi#2033)
+
+### What changed
+
+- `packages/coding-agent/package.json`: `@anthropic-ai/claude-agent-sdk` 0.3.278 -> 0.3.280 (Claude Code 2.1.278 -> 2.1.280). `bun.lock`, `package-lock.json`, `install-lock/package-lock.json` and `publish-deps.lock.json` are regenerated with `bun run refresh-lock`, and the eight platform packages are relocked with `scripts/generate-claude-agent-sdk-platform-lock.mjs` (npm's lock-only pass dropped them).
+
+### Why
+
+- Claude Opus 5.5 needs Claude Code 2.1.280 or newer, and the bundled binary is what `claude-sdk-oauth` spawns unless a newer `claude` is on PATH.
+
+### Why an extension could not handle it
+
+- The published tarball's dependency closure is resolved by the package manager and the publish pipeline, never by the runtime extension system.
+
+### Expected merge conflict zones
+
+- The `@anthropic-ai/claude-agent-sdk` pin in `packages/coding-agent/package.json` and the lockfiles.
+
 ## 2026-09-22 - Grok 4.7 preset + xAI default (#1990)
 
 ### What changed
@@ -542,7 +560,7 @@ The divergence lives in core wiring, package identity, or build plumbing that ex
 - `packages/coding-agent/install-lock/package.json` and `packages/coding-agent/install-lock/package-lock.json`: regenerated from the refreshed root lock.
 - `packages/coding-agent/publish-deps.lock.json`: regenerated shrinkwrap for the same tree.
 - `packages/coding-agent/test/mermaid.test.ts`: the two tests covering the partial-render warning path now use input that still warns under grok-mermaid 0.2.3, which learned to render the `:::className` node syntax the old fixtures relied on failing.
-- `packages/coding-agent/test/suite/claude-sdk-oauth-naming.test.ts`: asserts the upstream package name without pinning its version, since the naming boundary is the subject of the test.
+- `packages/coding-agent/test/suite/anthropic-subscription-naming.test.ts`: asserts the upstream package name without pinning its version, since the naming boundary is the subject of the test.
 
 ### Why
 
@@ -915,7 +933,7 @@ amplification or dropping classic per-event backpressure.
 
 ## 2026-07-29 — OpenAI Codex usage extension example
 
-- Changed: added a standalone `examples/extensions/openai-codex-usage/` example that resolves Senpi-managed Codex OAuth, fetches the remaining five-hour and weekly limits, and publishes them through `ctx.ui.setStatus()`. Missing windows render as unavailable; sanitized HTTP/network/parse failures replace stale values with an unavailable status. The poller is single-flight, abortable, and cleared on model changes, shutdown, or `/usage`.
+- Changed: added a standalone `examples/extensions/chatgpt-subscription-usage/` example that resolves Senpi-managed Codex OAuth, fetches the remaining five-hour and weekly limits, and publishes them through `ctx.ui.setStatus()`. Missing windows render as unavailable; sanitized HTTP/network/parse failures replace stale values with an unavailable status. The poller is single-flight, abortable, and cleared on model changes, shutdown, or `/usage`.
 - Why: users can see provider limits with the built-in footer or any custom footer that consumes extension statuses, without coupling usage retrieval to one footer implementation or presenting unknown/stale percentages as current.
 - Extension boundary: the example uses public model-registry, lifecycle, command, and status APIs; no core footer or authentication source changes are required. Deterministic fake-API and fake-timer tests cover toggle, model-change, abort, scheduled polling, and shutdown cleanup.
 - Merge-conflict risk: low. The change adds an isolated example directory, one test, one catalog row, documentation, and this record.

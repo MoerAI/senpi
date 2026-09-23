@@ -4,22 +4,98 @@
 
 ### Breaking Changes
 
+### Added
+
+- The interactive TUI shows consecutive `read`, `grep`, `find`, and `ls` calls as one exploration cell, the way Codex does: `• Explored` followed by lines such as `Read a.ts, b.ts`, `Search <pattern> in <dir>`, and `List <dir>`, with no line ranges or output. Reading one file three times now shows its name once instead of three cards. A failed call stays in the cell and is counted as ` · 1 failed`. Press the tool-expand key (default `ctrl+o`) or click the header to see the original cards. Any other tool, assistant text, or your next message ends the cell, and resumed sessions show the same cells. ([#2042](https://github.com/code-yeongyu/senpi/issues/2042))
+
+### Changed
+
+- The GPT-5.6 and GPT-6 system prompts no longer demand a failing test before every behavior change. They now read the tests that already cover the area as the behavior of record, reproduce a bug before fixing it, let the run prove the change, and add a test only where the repository keeps tests for that behavior and a regression would otherwise pass unnoticed - the stance the Claude and Kimi prompts already had. Sessions on those models stop producing tests that only restate a small change. ([#2035](https://github.com/code-yeongyu/senpi/issues/2035))
+
+### Fixed
+
+- Hidden diagnostics no longer duplicate the terminal screen when mouse capture is enabled. Messages saved only to the debug log leave the current frame intact; errors actually printed to the terminal still reset mouse targeting. ([#1879](https://github.com/code-yeongyu/senpi/issues/1879))
+- A `models.json` written before the subscription provider rename is now updated to the new provider ids (`chatgpt-subscription`, `anthropic-subscription`) automatically on the first launch, keeping its comments and formatting and a timestamped backup of the original, instead of printing "models.json uses renamed provider ids" on every launch. ([#2044](https://github.com/code-yeongyu/senpi/issues/2044))
+- `/mcp auth <server>` opens the system browser and keeps the complete authorization URL in the transcript instead of replacing it with a progress notice. Browser launch failures leave manual authorization usable, and the MCP documentation now names the supported `auth`, `auth-start`, and `auth-complete` commands. ([oh-my-openagent#6724](https://github.com/code-yeongyu/oh-my-openagent/issues/6724))
+
+### Removed
+
+## [2026.9.23-2] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Claude subscription sessions (`claude-sdk-oauth`) run Claude Code 2.1.280 again, the version Claude Opus 5.5 requires. The bundled `@anthropic-ai/claude-agent-sdk` moves from 0.3.278 to 0.3.280, and the engine's own requests now identify as `claude-cli/2.1.280` instead of `claude-cli/2.1.251`. That identity no longer depends on an installer script, so installs made with `ignore-scripts=true` or through `bun install -g` get it too. If you keep a newer Claude Code on your PATH (for example after `claude update`), senpi now runs that one instead of the older bundled copy; `CLAUDE_CODE_EXECUTABLE` still overrides both. ([#2033](https://github.com/code-yeongyu/senpi/issues/2033))
+
+- A model that calls a deferred (search-exposed) tool under a gateway-namespaced or recased name, such as `mcp__686f__team_create` for `team_create`, now activates and runs that tool on the first call instead of getting `Tool ... not found` and wasting a turn. Tools that disallow lazy activation stay blocked. ([#2025](https://github.com/code-yeongyu/senpi/issues/2025))
+
+- Installs from npm or `bun install -g` load the bundled `gpt-image-gen` skill again. The published bundle resolved its embedded skill file against the current directory, so every session with image-generation credentials printed `[imagegen] bundled skill not found ... skipping contribution` and the skill the system prompt points to was missing. Under Bun (`bun install -g`) the same fix also lets structural reads find their bundled JavaScript grammar. ([#2028](https://github.com/code-yeongyu/senpi/issues/2028))
+
+### Removed
+
+## [2026.9.23] - 2026-09-23
+
+### Breaking Changes
+
+- The recommended OpenAI model is now GPT-6 Sol at `medium`, one slot below GPT-6 Astra and one above GPT-5.6 Sol, and `gpt-6-sol` is the implicit default for the `openai` and `chatgpt-subscription` providers where `gpt-5.6-sol` was. A session that lands on an implicit OpenAI default picks `gpt-6-sol:medium` when it is authenticated. Your explicitly configured `defaultModel` and `recommendedModels` are untouched; GPT-5.6 Sol stays selectable and stays on the recommendation ladder behind it.
+
+### Added
+
+- The high-reasoning warning that fires for GPT-5.6 Sol at `xhigh` / `max` and for GPT-6 Astra at `max` now also covers GPT-6 Sol at `xhigh` / `max`, including `-fast`, `-pro` and gateway-prefixed ids. GPT-6 Luna is not covered.
+
+- GPT-6 Sol and GPT-6 Luna run on the GPT-6 system prompt. OpenAI publishes one set of prompting practices for the whole GPT-6 family, so any `gpt-6-sol` or `gpt-6-luna` id (Fast variants, dated snapshots, gateway-prefixed and Bedrock-style ids, and the display names "GPT-6 Sol" / "GPT-6 Luna") now selects the prompt GPT-6 Astra already used instead of falling back to the generic one; `promptPreset: "gpt-6-astra"` keeps its name and now reads as the family preset.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.22-4] - 2026-09-22
+
+### Breaking Changes
+
+- The recommended Anthropic model is now Claude Opus 5.5 at `max`, in the slot Claude Opus 5 held at `xhigh`. A session that lands on an implicit Anthropic default picks `claude-opus-5-5:max` when it is authenticated; the shipped Fable 5.1 / Fable 5 fallback ladders step down onto `claude-opus-5-5:max` first (then Opus 5, 4.8, 4.6, all at `max`), and Opus 5.5 ships its own ladder. Your explicitly configured `defaultModel`, `recommendedModels`, and `retry.fallbackChains` are untouched; if you carry `claude-opus-5:xhigh` in your own configuration and want the recommended level on the new model, change it to `claude-opus-5-5:max`. Claude Opus 5 stays selectable.
+
+### Added
+
+- Claude Opus 5.5 gets its own system prompt preset (`promptPreset: "claude-opus-5-5"`, selected automatically for any `claude-opus-5-5` / `claude-opus-5.5` id, Bedrock profiles and Vertex `@default` included). It is the Opus 5 prompt plus what Anthropic's Opus 5.5 guide documents for coding agents: the model is told which text-only turn endings count as stopping early while work is still owed, to read the sources that bear on a loosely specified task before changing anything, and to treat time spent as a cost when deciding what to delegate.
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.22-3] - 2026-09-22
+
+### Breaking Changes
+
+- Typing a renamed provider id now tells you the new one: `/login openai-codex` and `--provider claude-sdk-oauth` fail with the new id named, instead of a generic error or an empty selector. ([#1989](https://github.com/code-yeongyu/senpi/issues/1989))
+
 ### Fixed
 
 - The "File operations" section of the system prompt now names the editing tool your session actually has. It was written from the model preset rather than the live toolset, so a Grok 4.5 session - where `apply_patch` can never activate - was told to route every file edit through it, and so was any GPT model served over an API that cannot carry the tool. Sessions that do have `apply_patch` still get it as the single edit verb, the guard against editing files through `cat >`, `sed -i`, `awk -i` or inline `python` stays in both cases, and the instruction is direct again instead of asking the model to work out which tools it has ([#1968](https://github.com/code-yeongyu/senpi/issues/1968)).
 
 - Reusing a transcript container after teardown re-arms progressive hydration instead of leaving it permanently halted, so `clear()` and `detachAll()` reset the hydration halt alongside the watermark rather than only the watermark. Teardown still halts hydration; only reuse re-arms it. Latent today, since the chat container is constructed once and never disposed ([#2002](https://github.com/code-yeongyu/senpi/pull/2002)).
 - Daemon status reads no longer spawn a `ps` process per request. `senpi host status` and the generations rows now read the process table through the kernel (`sysctl` on macOS, `/proc` on Linux), so a client polling daemon status costs zero child processes and nothing can accumulate as unreaped `<defunct>` children on a runtime whose `execFile` does not reap them - the leak class that filled the macOS process table from a long-lived RPC host ([code-yeongyu/omo-desktop-app#594](https://github.com/code-yeongyu/omo-desktop-app/issues/594), [#1507](https://github.com/code-yeongyu/senpi/issues/1507)). On runtimes without the kernel bindings (plain Node) the memory, descriptor and zombie fields report `null` instead of spawning a probe.
+- RPC `open_session.durableSessionId` is now enforced on the worker-backed multi-session host too: a duplicate live id is refused with `session_id_in_use` and a malformed id with `invalid_session_id` at the registry boundary. A session created under a caller-chosen id writes its header at open, so reopening that path before the first assistant message keeps the chosen identity. ([#2010](https://github.com/code-yeongyu/senpi/issues/2010))
 
 ### Added
 
 ### Changed
 
+- Internal code names now follow the subscription provider rename: TypeScript symbols, module files and the builtin extension directory read `anthropic-subscription` instead of `claude-sdk-oauth`, and `chatgpt-subscription` instead of `openai-codex` in `@earendil-works/pi-ai`. Nothing you can observe changes — provider ids, the wire api id, stored files, diagnostics ids and env-var names stay byte-identical. ([#1989](https://github.com/code-yeongyu/senpi/issues/1989))
+
 - Upgrading across the subscription provider rename is now covered end to end: an agent directory written by an older senpi keeps its logins, settings, custom models and saved accounts, and is migrated exactly once. ([#1989](https://github.com/code-yeongyu/senpi/issues/1989))
 
 - Settings, credentials, sessions and `models.json` written before the subscription provider rename keep working: the old provider ids are resolved on read everywhere they are stored, and senpi tells you once which ids to update in `models.json`. ([#1989](https://github.com/code-yeongyu/senpi/issues/1989))
 
-- Typing a renamed provider id now tells you the new one: `/login openai-codex` and `--provider claude-sdk-oauth` fail with the new id named, instead of a generic error or an empty selector. ([#1989](https://github.com/code-yeongyu/senpi/issues/1989))
 
 - Your saved settings survive the subscription provider rename: `defaultProvider`, `defaultModel`, favourites, per-model thinking/tier maps and fallback chains written under `openai-codex`/`claude-sdk-oauth` are rewritten once to `chatgpt-subscription`/`anthropic-subscription` on first load. ([#1989](https://github.com/code-yeongyu/senpi/issues/1989))
 

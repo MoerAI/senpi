@@ -32,7 +32,11 @@ import type {
 	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { ProviderRetryWatchdogAbortError, prepareAgentToolCall } from "@earendil-works/pi-agent-core";
+import {
+	ProviderRetryWatchdogAbortError,
+	prepareAgentToolCall,
+	resolveToolNameAlias,
+} from "@earendil-works/pi-agent-core";
 import {
 	contentText,
 	providerNotConfiguredMessage,
@@ -129,7 +133,7 @@ import {
 import { areExperimentalFeaturesEnabled } from "./experimental.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
-import { CLAUDE_SDK_OAUTH_PROVIDER_ID } from "./extensions/builtin/claude-sdk-oauth/account-management.ts";
+import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./extensions/builtin/anthropic-subscription/account-management.ts";
 import {
 	type ModelUsabilityAdmission,
 	ModelUsabilityBudgetError,
@@ -1323,15 +1327,9 @@ export class AgentSession {
 
 	private _installAgentToolHooks(): void {
 		this.agent.resolveUnknownToolCall = (toolName) => {
-			let service: ReturnType<typeof getToolSearchService>;
-			try {
-				service = getToolSearchService();
-			} catch {
-				return undefined;
-			}
-			const catalogTool = service.getCatalog().some((doc) => doc.name === toolName);
-			if (!catalogTool || !this._activateLazyTool(toolName)) return undefined;
-			return this.agent.state.tools.find((tool) => tool.name === toolName);
+			const resolvedName = resolveToolNameAlias(toolName, this._callableToolNames());
+			if (resolvedName === undefined || !this._activateLazyTool(resolvedName)) return undefined;
+			return this.agent.state.tools.find((tool) => tool.name === resolvedName);
 		};
 		this._bindToolSearchRemovedHints();
 
@@ -3224,6 +3222,25 @@ export class AgentSession {
 	 * `allowLazyActivation` hard stop, then invoke activators in registration order.
 	 * The caller re-resolves the tool from the active registry before execution.
 	 */
+	private _callableToolNames(): string[] {
+		const names = this.agent.state.tools.map((tool) => tool.name);
+		for (const [name, { definition }] of this._toolDefinitions) {
+			const exposure = normalizeToolExposure(definition);
+			if (exposure.exposure === "search" && exposure.allowLazyActivation) names.push(name);
+		}
+		return [...names, ...this._toolSearchCatalogNames()];
+	}
+
+	private _toolSearchCatalogNames(): string[] {
+		try {
+			return getToolSearchService()
+				.getCatalog()
+				.map((doc) => doc.name);
+		} catch {
+			return [];
+		}
+	}
+
 	private _activateLazyTool(toolName: string): boolean {
 		const definition = this._toolDefinitions.get(toolName)?.definition;
 		if (!definition) return false;
@@ -8144,7 +8161,7 @@ export class AgentSession {
 	 * escalate to the fallback chain when that budget runs out.
 	 */
 	private _isClaudeSdkSameModelRemintError(message: AssistantMessage): boolean {
-		if (this.model?.provider !== CLAUDE_SDK_OAUTH_PROVIDER_ID) return false;
+		if (this.model?.provider !== ANTHROPIC_SUBSCRIPTION_PROVIDER_ID) return false;
 		return this._isClaudeSdkSessionLockError(message) || this._isClaudeSdkInvalidRequestError(message);
 	}
 
@@ -8156,8 +8173,8 @@ export class AgentSession {
 	 */
 	private _isClaudeSdkAuthMissError(message: AssistantMessage): boolean {
 		return (
-			this.model?.provider === CLAUDE_SDK_OAUTH_PROVIDER_ID &&
-			message.errorMessage === providerNotConfiguredMessage(CLAUDE_SDK_OAUTH_PROVIDER_ID)
+			this.model?.provider === ANTHROPIC_SUBSCRIPTION_PROVIDER_ID &&
+			message.errorMessage === providerNotConfiguredMessage(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID)
 		);
 	}
 

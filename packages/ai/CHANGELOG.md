@@ -8,11 +8,73 @@
 
 ### Changed
 
-- Pooled-credential slot repair keeps recognizing the managed sentinel after the `claude-sdk-oauth` -> `anthropic-subscription` provider rename: matchers accept both `anthropic-subscription-managed` and the legacy `claude-sdk-oauth-managed` material that existing stored credentials carry verbatim. ([#1989](https://github.com/code-yeongyu/senpi/issues/1989))
-
 ### Fixed
 
 - Fixed Bedrock Converse requests rejecting tool schemas with root `anyOf`, `oneOf`, `allOf`, or a missing object type, while preserving parameter alternatives and strict sampling ([#1947](https://github.com/code-yeongyu/senpi/issues/1947)).
+
+### Removed
+
+## [2026.9.23-2] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Anthropic OAuth requests identify as `claude-cli/2.1.280` instead of `claude-cli/2.1.251`. Claude Opus 5.5 rejects anything older with `claude_code_version_too_old`. ([#2033](https://github.com/code-yeongyu/senpi/issues/2033))
+
+### Removed
+
+## [2026.9.23] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
+- GPT-6 Sol (`gpt-6-sol`) and GPT-6 Luna (`gpt-6-luna`) join the catalog on OpenAI, ChatGPT Subscription, Azure OpenAI, OpenCode Zen, OpenRouter, Venice and Vercel AI Gateway, with `-fast` Priority-tier variants on OpenAI and ChatGPT Subscription. Both carry their published prices (Sol \$2/\$10 per 1M tokens with \$0.20 cache reads, Luna \$0.10/\$0.50 with \$0.01 cache reads, both doubling input and 1.5x output past 272k), 128k output, text and image input, tool search and additional-tools support, and the documented effort ladder `none`/`low`/`medium`/`high`/`xhigh`/`max`. Project prompt budgets: Luna ships the full 922k input cap, Sol ships 400k, on every provider that lists the model.
+
+### Changed
+
+### Fixed
+
+- OpenRouter's passthrough rows for `openai/gpt-6-sol` and `openai/gpt-6-luna` (and their `-pro` / `:batch` siblings) shipped in 2026.9.22-4 with no effort ladder at all, so `xhigh` and `max` were not selectable there and the rows sat at the raw 922k window instead of the tier budget. They now carry the same GPT-6 ladder and budget as the first-party rows.
+
+### Removed
+
+## [2026.9.22-4] - 2026-09-22
+
+### Breaking Changes
+
+### Added
+
+- Claude Opus 5.5 (`claude-opus-5-5`, released 2026-09-22) joins the catalog on Anthropic, Amazon Bedrock (global/us/eu/jp/au inference profiles), OpenRouter and Vercel AI Gateway: 1M context, 128k output, \$4/\$20 per 1M tokens with \$0.20 cache reads, `xhigh` and `max` effort, and `claude-opus-5` as its server-side refusal fallback.
+
+### Changed
+
+### Fixed
+
+- Claude Opus 5.5 is usable on the release that first exposed it. 2026.9.22-3 shipped a partial catalog row for `claude-opus-5-5`, so selecting the model and turning thinking off sent `thinking: {type: "disabled"}` and the request failed with a 400; per-message effort and the server-side refusal fallback were missing too, Amazon Bedrock listed the bare `anthropic.claude-opus-5-5` id that is reachable only through an inference profile, and no prompt preset matched the model, so it ran on the generic system prompt. The row now carries the full set, Bedrock lists only the five profiles, and the model has its own preset.
+
+- Requests to Claude Opus 5.5 never carry `thinking: {type: "disabled"}` or a forced `tool_choice` (`any` / a named tool). Opus 5.5 rejects both with a 400 where Opus 5 accepted them, so a thinking-off turn now pins effort `low` and a forced-tool turn sends `tool_choice` omitted, on the Anthropic Messages and Bedrock providers alike, including gateway rows that carry no catalog metadata.
+
+### Removed
+
+## [2026.9.22-3] - 2026-09-22
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- Internal module and symbol names now follow the subscription provider rename: `openai-codex.ts` -> `chatgpt-subscription.ts` (provider, OAuth flow and auth utils), `openaiCodexOAuth` -> `chatgptSubscriptionOAuth`, and the rest of the identifier family likewise; the model-data shard and manifest entry renamed with them. The wire api id `openai-codex-responses`, its adapter files and every persisted token are unchanged. ([#1989](https://github.com/code-yeongyu/senpi/issues/1989))
+
+- Pooled-credential slot repair keeps recognizing the managed sentinel after the `claude-sdk-oauth` -> `anthropic-subscription` provider rename: matchers accept both `anthropic-subscription-managed` and the legacy `claude-sdk-oauth-managed` material that existing stored credentials carry verbatim. ([#1989](https://github.com/code-yeongyu/senpi/issues/1989))
+
+### Fixed
 
 ### Removed
 
@@ -3610,7 +3672,7 @@
 
 ### Fixed
 
-- Fixed Bun runtime detection for dynamic imports in browser-compatible modules (stream.ts, openai-codex-responses.ts, openai-codex.ts) ([#922](https://github.com/badlogic/pi-mono/pull/922) by [@dannote](https://github.com/dannote))
+- Fixed Bun runtime detection for dynamic imports in browser-compatible modules (stream.ts, openai-codex-responses.ts, chatgpt-subscription.ts) ([#922](https://github.com/badlogic/pi-mono/pull/922) by [@dannote](https://github.com/dannote))
 - Fixed streaming functions to use `model.api` instead of hardcoded API types
 - Fixed Google providers to default tool call arguments to an empty object when omitted
 - Fixed OpenAI Responses streaming to handle `arguments.done` events on OpenAI-compatible endpoints ([#917](https://github.com/badlogic/pi-mono/pull/917) by [@williballenthin](https://github.com/williballenthin))
@@ -3623,7 +3685,7 @@
 ### Added
 
 - Added `headers` option to `StreamOptions` for custom HTTP headers in API requests. Supported by all providers except Amazon Bedrock (which uses AWS SDK auth). Headers are merged with provider defaults and `model.headers`, with `options.headers` taking precedence.
-- Added `originator` option to `loginOpenAICodex()` for custom OAuth client identification
+- Added `originator` option to `loginChatGptSubscription()` for custom OAuth client identification
 - Browser compatibility for pi-ai: replaced top-level Node.js imports with dynamic imports for browser environments ([#873](https://github.com/badlogic/pi-mono/issues/873))
 
 ### Fixed
