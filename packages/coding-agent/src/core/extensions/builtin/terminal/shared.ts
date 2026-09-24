@@ -37,6 +37,11 @@ export const MONITOR_ENV_STATE_DIR = "SENPI_MONITOR_STATE_DIR";
 export const MONITOR_ENV_RESTORED = "SENPI_MONITOR_RESTORED";
 export const MONITOR_ENV_DOWNTIME_MS = "SENPI_MONITOR_DOWNTIME_MS";
 /**
+ * How long a re-spawned watch must stay up after a restore before it counts as restored. Long
+ * enough for `git`/`gh` cold starts to fail visibly, short enough that the digest is not held.
+ */
+export const RESTORE_GRACE_MS = 2_000;
+/**
  * After a foreground session has been killed (abort or timeout), how long to keep
  * waiting for its exit to settle before releasing the tool anyway. A surviving
  * descendant that holds the PTY open (or a kill that never lands) must not keep

@@ -37,9 +37,9 @@ vi.mock("../../src/core/extensions/builtin/terminal/restore.ts", async (importOr
 			if (handlers) {
 				const wrapped: Record<string, unknown> = {};
 				for (const [key, handler] of Object.entries(handlers)) {
-					wrapped[key] = (monitor: unknown) => {
+					wrapped[key] = (monitor: unknown, context: unknown) => {
 						trackers.handlerCalls += 1;
-						return (handler as (monitor: unknown) => unknown)(monitor);
+						return (handler as (monitor: unknown, context: unknown) => unknown)(monitor, context);
 					};
 				}
 				forwarded = { ...options, handlers: wrapped } as typeof options;
