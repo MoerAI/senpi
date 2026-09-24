@@ -1,7 +1,15 @@
 import { resolve } from "node:path";
 import { APPROVED_MONITOR_PARENT } from "../monitor-permission.ts";
-import { MonitorRegistry } from "../monitor-registry.ts";
-import { DEFAULT_COLS, DEFAULT_ROWS, DURABLE_MONITOR_EXPIRY_MS, TERMINAL_MONITOR_TOOL } from "../shared.ts";
+import { allocateMonitorId, MonitorRegistry } from "../monitor-registry.ts";
+import { ensureMonitorStateDir, terminalStateDir } from "../monitor-state-dir.ts";
+import {
+	DEFAULT_COLS,
+	DEFAULT_ROWS,
+	DURABLE_MONITOR_EXPIRY_MS,
+	MONITOR_ENV_ID,
+	MONITOR_ENV_STATE_DIR,
+	TERMINAL_MONITOR_TOOL,
+} from "../shared.ts";
 import {
 	errorResult,
 	resolveTerminalId,
@@ -59,15 +67,24 @@ async function createMonitor(
 	const cwd = resolve(execCtx?.cwd ?? ctx.cwd);
 	const timeoutMs = input.persistent ? undefined : resolveTimeoutMs(input.timeout_ms);
 	const deadlineMs = timeoutMs === undefined ? null : Date.now() + timeoutMs;
+	// The stable id is allocated BEFORE the spawn so the command can see it in its environment.
+	const monitorId = allocateMonitorId();
+	const terminalDir = terminalStateDir(ctx.getSessionContext?.());
+	const envOverrides: Record<string, string> = { [MONITOR_ENV_ID]: monitorId };
+	if (input.persistent === true && terminalDir !== undefined) {
+		envOverrides[MONITOR_ENV_STATE_DIR] = await ensureMonitorStateDir(terminalDir, monitorId);
+	}
 	const { id, runtime } = await spawnCommandSession(ctx, {
 		command: input.command,
 		cols: resolveDimension(undefined, ctx.defaultCols || DEFAULT_COLS),
 		rows: resolveDimension(undefined, ctx.defaultRows || DEFAULT_ROWS),
 		cwd,
+		envOverrides,
 		...(timeoutMs === undefined ? {} : { timeoutMs }),
 	});
 	ctx.onMonitorRearmed?.(id);
-	const monitorId = registry.register({
+	registry.register({
+		monitorId,
 		id,
 		description: input.description,
 		runtime,

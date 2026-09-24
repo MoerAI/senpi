@@ -127,8 +127,26 @@ describe("terminal persistence is lazy and survives a reload", () => {
 		expect(existsSync(stateDir)).toBe(false);
 		const result = await createPersistent(generation, "first watch");
 		expect(result.isError).not.toBe(true);
-		expect(readdirSync(stateDir).sort()).toEqual([`${sessionId}.json`, `${sessionId}.lease`]);
+		expect(readdirSync(stateDir).sort()).toEqual([`${sessionId}.json`, `${sessionId}.lease`, "state"]);
 		expect(manifestOf(stateDir, sessionId).monitors.map((entry) => entry.description)).toEqual(["first watch"]);
+	});
+
+	it("kill_bash on a persistent watch removes its state dir; a process exit keeps it for the restore", async () => {
+		const generation = await start("startup");
+		const created = await createPersistent(generation, "state dir watch");
+		const monitorId = String(created.details?.monitor_id);
+		const dir = join(stateDir, "state", monitorId);
+		expect(existsSync(dir)).toBe(true);
+		const kill = generation.tools.get("kill_bash");
+		if (!kill) throw new Error("kill_bash tool missing");
+		await kill.execute("kill", { bash_id: monitorId });
+		expect(existsSync(dir)).toBe(false);
+
+		const survivor = await createPersistent(generation, "survivor watch");
+		const survivorDir = join(stateDir, "state", String(survivor.details?.monitor_id));
+		await generation.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+		live = [];
+		expect(existsSync(survivorDir)).toBe(true);
 	});
 
 	it("a reload keeps the pre-reload durable entries when the next transition writes", async () => {

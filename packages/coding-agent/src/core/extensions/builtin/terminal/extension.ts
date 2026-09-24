@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { getShellEnv } from "../../../../utils/shell.ts";
 import { encodedSessionId } from "../../../session-sidecar-store.ts";
 import { SettingsManager } from "../../../settings-manager.ts";
@@ -15,9 +15,10 @@ import { createRestartableCommandHandler } from "./durable-command.ts";
 import { createCheckpointedFileRestoreHandler } from "./durable-file.ts";
 import { acquireTerminalLease, currentLeaseToken, releaseTerminalLease } from "./manifest-lease.ts";
 import { MonitorNotifier } from "./monitor-notify.ts";
+import { terminalStateDir } from "./monitor-state-dir.ts";
 import { MONITOR_STATUS_KEY } from "./monitor-status.ts";
 import { MonitorStatusTicker } from "./monitor-status-ticker.ts";
-import { getTerminalNotificationDelivery, NON_INTERACTIVE_MODES, TerminalNotifier } from "./notify.ts";
+import { getTerminalNotificationDelivery, TerminalNotifier } from "./notify.ts";
 import { buildTerminalPromptSection } from "./prompt.ts";
 import {
 	type RestoreDigest,
@@ -73,18 +74,6 @@ interface TerminalExtensionState {
 /** Tests and SDK callers may hand partial contexts without a session manager. */
 function sessionKeyOf(ctx: ExtensionContext | undefined): string | undefined {
 	return ctx?.sessionManager?.getSessionId?.();
-}
-
-/**
- * Per-session persistence dir for the terminal lease + manifest; undefined when the context
- * carries no durable session dir (SDK/in-memory sessions must not persist terminal state) or
- * runs a one-shot `print`/`json` turn, which has no later generation to restore into.
- */
-function terminalStateDir(ctx: ExtensionContext | undefined): string | undefined {
-	if (ctx !== undefined && NON_INTERACTIVE_MODES.has(ctx.mode)) return undefined;
-	const sessionDir = ctx?.sessionManager?.getSessionDir?.();
-	if (sessionDir === undefined || sessionDir.length === 0 || !isAbsolute(sessionDir)) return undefined;
-	return join(sessionDir, "extensions", "terminal");
 }
 
 function createBundle(state: TerminalExtensionState): TerminalSessionBundle {
