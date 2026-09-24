@@ -1088,6 +1088,26 @@ function applyOpenAIExplicitPromptCacheMetadata(model: Model<Api>): void {
 	};
 }
 
+// A `configuration_update` input item changes reasoning effort without discarding the cached
+// prefix; a new top-level `reasoning.effort` reports `reasoning_effort_changed` and caches 0.
+// The direct API accepts the item on the same GPT-5.6+ family that prices cache writes
+// (measured 2026-09-24 on gpt-6-luna and gpt-5.6-luna). The Codex backend was verified only
+// on gpt-6-astra, so the ChatGPT subscription lane stays limited to that id.
+const CHATGPT_SUBSCRIPTION_CONFIGURATION_UPDATE_MODEL_IDS = new Set(["gpt-6-astra"]);
+
+function applyOpenAIConfigurationUpdateMetadata(model: Model<Api>): void {
+	const isOpenAI = model.provider === "openai" && model.api === "openai-responses" && model.cost.cacheWrite > 0;
+	const isChatGptSubscription =
+		model.provider === "chatgpt-subscription" &&
+		model.api === "openai-codex-responses" &&
+		CHATGPT_SUBSCRIPTION_CONFIGURATION_UPDATE_MODEL_IDS.has(model.id);
+	if (!(isOpenAI || isChatGptSubscription)) return;
+	model.compat = {
+		...(model.compat as OpenAIResponsesCompat | undefined),
+		supportsConfigurationUpdate: true,
+	};
+}
+
 // Every catalog that ships a GPT-6 Astra entry declares the same context window.
 // Upstream passthrough catalogs (opencode, openrouter, github-copilot,
 // vercel-ai-gateway) otherwise inherit the documented 1,050,000 window while the
@@ -3588,6 +3608,7 @@ async function generateModels() {
 		applyOpenAIGrammarToolCompatMetadata(model);
 		applyOpenAIToolSearchMetadata(model);
 		applyOpenAIExplicitPromptCacheMetadata(model);
+		applyOpenAIConfigurationUpdateMetadata(model);
 		applyGpt6ContextWindow(model);
 		applyGpt6ThinkingLevels(model);
 		applyBaiReasoningConsistency(model);

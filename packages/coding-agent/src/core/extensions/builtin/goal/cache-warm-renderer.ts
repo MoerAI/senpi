@@ -84,6 +84,9 @@ function warmLine(data: GoalCacheWarmupEntryData): string | undefined {
 	const cache = data.cache;
 	if (cache === undefined || cache.cachedTokens <= 0) return undefined;
 	const tokens = `~${formatWarmTokenCount(cache.cachedTokens)} tokens`;
+	if (cache.cacheLifetime === "best-effort") {
+		return `${tokens} were cached after the prior turn · provider caching is best-effort, with no expiry to beat`;
+	}
 	const ttlMayHaveElapsed =
 		cache.ttlSeconds !== undefined && (data.waitedMs ?? data.delayMs) >= cache.ttlSeconds * 1000;
 	if (ttlMayHaveElapsed) {
