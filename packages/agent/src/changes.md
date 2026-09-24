@@ -1,3 +1,21 @@
+## 2026-09-24 - Strip a gateway namespace whatever the casing of its prefix (senpi#2104)
+
+### What changed
+
+- `packages/agent/src/tool-name-alias.ts`: `GATEWAY_TOOL_NAMESPACE` matches the `mcp__<id>__` prefix case-insensitively, so `Mcp__686f__Eval` and `MCP__686f__Eval` resolve to `eval` like `mcp__686f__Eval` already did. The unique-match rule is unchanged.
+
+### Why
+
+- A model carried the gateway's mixed-case tool names onto the prefix itself and called `Mcp__686f__Eval`. The lowercase-only strip left the prefix in place, the fold compared `mcp686feval` with `eval`, and the call failed with `Tool Mcp__686f__Eval not found`.
+
+### Why an extension could not handle it
+
+- Tool-call name resolution runs inside the agent loop before any hook sees the call.
+
+### Expected merge conflict zones
+
+- LOW: the `GATEWAY_TOOL_NAMESPACE` line in `tool-name-alias.ts` (fork-only).
+
 ## 2026-09-23 - A resolved tool-call name is invisible outside the model's view (senpi#2064)
 
 ### What changed

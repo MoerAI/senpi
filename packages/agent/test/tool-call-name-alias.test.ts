@@ -166,6 +166,21 @@ describe("tool-call name alias resolution", () => {
 		expect(result.isError).toBe(false);
 	});
 
+	it.each(["Mcp__686f__LazyWeather", "MCP__686f__lazy_weather"])(
+		"strips the gateway namespace whatever the casing of its prefix (%s)",
+		async (calledName) => {
+			// Live 2026-09-24: a model capitalized the prefix itself (`Mcp__686f__Eval`)
+			// and the lowercase-only strip answered "Tool Mcp__686f__Eval not found".
+			const execute = vi.fn();
+
+			const { result } = await callOnce(calledName, [weatherTool("lazy_weather", execute)]);
+
+			expect(execute).toHaveBeenCalledOnce();
+			expect(result.toolName).toBe("lazy_weather");
+			expect(result.isError).toBe(false);
+		},
+	);
+
 	it("never guesses between two tools that fold to the same key", async () => {
 		const first = vi.fn();
 		const second = vi.fn();

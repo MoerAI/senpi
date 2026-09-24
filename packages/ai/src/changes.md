@@ -1,3 +1,21 @@
+## 2026-09-24 - Strip a gateway tool-reference namespace whatever the casing of its prefix (senpi#2104)
+
+### What changed
+
+- `packages/ai/src/api/anthropic-tool-references.ts`: `GATEWAY_TOOL_NAMESPACE` matches the `mcp__<id>__` prefix case-insensitively, so a replayed native tool-search reference such as `Mcp__a4e6__Memory` folds onto the request's `memory` tool instead of being dropped. The unique-match rule is unchanged.
+
+### Why
+
+- The inbound tool-call resolver (senpi#2104) had the same lowercase-only regex. Both copies of the rule now accept any casing of the prefix, so the two paths agree.
+
+### Why an extension could not handle it
+
+- The tool-reference pass runs inside the Anthropic adapter while it builds the request, before any extension sees the payload.
+
+### Expected merge conflict zones
+
+- LOW: the `GATEWAY_TOOL_NAMESPACE` line in `anthropic-tool-references.ts` (fork-only).
+
 ## 2026-09-24 - Prewarm the GPT-5.6+ prefix and record prompt_cache_diagnostics (senpi#2096)
 
 ### What changed
@@ -66,6 +84,33 @@ The key is written inside the provider request builders (`packages/ai/src/api/op
 
 - `packages/ai/src/api/openai-responses.ts`: the `prompt_cache_key` field in `buildParams`.
 - `packages/ai/src/api/openai-completions.ts`: the `prompt_cache_key` ternary in `buildParams`.
+
+## 2026-09-24 - configuration_update follows a catalog capability flag (senpi#2094)
+
+### What changed
+
+- `packages/ai/src/openai-responses-compat.ts`: `OpenAIResponsesCompat.supportsConfigurationUpdate` (boolean, default false) marks models that accept Responses `configuration_update` input items.
+- `packages/ai/src/models.ts`: new `supportsConfigurationUpdate(model)`, true only for a Responses-family api (`openai-responses`, `openai-codex-responses`, `azure-openai-responses`) whose `compat.supportsConfigurationUpdate` is true.
+- `packages/ai/src/api/openai-responses-shared.ts`: the `configurationUpdate` branch of `convertResponsesMessages` gates on `supportsConfigurationUpdate(model)` instead of `model.id === "gpt-6-astra"` on `openai` / `chatgpt-subscription`; adjacent updates still coalesce into one item.
+- `packages/ai/src/api/openai-responses.ts`: `getCompat` resolves `supportsConfigurationUpdate` (default false) with the other `Required<OpenAIResponsesCompat>` fields.
+- `packages/ai/src/providers/data/openai.json`, `packages/ai/src/providers/data/chatgpt-subscription.json`, `packages/ai/src/providers/data/.manifest.json`: the flag lands on the 12 `openai` GPT-5.6/GPT-6 rows (base and `-fast`) and on `chatgpt-subscription` `gpt-6-astra` / `gpt-6-astra-fast`; no other field changed.
+- `packages/ai/test/openai-config-update.test.ts`: flagged and unflagged catalog rows, the api guard, and the exact flagged set per provider.
+
+### Why
+
+A top-level `reasoning.effort` change rewrites the hidden instructions and discards the cached prefix (live probe 2026-09-24: cached 0, diagnostics `reasoning_effort_changed` on gpt-6-luna and gpt-5.6-luna), while an appended `configuration_update` keeps it (4882 / 4879 cached tokens) and still changes effort. The literal `gpt-6-astra` gate threw that cache away on every other model that accepts the item.
+
+### Why an extension could not handle it
+
+The Responses input list is built inside `convertResponsesMessages` before the request leaves the package; an extension sees neither the item list nor the model's wire capabilities.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/api/openai-responses-shared.ts`: the `configurationUpdate` branch at the top of the message loop and the `../models.ts` import.
+- `packages/ai/src/models.ts`: the block after `supportsMax` and the `./types.ts` type import.
+- `packages/ai/src/openai-responses-compat.ts`: the field after `supportsExplicitPromptCacheMode`.
+- `packages/ai/src/api/openai-responses.ts`: the `getCompat` return object.
+- `packages/ai/src/providers/data/*.json` + `.manifest.json`: regenerate rather than merge.
 
 ## 2026-09-23 - Cursor variant grouping derived from the live catalog (senpi#2038)
 
@@ -4743,3 +4788,27 @@ The shared content type and provider serialization belong to the AI package, bef
 TextContent and pi-messages request construction.
 
 - Covered production paths: `packages/ai/src/types.ts`, `packages/ai/src/api/pi-messages.ts`.
+
+## 2026-09-24 — Classify prompt-cache lifetimes per provider contract (#2090, #831)
+
+### What changed
+
+- `packages/ai/src/utils/prompt-cache-ttl.ts` adds `resolvePromptCacheLifetime()` and the `PromptCacheLifetime` union: `ttl` (explicit expiry contract with seconds), `best-effort` (automatic caching with no expiry contract), and `none` (disabled or unknown). `resolvePromptCacheTtlSeconds()` keeps its signature and returns the `ttl` seconds, otherwise `undefined`.
+- The `openai-responses`, `azure-openai-responses` and `openai-codex-responses` branch resolves GPT-5.6 and later (`gpt-5.6*`, `gpt-6*`, or `compat.supportsExplicitPromptCacheMode`) to `PROMPT_CACHE_TTL_OPENAI_EXTENDED_SECONDS` (1800). On `openai-responses` this applies only to provider `openai` or the `api.openai.com` host; gateways that proxy the same ids keep 300. Earlier OpenAI models keep 300.
+- The `openai-completions` branch classifies direct DeepSeek (provider `deepseek` or the parsed, case-insensitive `api.deepseek.com` host) as `best-effort`. `cacheRetention: "none"` still wins first.
+- `packages/ai/src/index.ts` exports `resolvePromptCacheLifetime`, `PromptCacheLifetime` and `PROMPT_CACHE_TTL_OPENAI_EXTENDED_SECONDS`.
+
+### Why
+
+- OpenAI documents that GPT-5.6+ prompt caches stay eligible at least 30 minutes after the latest write or reuse, yet every Responses model resolved 300 s, so cache-aware budgets were about 6.7x tighter than the provider requires. DeepSeek's disk cache is automatic and best-effort, with entries cleared after hours to days, so reporting it as a fixed 5-minute TTL produced false TTL copy and 270 s goal wakes.
+
+### Why an extension could not handle it
+
+- Provider cache semantics are resolved in the shared AI provider matrix that every coding-agent consumer reads; an extension cannot change what the resolver reports to core budgets and builtins.
+
+### Expected merge conflict zones
+
+- MEDIUM: `utils/prompt-cache-ttl.ts` `resolvePromptCacheLifetime()` switch (formerly the body of `resolvePromptCacheTtlSeconds()`) and the new constants near the top of the file.
+- LOW: the prompt-cache export block in `index.ts`.
+
+- Covered production paths: `packages/ai/src/utils/prompt-cache-ttl.ts`, `packages/ai/src/index.ts`.

@@ -20,7 +20,7 @@ import {
 	contextProvenanceFingerprint,
 	getContextProvenance,
 } from "../context-provenance.ts";
-import { calculateCost } from "../models.ts";
+import { calculateCost, supportsConfigurationUpdate } from "../models.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -293,7 +293,7 @@ export function convertResponsesMessages<TApi extends Api>(
 	let msgIndex = 0;
 	for (const msg of transformedMessages) {
 		if (msg.role === "configurationUpdate") {
-			if (model.id !== "gpt-6-astra" || !["openai", "chatgpt-subscription"].includes(model.provider)) continue;
+			if (!supportsConfigurationUpdate(model)) continue;
 			const previous = messages[messages.length - 1];
 			if (previous?.type === "configuration_update") {
 				messages[messages.length - 1] = {

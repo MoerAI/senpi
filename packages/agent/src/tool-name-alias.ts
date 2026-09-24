@@ -6,9 +6,10 @@ import type { AgentContext, AgentLoopConfig, AgentTool, AgentToolCall, AgentTool
  * model can carry that shape into a call for a tool it learned by its bare
  * name. Resolve such a call only when exactly one available tool matches after
  * stripping the namespace and folding case and `-`/`_` separators; never guess
- * between two candidates.
+ * between two candidates. The model can recase the prefix too (`Mcp__<id>__`),
+ * so the prefix matches in any case.
  */
-const GATEWAY_TOOL_NAMESPACE = /^mcp__[^_]+__(.+)$/;
+const GATEWAY_TOOL_NAMESPACE = /^mcp__[^_]+__(.+)$/i;
 
 function foldToolName(name: string): string {
 	return name.toLowerCase().replaceAll(/[-_]/g, "");
