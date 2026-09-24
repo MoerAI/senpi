@@ -1,5 +1,36 @@
 # prompt-preset Extension Changes
 
+## 2026-09-24 - GPT cores: outcome-first handoff; Astra handoff-report rule
+
+### What changed
+
+- `gpt-5.5.ts`: `## Handoff` (outcome-first block: `[Outcome so far] toward [...]. You need: [...]. Now: [...]. Next: [...]`) inserted before `## Style`; full completion bullet in `## Hard Limits` (the core bans widening only, not swap); header rationale line.
+- `gpt-5.6.ts`: the same `## Handoff` section before `## Output`; the short completion bullet (`## Output` already says "never substitute a shorter artifact for the one asked for" and the Stop Goal "no partial delivery"); `Final message:`, `Code reviews:`, the Stop Goal, and `GPT56_EXECUTION_RULES` untouched; header rationale line, and the header's quoted brevity phrase reworded.
+- `gpt-6-astra.ts`: new rule `handoff-report` (concern `reporting`) renders once in `## Reporting` in place of the plan-change sentence, ending with that sentence's clause "a plan, a hypothesis, a status report, or an offer to continue never stands in for the work"; no heading and no bold (the `## Reporting` section is the heading, and bold stays reserved for the async rules). `DIRECT_STATEMENTS` untouched. Short completion bullet in `## Hard Limits` (`initiative-bias` already says "deliver all of it and only it"). Header rationale line.
+- `test/suite/prompt-presets-gpt-6-astra.test.ts`: `handoff-report` -> `reporting` -> `Reporting` in both rule tables; the emphasized set is unchanged, so the rule is asserted plain. RED under four one-line mutations (rendered in `## Writing`, rendered twice, concern `writing-style`, bold added) before green. `prompt-presets-gpt-6-family.test.ts` (Sol/Luna byte-equal to Astra) stays green unchanged.
+
+Removed sentences and rendered `wc -w` (empty tool list, `resolvePreset` settings force):
+
+| Preset | Removed (exact) | Before | After | Delta by category |
+|--------|-----------------|--------|-------|-------------------|
+| gpt-5.5 | `, and roadmap language ("Next, I will") - do the follow-up now and report it done` (the sentence now ends at the permission-begging ban) | 882 | 998 | +94 handoff B+C; +36 full completion bullet C; -14 roadmap ban B (contradicted the handoff's Next) |
+| gpt-5.6 | `During work, update only at meaningful phase changes - a plan-changing discovery, a tradeoff decision, a blocker - one sentence each; never narrate routine reads.`; `Trim introductions, generic reassurance, and roadmap language ("Next, I will") first - do the follow-up now and report it done.` -> `Trim introductions and generic reassurance first.`; `say so concisely` -> `say so in a sentence` | 2116 | 2201 | +94 handoff B+C; +28 short bullet C; -25 phase-change cadence B; -14 roadmap ban B; +2 brevity adjective replaced by a bound A |
+| gpt-6-astra (and Sol/Luna) | `While working, speak only when something changes the plan - a finding, a tradeoff decision, a blocker - in one or two sentences naming the concrete outcome and the next step, then take that step in the same turn: a plan, a hypothesis, a status report, or an offer to continue never stands in for the work. Routine reads and passing checks go unnarrated.` | 2778 | 2852 | +110 handoff-report B+C (keeps the stands-in clause); -64 plan-change sentence B; +28 short bullet C |
+
+No file grew beyond its completion bullet plus the net handoff delta. None of the three files contains `concise` or `keep it short` after this change.
+
+### Why
+
+senpi#2121 (user directive 2026-09-24): progress must be legible at every phase change and at the end. The GPT cores rationed updates to plan-changing discoveries and banned roadmap language, so a run could go silent and a named Next read as forbidden. The GPT-5.5 guide asks for a short visible preamble and sparse outcome-based updates at major phase changes, never narration of routine calls; the GPT-5.6 guide ("Simplify prompts first") asks that added text replace, not stack, so each section is paid for by the sentences it supersedes, and no brevity adjective is added (GPT-5.6 over-compresses under them). Astra keeps its 09-11 closing clause because that survey showed it ending turns on a named next step it never took.
+
+### Why an extension could not handle it
+
+The sentences are preset core text and rule data; an extension could only append a contradicting rule after them.
+
+### Expected merge conflict zones
+
+- `gpt-5.5.ts` / `gpt-5.6.ts` `## Hard Limits` tails and the `## Style` / `## Output` openings; `gpt-6-astra.ts` rule-id union, `GPT6_ASTRA_RULES`, `## Reporting`, `## Hard Limits`; the astra test's two rule tables. Fork-only files.
+
 ## 2026-09-24 - Claude and Kimi K3 cores: handoff contract replaces quiet narration
 
 ### What changed
