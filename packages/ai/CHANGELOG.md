@@ -10,6 +10,10 @@
 
 ### Fixed
 
+- OpenAI Completions and Responses usage parsers count gateway `cache_creation_tokens` as `cacheWrite` when `cache_write_tokens` is absent, so those writes are no longer billed as uncached input. ([#2091](https://github.com/code-yeongyu/senpi/issues/2091))
+
+- OpenAI GPT-5.6+ Responses and Completions requests to `api.openai.com` no longer send a per-session `prompt_cache_key`, so sessions, forks, and task children can reuse the same cached prefix. Pre-5.6 models still send the session key. ([#2097](https://github.com/code-yeongyu/senpi/issues/2097))
+
 - `resolvePromptCacheTtlSeconds()` returns 1800 s for GPT-5.6 and later (GPT-6 Sol/Luna/Astra included) on the OpenAI, Azure OpenAI and ChatGPT-subscription Responses lanes, matching OpenAI's documented minimum 30-minute cache lifetime; earlier OpenAI models and gateways that proxy the same ids keep 300 s. Direct DeepSeek no longer reports a fixed 5-minute TTL: the new `resolvePromptCacheLifetime()` classifies its automatic cache as `best-effort`, next to `ttl` and `none`, and the numeric resolver returns `undefined` for it. ([#2090](https://github.com/code-yeongyu/senpi/issues/2090), [#831](https://github.com/code-yeongyu/senpi/issues/831))
 
 ### Removed

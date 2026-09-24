@@ -455,7 +455,12 @@ function buildParams(
 		model: model.id,
 		input: messages,
 		stream: true,
-		prompt_cache_key: cacheRetention === "none" ? undefined : clampOpenAIPromptCacheKey(options?.sessionId),
+		prompt_cache_key:
+			cacheRetention === "none" ||
+			(isOpenAIResponsesNativeEndpoint(model, options?.env) &&
+				(compat.supportsExplicitPromptCacheMode || model.cost.cacheWrite > 0))
+				? undefined
+				: clampOpenAIPromptCacheKey(options?.sessionId),
 		prompt_cache_retention: getPromptCacheRetention(compat, cacheRetention),
 		prompt_cache_options: getPromptCacheOptions(compat, cacheRetention),
 		store: false,
