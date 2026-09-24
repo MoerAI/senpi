@@ -744,6 +744,9 @@ export function createCliRuntimeFactory(
 		mcpRegistry,
 	}) => {
 		const isInitialRuntime = sessionStartEvent === undefined;
+		const markSwitch = (label: string): void => {
+			if (sessionStartEvent?.reason === "resume") time(label, "switch");
+		};
 		const projectTrustDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
 		const cachedProjectTrust = projectTrustByCwd.get(cwd);
 		const hasTrustRequiringResources = hasTrustRequiringProjectResources(cwd);
@@ -814,6 +817,7 @@ export function createCliRuntimeFactory(
 				extensionFactories,
 			},
 		});
+		markSwitch("services");
 		const { settingsManager, modelRuntime, resourceLoader } = services;
 		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 			...projectTrustDiagnostics,
@@ -875,6 +879,7 @@ export function createCliRuntimeFactory(
 		if (isInitialRuntime) {
 			startupLoadingIndicator.setPhase("opening session");
 		}
+		markSwitch("sessionOptions");
 		const created = await createAgentSessionFromServices({
 			services,
 			sessionManager,
@@ -895,6 +900,7 @@ export function createCliRuntimeFactory(
 				launchProfile?.autoTitle,
 			),
 		});
+		markSwitch("createSession");
 		const cliThinkingOverride = runtimeParsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
 			created.session.setThinkingLevel(created.session.thinkingLevel);

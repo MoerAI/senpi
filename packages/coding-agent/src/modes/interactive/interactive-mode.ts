@@ -2741,9 +2741,11 @@ export class InteractiveMode {
 		if (options.renderBeforeBind) {
 			this.renderCurrentSessionState();
 			this.subscribeToAgent();
+			time("render", "switch");
 		}
 
 		await this.bindCurrentSessionExtensions();
+		time("bindExtensions", "switch");
 
 		if (this.session !== session) {
 			return;
@@ -8330,7 +8332,10 @@ export class InteractiveMode {
 			if (result.cancelled) {
 				return result;
 			}
-			this.showStatus("Resumed session");
+			const switchTimings = formatTimings("switch");
+			this.showStatus(
+				switchTimings === undefined ? "Resumed session" : `Resumed session | switch timings: ${switchTimings}`,
+			);
 			return result;
 		} catch (error: unknown) {
 			if (error instanceof MissingSessionCwdError) {

@@ -1,3 +1,47 @@
+## 2026-09-24 - Fast /resume listing: chunked summary reader and persistent summary index (senpi#2087)
+
+### What changed
+
+- `packages/coding-agent/src/core/session-summary.ts`: `readSessionSummary` reads through `readFileLines`, a 1 MiB reused-buffer async reader that splits on LF only and drops a trailing CR, instead of `readline`. Summaries are unchanged except that records containing raw U+2028/U+2029 (valid inside JSON strings) are no longer split and dropped; they now count exactly as `loadEntriesFromFile` loads them.
+- `packages/coding-agent/src/core/session-summary-index-file.ts` (new): the on-disk format of `<sessions-dir>/.session-summaries.index` - a `{"version":1}` header, then one `{file,size,mtimeMs,summary}` JSON line per session; tolerant loading (missing or foreign header discards the file, unparsable lines are skipped, last line wins), whole-line appends that first close a torn tail, and atomic rewrite through a temp file plus `rename`.
+- `packages/coding-agent/src/core/session-summary-index.ts` (new): `SessionSummaryIndex`, the per-directory second cache level. It loads lazily on the first in-memory miss it can serve (a per-process snapshot of entry stamps, trusted only while the index file's size and mtime are unchanged, skips the load for a changed or never-indexed file), appends summaries it lacks after a listing, and rewrites the file when it is unusable or its entry bytes exceed twice the live bytes. Live entries are capped at 256 MiB, keeping the most recently active sessions; entries for removed files are dropped on rewrite. Every index failure is swallowed and the listing streams instead.
+- `packages/coding-agent/src/core/session-summary-cache.ts`: `readCachedSessionSummary(filePath, store?)` consults an optional `SessionSummaryStore` on an LRU miss before streaming, and records every served summary into it; `sessionSummaryStreamCount()` test seam; `clearSessionSummaryCache()` also forgets index snapshots.
+- `packages/coding-agent/src/core/session-discovery.ts`: `buildSessionInfo` / `listSessionInfos` pass the store through; new `listSessionFilesInDir(dir, files, onLoaded)` lists one directory through its index and persists it; `listSessionsFromDir` uses it.
+- `packages/coding-agent/src/core/session-manager.ts`: `listAll()` lists each project directory through `listSessionFilesInDir` in turn (so each directory's index is used and updated) with the same `(loaded, total)` grand-total progress.
+
+### Why
+
+- A cold process re-streamed every session file to list `/resume` rows: 5.6-27 s for a 1,089-session, ~2.5 GB directory, dominated by `readline`'s per-line async iteration. With a warm index the same cold listing reads one ~49 MB file.
+
+### Why an extension could not handle it
+
+- Session listing, the summary cache, and `SessionManager.list` / `listAll` are core session internals with no extension hook.
+
+### Expected merge conflict zones
+
+- LOW: the import line and the per-directory loop in `SessionManager.listAll` in `session-manager.ts`; the other files are fork-owned.
+
+## 2026-09-24 - Profile /resume session switches under TIMING (senpi#2087)
+
+### What changed
+
+- `packages/coding-agent/src/core/timings.ts`: adds the `switch` namespace to `TimingLabel`.
+- `packages/coding-agent/src/core/agent-session-runtime.ts`: `switchSession` resets the `switch` namespace and marks `beforeSwitch`, `open`, `apply`, and `rebind`; `teardownCurrent` marks `abort`, `shutdown`, and `dispose` when the reason is `resume`. Every mark is a no-op unless `TIMING=1` (brand or legacy prefix), exactly like the existing `reload` namespace.
+
+### Why
+
+- Resuming a 42.5 MB / 8,201-message session took 2-4 s from Enter to "Resumed session" with no way to see where the time went. The marks showed the switch has no single avoidable phase: the wall time is ~40 serial `session_start` handlers (~0.8 s self time) interleaved with the deferred transcript hydration (~0.65 s in 11 chunks), plus open/services/session construction/render at ~0.1 s each. `test/suite/switch-timings.test.ts` pins the runtime-owned mark sequence the same way `reload-timings.test.ts` pins the reload one.
+
+### Why an extension could not handle it
+
+- The phases are runtime internals (`SessionManager.open`, teardown, factory, rebind) that run before any extension of the new session is bound.
+
+### Expected merge conflict zones
+
+- LOW: the `TimingLabel` union in `timings.ts`; the import block, `switchSession`, and `teardownCurrent` in `agent-session-runtime.ts`.
+
+||||||| parent of 1f032c2b4f (perf(coding-agent): persist session summaries in a per-directory index (#2087))
+
 ## 2026-09-24 - configuration_update follows a catalog capability flag (senpi#2094)
 
 ### What changed

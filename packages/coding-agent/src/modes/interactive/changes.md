@@ -1,3 +1,21 @@
+## 2026-09-24 - Show switch timings on "Resumed session" under TIMING (senpi#2087)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `rebindCurrentSession` marks `render` and `bindExtensions` in the `switch` timing namespace; `handleResumeSession` appends `| switch timings: ...` to the "Resumed session" status when `formatTimings("switch")` has entries, mirroring the reload status line. Without `TIMING=1` the status text is unchanged.
+
+### Why
+
+- Extension `session_start` handlers and the transcript render are the largest slices of a resume switch; the status line makes the breakdown visible on the real surface without a debugger.
+
+### Why an extension could not handle it
+
+- The rebind sequence and the status line are host-owned.
+
+### Expected merge conflict zones
+
+- LOW: two marks in `rebindCurrentSession` and the status call in `handleResumeSession`.
+
 ## 2026-09-24 - Keep /resume search and tree rebuilds off the per-keystroke path (senpi#2087)
 
 ### What changed

@@ -1,3 +1,21 @@
+## 2026-09-24 - Profile /resume session switches under TIMING (senpi#2087)
+
+### What changed
+
+- `packages/coding-agent/src/main.ts`: the CLI runtime factory marks `services`, `sessionOptions`, and `createSession` in the `switch` timing namespace when it builds a runtime for a `session_start` event whose reason is `resume`. No-op unless `TIMING=1`.
+
+### Why
+
+- The switch profile needed the factory's own phases (service recreation, option resolution, session construction) separated from teardown and extension binding; on a 42.5 MB session each costs ~0.1-0.3 s and none dominates.
+
+### Why an extension could not handle it
+
+- The factory runs before the new session's extensions exist.
+
+### Expected merge conflict zones
+
+- LOW: three one-line marks inside the factory closure in `createCliRuntimeFactory`.
+
 ## 2026-09-23 - `resolvedToolName` on toolcall_start/toolcall_end JSON and RPC records (senpi#2068)
 
 ### What changed
