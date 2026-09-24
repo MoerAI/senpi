@@ -1,4 +1,5 @@
 import { bunJsPrinter, prettifyJs } from "./display-js.ts";
+import { pythonDisplay } from "./display-python.ts";
 import type { EvalLanguage } from "./types.ts";
 
 // Display-only (senpi#2050, senpi#2076): models often send a cell as one long line of joined
@@ -25,14 +26,17 @@ function displayJs(code: string): string {
 
 /**
  * The preview text for a cell. Dense JavaScript is laid out by the built-in Bun printer only when
- * the renderer runs on Bun; every other cell is shown as sent.
+ * the renderer runs on Bun; dense Python is formatted by the user's own interpreter in the
+ * background, so the first render shows the cell as sent and `onFormatted` asks for a repaint.
+ * Pass `onFormatted` only for complete code; without it no formatter process starts.
  */
-export function displayCode(code: string, language: EvalLanguage): string {
+export function displayCode(code: string, language: EvalLanguage, onFormatted?: () => void): string {
 	if (!isDense(code)) return code;
 	switch (language) {
 		case "js":
 			return displayJs(code);
 		case "py":
+			return pythonDisplay.display(code, onFormatted);
 		case "rb":
 		case "jl":
 			return code;
