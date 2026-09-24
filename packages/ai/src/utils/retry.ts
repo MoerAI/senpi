@@ -159,6 +159,15 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// backtick keeps the pattern on Anthropic's pairing-error template.
 	"was found without a corresponding `",
 
+	// Replayed-reasoning rejections, e.g. "the reasoning_details at position 1271 entry 0
+	// must not contain streaming index". A gateway refuses an input reasoning entry that
+	// still carries the streaming-assembly `index`, and because the merged array is
+	// persisted in the assistant block, every later request in that conversation is
+	// rejected identically. The openai-completions request builder strips the field before
+	// the retried request is built, so the retry sends a valid payload; same reasoning as
+	// the pairing class above, and the retry stays bounded by the policy's attempt budget.
+	"must not contain streaming index",
+
 	// An empty stop or tool_use-without-tool-call on a model whose reasoning had already streamed
 	// live. The stream-level wrapper (pi-agent-core empty-assistant-recovery) cannot replay such an
 	// attempt, so it ends the turn with these exact texts for the turn retry to re-request; the
