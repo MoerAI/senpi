@@ -1,5 +1,24 @@
 # senpi-codemode fork changes
 
+## 2026-09-24 - Python preview ruff timeout follows the formatter budget (#2076 follow-up)
+
+### What changed
+
+- `packages/senpi-codemode/src/tool/display-python.ts` passes the ruff timeout (the formatter budget minus one second) as the formatter script's first argument; `display-python-script.ts` uses it instead of a fixed `timeout=4`.
+- `test/eval-display-python.test.ts`: the fake-ruff tests share a `fakeRuff` helper with a 25 s budget and assert a marker file the fake writes, so a ruff that timed out can no longer pass the docstring-rejection test.
+
+### Why
+
+- The final gate review measured 3-13 s first-run latency for freshly written executables on macOS; the fixed 4 s timeout made the fake-ruff test fail there and let the docstring test pass without ruff running.
+
+### Why an extension could not handle it
+
+- The eval renderer belongs to this package.
+
+### Expected merge conflict zones
+
+- LOW: the Python display modules only.
+
 ## 2026-09-24 - Eval preview equivalence guards (#2076 follow-up)
 
 ### What changed

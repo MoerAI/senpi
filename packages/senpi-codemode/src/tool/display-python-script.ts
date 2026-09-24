@@ -1,4 +1,4 @@
-// Runs in the user's own Python interpreter: `python -c <script> <strategies...>` with the cell on
+// Runs in the user's own Python interpreter: `python -c <script> <ruff timeout s> <strategies...>` with the cell on
 // stdin, printing {"via", "code"} as JSON. A strategy's output is kept only when it parses to the same
 // AST as the source and keeps every string, number, and comment token's text (senpi#2076).
 export const PYTHON_FORMATTER_SCRIPT = [
@@ -8,6 +8,7 @@ export const PYTHON_FORMATTER_SCRIPT = [
 	"    sys.stdout.write(json.dumps({'via': via, 'code': code}))",
 	"    sys.exit(0)",
 	"",
+	"RUFF_TIMEOUT = float(sys.argv[1])",
 	"FLAGS = ast.PyCF_ONLY_AST | getattr(ast, 'PyCF_ALLOW_TOP_LEVEL_AWAIT', 0)",
 	"",
 	"def parse(text):",
@@ -41,7 +42,7 @@ export const PYTHON_FORMATTER_SCRIPT = [
 	"    args = [binary, 'format', '--quiet', '--no-cache', '--config', \"format.quote-style = 'preserve'\",",
 	"            '--stdin-filename', 'cell.py', '-']",
 	"    try:",
-	"        done = subprocess.run(args, input=source, capture_output=True, text=True, timeout=4)",
+	"        done = subprocess.run(args, input=source, capture_output=True, text=True, timeout=RUFF_TIMEOUT)",
 	"    except Exception:",
 	"        return None",
 	"    return done.stdout if done.returncode == 0 else None",
@@ -117,7 +118,7 @@ export const PYTHON_FORMATTER_SCRIPT = [
 	"",
 	"STRATEGIES = {'ruff': with_ruff, 'black': with_black, 'ast': with_ast}",
 	"source = sys.stdin.read()",
-	"for name in sys.argv[1:]:",
+	"for name in sys.argv[2:]:",
 	"    strategy = STRATEGIES.get(name)",
 	"    formatted = strategy(source) if strategy else None",
 	"    if formatted is not None and equivalent(source, formatted):",

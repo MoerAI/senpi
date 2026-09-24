@@ -1,9 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createPythonDisplay, formatPythonCell, type PythonInvocation } from "../src/tool/display-python.ts";
+import {
+	createPythonDisplay,
+	formatPythonCell,
+	type PythonFormatOptions,
+	type PythonInvocation,
+} from "../src/tool/display-python.ts";
 import { renderEvalCall } from "../src/tool/render.ts";
 import { callContext, renderLines } from "./eval-render-fixtures.ts";
 
@@ -12,6 +17,7 @@ const pythonPath = probe.status === 0 ? probe.stdout.trim() : "";
 const python: PythonInvocation = { command: pythonPath, args: [] };
 const AST_ONLY = { strategies: ["ast"], timeoutMs: 10_000 } as const;
 const FORMAT_DEADLINE_MS = 15_000;
+const FAKE_RUFF_BUDGET_MS = 25_000;
 
 const DENSE_PY_CELL = `import os;x=[0xff,1_000_000,'it\\'s',"a\\nb"];print({"a":1,"b":[i*2 for i in x if isinstance(i,int)]}, f"{os.getcwd()!r:>10}", "con" "cat");y=x if x else None`;
 
@@ -19,6 +25,19 @@ const tempDirs: string[] = [];
 afterEach(() => {
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
+
+// A freshly written executable can take seconds to first run while the OS scans it, so the fake
+// ruff gets the whole formatter budget, and it leaves a marker proving it ran rather than timed out.
+function fakeRuff(body: string): { readonly options: PythonFormatOptions; readonly ranMarker: string } {
+	const dir = mkdtempSync(join(tmpdir(), "senpi-fake-ruff-"));
+	tempDirs.push(dir);
+	const ranMarker = join(dir, "ran");
+	const ruff = join(dir, "ruff");
+	writeFileSync(ruff, ["#!/bin/sh", "cat > /dev/null", `: > ${JSON.stringify(ranMarker)}`, body].join("\n"));
+	chmodSync(ruff, 0o755);
+	const env = { ...process.env, PATH: `${dir}${delimiter}${dirname(pythonPath)}` };
+	return { options: { strategies: ["ruff"], timeoutMs: FAKE_RUFF_BUDGET_MS, env }, ranMarker };
+}
 
 function formattedWithin<T>(promise: Promise<T>): Promise<T> {
 	return Promise.race([
@@ -60,36 +79,21 @@ describe.skipIf(pythonPath === "")("Python cell preview through the user's inter
 	it.skipIf(process.platform === "win32")(
 		"uses the user's ruff with preserved quotes when it is on PATH",
 		async () => {
-			const dir = mkdtempSync(join(tmpdir(), "senpi-fake-ruff-"));
-			tempDirs.push(dir);
-			const ruff = join(dir, "ruff");
-			writeFileSync(
-				ruff,
-				[
-					"#!/bin/sh",
-					"cat > /dev/null",
-					`case "$*" in *"format --quiet --no-cache --config format.quote-style = 'preserve' --stdin-filename cell.py -"*) printf "import os\\nprint(1)\\n" ;; *) printf "unexpected arguments" ;; esac`,
-				].join("\n"),
+			const ruff = fakeRuff(
+				`case "$*" in *"format --quiet --no-cache --config format.quote-style = 'preserve' --stdin-filename cell.py -"*) printf "import os\\nprint(1)\\n" ;; *) printf "unexpected arguments" ;; esac`,
 			);
-			chmodSync(ruff, 0o755);
-			const env = { ...process.env, PATH: `${dir}${delimiter}${dirname(pythonPath)}` };
-			await expect(
-				formatPythonCell("import os;print(1)", python, { strategies: ["ruff"], timeoutMs: 10_000, env }),
-			).resolves.toBe("import os\nprint(1)");
+			await expect(formatPythonCell("import os;print(1)", python, ruff.options)).resolves.toBe(
+				"import os\nprint(1)",
+			);
+			expect(existsSync(ruff.ranMarker)).toBe(true);
 		},
 	);
 
 	it.skipIf(process.platform === "win32")("rejects a formatter result that rewrites a docstring's text", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "senpi-fake-ruff-"));
-		tempDirs.push(dir);
-		const ruff = join(dir, "ruff");
-		writeFileSync(ruff, ["#!/bin/sh", "cat > /dev/null", `printf '"""padded doc"""\\nx = 1\\n'`].join("\n"));
-		chmodSync(ruff, 0o755);
-		const env = { ...process.env, PATH: `${dir}${delimiter}${dirname(pythonPath)}` };
+		const ruff = fakeRuff(`printf '"""padded doc"""\\nx = 1\\n'`);
 		const cell = '"""   padded doc   """;x=1';
-		await expect(formatPythonCell(cell, python, { strategies: ["ruff"], timeoutMs: 10_000, env })).resolves.toBe(
-			cell,
-		);
+		await expect(formatPythonCell(cell, python, ruff.options)).resolves.toBe(cell);
+		expect(existsSync(ruff.ranMarker)).toBe(true);
 	});
 
 	it("shows a cell as sent when ast.unparse would print invalid Python", async () => {
