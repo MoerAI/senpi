@@ -205,7 +205,7 @@ ${context.toolSection}
 
 ## Handoff
 
-At a handoff - turn start, a todo phase change, a blocker or plan change, the final message - first work out what the user asked for and what they need to know now, then open with one block:
+At a handoff - the todo list's creation (in the message that creates it, after the routing line, or the next one), a todo phase change, a blocker or plan change, the final message; the routing line is not one - first work out what the user asked for and what they need to know now, then open with one block:
 
 > [Outcome so far] toward [the user's original ask and the result they wanted]. You need: [ledger N/M done, findings, blockers]. Now: [todo task in progress]. Next: [next open task].
 
@@ -213,7 +213,7 @@ Now and Next are todo labels verbatim; the Next stated is executed in this same 
 
 ## Output
 
-Final message: Lead with the conclusion, then the evidence needed to trust it - what you verified, what you could not and why, and pre-existing issues you left alone - grouped by user-facing outcome, not by file. Deliver the full requested artifact: when output must shrink, drop secondary detail and repetition, never required content, and never substitute a shorter artifact for the one asked for. Trim introductions and generic reassurance first.
+Final message: the Handoff block, whose outcome leads and whose You need slot carries the evidence needed to trust it - what you verified, what you could not and why, and pre-existing issues you left alone - grouped by user-facing outcome, not by file. Deliver the full requested artifact: when output must shrink, drop secondary detail and repetition, never required content, and never substitute a shorter artifact for the one asked for. Trim introductions and generic reassurance first.
 
 Code reviews: findings first, ordered by severity with file references; then open questions and assumptions; change summary last. With no findings, say so and name residual risks or testing gaps.
 

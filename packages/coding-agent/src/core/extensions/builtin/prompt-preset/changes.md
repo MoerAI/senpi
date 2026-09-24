@@ -1,5 +1,27 @@
 # prompt-preset Extension Changes
 
+## 2026-09-24 - GPT cores: the routing line is not a handoff (real-surface QA)
+
+### What changed
+
+- `gpt-5.5.ts`, `gpt-5.6.ts`, `gpt-6-astra.ts` (`handoff-report` directive): `At a handoff - turn start, a todo phase change, ...` -> `At a handoff - the todo list's creation (in the message that creates it, after the routing line, or the next one), a todo phase change, a blocker or plan change, the final message; the routing line is not one - ...`. Mirrors the shared-core `handoff.ts` rewording (`dynamic-prompt/changes.md`); the Claude, Kimi, and Grok cores render the shared builder and pick it up there. +9 words per GPT core.
+- The final-message rule in every core that states one is merged into the handoff block instead of competing with it: `claude-fable-5.ts`, `claude-fable-5-1.ts`, `kimi-k3.ts` ("The final message opens with the Handoff block; its/write its For you slot ..."), `claude-opus-5.ts`, `claude-opus-5-5.ts` ("When you finish, open with the Handoff block; its For you slot answers ..."), `gpt-5.5.ts` ("The final message is the Handoff block: its outcome and You need slots carry the result and its verification ..."), `gpt-5.6.ts` ("Final message: the Handoff block, whose outcome leads and whose You need slot carries the evidence ..."), `gpt-6-astra.ts` `FINAL_MESSAGE_SHAPE` ("The final message is the handoff block and stands alone ..."), `grok-4.5.ts` ("the final message is the Handoff block, whose For you slot leads with the outcome ..."). The outcome-first content of each rule is kept; only its container changes. +2 to +11 words per core. `prompt-presets-extension.test.ts` pinned the old gpt-5.6 wording (`Lead with the conclusion`) as a presence marker; it now pins the section label `Final message:` (a structural marker, not the prose).
+
+- `claude-fable-5-1.ts`: `buildHandoffSection({ turnEndRuleStatedElsewhere: true, briefUpdatesBetweenHandoffs: true })`. Third QA finding: with the final message fixed, `claude-fable-5-1` still wrote nothing between the todo init and the final message - no handoff at the plan or at any phase change - which is the guide's documented default ("Ask for user-facing progress updates": 5.1 writes fewer updates than Fable 5 during long tool chains; remedy: remove narration-suppressing lines first, then say when updates are wanted). The only suppressing line it saw was the shared `Between handoffs, work without narration.`; for this family it becomes the guide's positive form, carrying the Now/Next labels so the update names the todo state. Measured on single runs: the unlabeled form produced findings lines with no todo state, the labeled form produced findings + Now + Next at each phase change. Other families keep the quiet default: grok-4.7 passed with it and no other family has a documented under-reporting default. +12 words in the fable-5-1 core.
+
+### Why
+
+- Second QA finding: on the re-run `claude-fable-5-1` wrote no handoff block at all and closed with a free-form outcome-first summary, because each core's final-summary rule and `## Handoff` both claimed the final message. Merging them leaves one rule per message.
+- Category B: on the real `xai/grok-4.7` run the routing line satisfied "turn start" in the model's reading, so the first handoff block only appeared in the final message. Naming the moment by state (the plan now exists) removes the ambiguity in every family at once.
+
+### Why an extension could not handle it
+
+- Preset core text; an extension could only append a competing definition.
+
+### Expected merge conflict zones
+
+- The `## Handoff` paragraph of `gpt-5.5.ts` / `gpt-5.6.ts` and the `HANDOFF_REPORT` constant in `gpt-6-astra.ts`. Fork-only files.
+
 ## 2026-09-24 - Grok 4.7 tuned against the field trace; the 4.6 byte-copy contract retired
 
 ### What changed

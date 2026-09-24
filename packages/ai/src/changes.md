@@ -1,3 +1,22 @@
+## 2026-09-24 - Forced tool_choice refused under thinking falls back instead of failing (senpi#2121)
+
+### What changed
+
+- `utils/tool-choice-fallback.ts` `isForcedToolChoiceUnsupportedError` recognizes two more 400 wordings: Anthropic Messages `Thinking may not be enabled when tool_choice forces tool use.` and the OpenAI-compatible gateway `... so tool_choice cannot force tool use. Use tool_choice 'auto' or 'none'.` (observed on a gateway serving `claude-fable-5-1` over `openai-completions`). Both adapters already retry once without `tool_choice` when this classifier matches; nothing else changed.
+- `test/anthropic-tool-choice-compat.test.ts` and `test/openai-completions-tool-choice.test.ts`: one retry case each, shown failing with the previous classifier.
+
+### Why
+
+- The coding-agent first-turn plan opener (senpi#2121) forces `tool_choice` to the todo tool where a provider accepts a named choice. A real-surface run through a gateway that serves an always-thinking Claude model on `openai-completions` returned this 400; the classifier did not match it, so the whole first turn failed instead of degrading to an unforced request. The Anthropic Messages wording had the same gap for thinking-enabled requests.
+
+### Why an extension could not handle it
+
+- The retry decision runs inside each adapter's `createRequest` after the provider rejects the request; an extension only sees the payload before it is sent (`before_provider_request`) and cannot observe or retry the rejection.
+
+### Expected merge conflict zones
+
+- `utils/tool-choice-fallback.ts` regex list if upstream widens it; the two test files' retry sections.
+
 ## 2026-09-24 - Build replayed reasoning_details from the input schema (senpi#2125)
 
 ### What changed

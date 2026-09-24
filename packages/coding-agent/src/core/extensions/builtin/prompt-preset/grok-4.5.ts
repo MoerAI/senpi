@@ -63,7 +63,7 @@ ${buildHandoffSection()}
 
 ## Output
 
-You are the human surface: the final message leads with the outcome (delivered / blocked / partial), then evidence — what you verified directly, what a worker verified and you audited, what you could not verify and why, pre-existing issues left alone. Reference files as \`src/auth.ts\` or \`src/auth.ts:42\`, never bracketed citations. Be direct; have an opinion when context supports one. Default to ASCII.
+You are the human surface: the final message is the Handoff block, whose For you slot leads with the outcome (delivered / blocked / partial), then evidence — what you verified directly, what a worker verified and you audited, what you could not verify and why, pre-existing issues left alone. Reference files as \`src/auth.ts\` or \`src/auth.ts:42\`, never bracketed citations. Be direct; have an opinion when context supports one. Default to ASCII.
 
 ## Stop Goal
 

@@ -202,6 +202,21 @@ describe("Anthropic tool_choice compatibility", () => {
 		expect(mockState.createCalls[1]?.tool_choice).toBeUndefined();
 	});
 
+	it("retries without tool_choice when extended thinking rejects the forced choice", async () => {
+		mockState.createErrors.push(
+			new HttpStatusError(400, "Thinking may not be enabled when tool_choice forces tool use."),
+		);
+
+		const response = await streamAnthropic(withPayloadCapture(getModel("anthropic", "claude-sonnet-4-6")), context, {
+			apiKey: "fake-key",
+			toolChoice: { type: "tool", name: "get_weather" },
+		}).result();
+
+		expect(response.stopReason).toBe("stop");
+		expect(mockState.createCalls).toHaveLength(2);
+		expect(mockState.createCalls[1]?.tool_choice).toBeUndefined();
+	});
+
 	it("omits forced tool_choice when compat.supportsForcedToolChoice is false regardless of model id", async () => {
 		const model: Model<"anthropic-messages"> = {
 			...getModel("anthropic", "claude-sonnet-4-6"),
