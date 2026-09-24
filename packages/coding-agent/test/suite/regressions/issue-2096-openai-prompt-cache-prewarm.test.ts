@@ -4,10 +4,12 @@ import {
 	type WarmPromptCacheOptions,
 	type WarmPromptCacheResult,
 } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCacheKeepAliveExtension } from "../../../src/core/extensions/builtin/cache-keepalive/index.ts";
 import { PROMPT_CACHE_PREWARM_ENTRY_TYPE } from "../../../src/core/extensions/builtin/cache-keepalive/prewarm-entry.ts";
-import { createHarness, getAssistantTexts, type Harness } from "../harness.ts";
+import type { ExtensionFactory } from "../../../src/core/extensions/types.ts";
+import { createHarness, getAssistantTexts, type Harness, type HarnessOptions } from "../harness.ts";
 
 const SIGNAL_TIMEOUT_MS = 2_000;
 const harnesses: Harness[] = [];
@@ -41,9 +43,24 @@ interface WarmCall {
 	readonly options: WarmPromptCacheOptions | undefined;
 }
 
-async function createPrewarmHarness(warm: (call: WarmCall) => Promise<WarmPromptCacheResult>) {
+type StreamFunction = Harness["agent"]["streamFunction"];
+
+interface TurnRequest {
+	readonly context: Parameters<StreamFunction>[1];
+	readonly options: Parameters<StreamFunction>[2];
+}
+
+function toolShapes(tools: Context["tools"]) {
+	return tools?.map(({ name, description, parameters }) => ({ name, description, parameters }));
+}
+
+async function createPrewarmHarness(
+	warm: (call: WarmCall) => Promise<WarmPromptCacheResult>,
+	options: { extensionFactories?: ExtensionFactory[]; models?: HarnessOptions["models"] } = {},
+) {
 	const warmCalled = deferred<WarmCall>();
 	const harness = await createHarness({
+		...(options.models ? { models: options.models } : {}),
 		extensionFactories: [
 			createCacheKeepAliveExtension({
 				warmPromptCache: async (_model, context, options) => {
@@ -53,9 +70,12 @@ async function createPrewarmHarness(warm: (call: WarmCall) => Promise<WarmPrompt
 				},
 				isPromptCachePrewarmModel: () => true,
 			}),
+			...(options.extensionFactories ?? []),
 		],
 	});
 	harnesses.push(harness);
+	// createAgentSession gives the agent the session id; the bare harness Agent has none.
+	harness.agent.sessionId = harness.sessionManager.getSessionId();
 	const entryAppended = deferred<{ customType: string; data: unknown }>();
 	const appendCustomEntry = harness.sessionManager.appendCustomEntry.bind(harness.sessionManager);
 	vi.spyOn(harness.sessionManager, "appendCustomEntry").mockImplementation((customType, data) => {
@@ -105,6 +125,58 @@ describe("session-start OpenAI prompt-cache prewarm (#2096)", () => {
 		const stats = harness.session.getSessionStats();
 		expect(stats.tokens.cacheWrite - statsBeforeWarm.tokens.cacheWrite).toBe(5169);
 		expect(stats.cost - statsBeforeWarm.cost).toBeCloseTo(0.25, 12);
+	});
+
+	it("prewarms the system prompt, tools, and reasoning the first turn sends", async () => {
+		const lateSessionStart = deferred<void>();
+		const previews: boolean[] = [];
+		const composer: ExtensionFactory = (pi) => {
+			pi.registerTool({
+				name: "lookup",
+				label: "Lookup",
+				description: "Look something up",
+				parameters: Type.Object({ query: Type.String() }),
+				execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+			});
+			// Finishes after cache-keepalive's session_start has already started the prewarm.
+			pi.on("session_start", async () => {
+				await lateSessionStart.promise;
+				pi.setActiveTools(["lookup"]);
+			});
+			pi.on("before_agent_start", (event) => {
+				previews.push(event.preview === true);
+				return { systemPrompt: `${event.systemPrompt}\n\nComposed per turn by before_agent_start.` };
+			});
+		};
+		const { harness, warmCalled } = await createPrewarmHarness(async () => ({ supported: false }), {
+			extensionFactories: [composer],
+			models: [{ id: "faux-reasoner", reasoning: true }],
+		});
+		harness.session.setThinkingLevel("high");
+		const turnRequests: TurnRequest[] = [];
+		const stream = harness.agent.streamFunction;
+		harness.agent.streamFunction = (model, context, options) => {
+			turnRequests.push({ context, options });
+			return stream(model, context, options);
+		};
+		harness.setResponses([fauxAssistantMessage("first answer")]);
+
+		const binding = harness.session.bindExtensions({});
+		lateSessionStart.resolve();
+		await within(binding, "extension binding");
+		const warm = await within(warmCalled, "the prewarm request");
+		await within(harness.session.prompt("hello"), "the first turn");
+
+		const [turn] = turnRequests;
+		expect(warm.context.messages).toEqual([]);
+		expect(warm.context.systemPrompt).toContain("Composed per turn by before_agent_start.");
+		expect(warm.context.systemPrompt).toBe(turn?.context.systemPrompt);
+		expect(warm.context.tools?.map((tool) => tool.name)).toEqual(["lookup"]);
+		expect(toolShapes(warm.context.tools)).toEqual(toolShapes(turn?.context.tools));
+		expect(warm.options?.reasoning).toBe("high");
+		expect(warm.options?.reasoning).toBe(turn?.options?.reasoning);
+		expect(warm.options?.sessionId).toBe(turn?.options?.sessionId);
+		expect(previews).toEqual([true, false]);
 	});
 
 	it("keeps the first turn working when the prewarm request fails", async () => {

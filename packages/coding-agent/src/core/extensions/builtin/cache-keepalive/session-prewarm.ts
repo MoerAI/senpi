@@ -2,7 +2,6 @@ import {
 	type Context,
 	isOpenAIResponsesPromptCacheModel,
 	type Model,
-	type Tool,
 	type Usage,
 	type WarmPromptCacheOptions,
 	type WarmPromptCacheResult,
@@ -31,9 +30,11 @@ export interface SessionPrewarm {
 
 /**
  * One prompt-cache prewarm per session start for OpenAI GPT-5.6+ models (senpi#2096).
- * The request runs detached from the turn pipeline, so it can never delay or fail
- * the first user turn; its billed usage is recorded as a custom entry that session
- * stats count.
+ * The request is the host's `getPromptCachePrefixRequest()` prefix, the first user turn's
+ * request with an empty conversation, because the platform reuses a prefix only up to a
+ * block boundary: a prewarmed system prompt that stops short of the turn's is never read.
+ * The request runs detached from the turn pipeline, so it can never delay or fail the
+ * first user turn; its billed usage is recorded as a custom entry that session stats count.
  */
 export function createSessionPrewarm(pi: ExtensionAPI, dependencies: SessionPrewarmDependencies): SessionPrewarm {
 	const isPrewarmModel = dependencies.isPrewarmModel ?? isOpenAIResponsesPromptCacheModel;
@@ -47,32 +48,13 @@ export function createSessionPrewarm(pi: ExtensionAPI, dependencies: SessionPrew
 	async function run(ctx: ExtensionContext, model: Model<any>, controller: AbortController): Promise<void> {
 		const { signal } = controller;
 		try {
-			const preparation = await ctx.prepareProviderRequest?.([]);
-			if (signal.aborted) return;
-			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-			if (signal.aborted) return;
-			if (!auth.ok) throw new Error(auth.error);
-			const authHeaders = auth.headers ?? {};
-			const headers = preparation ? await preparation.transformHeaders(authHeaders) : authHeaders;
-			if (signal.aborted) return;
-			const tools = activeTools(pi);
-			const reasoning = ctx.thinkingLevel;
-			const serviceTier = ctx.effectiveServiceTier ?? ctx.serviceTier;
-			const result = await dependencies.warm(
-				model,
-				{ systemPrompt: ctx.getSystemPrompt(), messages: [], ...(tools.length > 0 ? { tools } : {}) },
-				{
-					apiKey: auth.apiKey,
-					headers,
-					sessionId: ctx.sessionManager.getSessionId(),
-					cacheRetention: model.cacheRetention,
-					...(reasoning !== undefined && reasoning !== "off" ? { reasoning } : {}),
-					...(serviceTier !== undefined ? { serviceTier } : {}),
-					onPayload: preparation ? async (payload) => await preparation.transformPayload(payload) : undefined,
-					signal,
-					timeoutMs: PROMPT_CACHE_PREWARM_TIMEOUT_MS,
-				},
-			);
+			const request = await ctx.getPromptCachePrefixRequest?.();
+			if (signal.aborted || request === undefined) return;
+			const result = await dependencies.warm(request.model, request.context, {
+				...request.options,
+				signal,
+				timeoutMs: PROMPT_CACHE_PREWARM_TIMEOUT_MS,
+			});
 			if (signal.aborted || !result.supported) return;
 			append({ phase: "warmed", provider: model.provider, model: model.id, usage: toUsage(model, result.usage) });
 		} catch (error) {
@@ -99,14 +81,6 @@ export function createSessionPrewarm(pi: ExtensionAPI, dependencies: SessionPrew
 		},
 		cancel,
 	};
-}
-
-function activeTools(pi: ExtensionAPI): Tool[] {
-	const activeToolNames = new Set(pi.getActiveTools());
-	return pi
-		.getAllTools()
-		.filter((tool) => activeToolNames.has(tool.name))
-		.map(({ name, description, parameters }) => ({ name, description, parameters }));
 }
 
 function toUsage(model: Model<any>, usage: WarmPromptCacheUsage): Usage {

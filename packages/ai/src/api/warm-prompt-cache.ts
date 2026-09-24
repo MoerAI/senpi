@@ -23,6 +23,7 @@ export type WarmPromptCacheOptions = Pick<
 	| "apiKey"
 	| "cacheRetention"
 	| "env"
+	| "extraBody"
 	| "fetch"
 	| "headers"
 	| "onPayload"
@@ -30,6 +31,8 @@ export type WarmPromptCacheOptions = Pick<
 	| "serviceTier"
 	| "sessionId"
 	| "signal"
+	| "thinkingBudgets"
+	| "thinkingSelection"
 	| "timeoutMs"
 >;
 

@@ -1,21 +1,27 @@
-## 2026-09-24 - Count session-start prompt-cache prewarm usage (senpi#2096)
+## 2026-09-24 - Count session-start prompt-cache prewarm usage and build its request from the first turn's prefix (senpi#2096)
 
 ### What changed
 
-- `packages/coding-agent/src/core/agent-session.ts`: `getSessionStats` adds the usage of `prompt-cache-prewarm` custom entries in phase `warmed` (read through `getPromptCachePrewarmUsage` from `extensions/builtin/cache-keepalive/prewarm-entry.ts`) to the token and cost totals.
+- `packages/coding-agent/src/core/agent-session.ts`: `getSessionStats` adds the usage of `prompt-cache-prewarm` custom entries in phase `warmed` (read through `getPromptCachePrewarmUsage` from `extensions/builtin/cache-keepalive/prewarm-entry.ts`) to the token and cost totals. The new `getPromptCachePrefixRequest` context action waits for `_sessionStartSettled` (settled by `bindExtensions` and by the reload `session_start` path once session_start handlers, default-tool enforcement, and `extendResourcesFromExtensions` have run, via `_beginSessionStartSettlement`) and then calls `buildPromptCachePrefixRequest` with the agent, extension runner, model runtime, effective service tier, and base prompt/options.
+- `packages/coding-agent/src/core/prompt-cache-prefix-request.ts` (new, fork-only): `buildPromptCachePrefixRequest` composes the system prompt with `emitBeforeAgentStart("", undefined, base, options, { preview: true })` (a second pass when the base prompt changed during the first), takes `agent.state.tools`, mirrors `Agent.createLoopConfig()` for reasoning (configuration-update baseline, then thinking level), thinking selection/budgets, session id, and `onPayload`, applies `before_provider_headers`, and resolves auth/headers/`extraBody`/upstream model id through `ModelRuntime.prepareSimpleRequest`.
+- `packages/coding-agent/src/core/model-runtime.ts`: new public `prepareSimpleRequest(model, options)` returns the `prepareRequest` result with `withPayloadRequestMetadata`, the same preparation `streamSimple` applies on the single-credential path, without sending a request.
 - `packages/coding-agent/src/core/usage-totals.ts`: `getUsageCostBreakdown` counts the same entries in the `Tools/summaries` bucket, so the breakdown and the totals agree.
 
 ### Why
 
-The `cache-keepalive` builtin now issues one OpenAI GPT-5.6+ prompt-cache prewarm per session start. The request is billed at the cache-write rate but produces no assistant message, so without this the session totals under-report what was billed.
+The `cache-keepalive` builtin now issues one OpenAI GPT-5.6+ prompt-cache prewarm per session start. The request is billed at the cache-write rate but produces no assistant message, so without the stats change the session totals under-report what was billed.
+
+The first version of the prewarm sent `ctx.getSystemPrompt()` from inside its own `session_start` handler. Live QA (gpt-6-luna, real API) showed the prewarm writing 12,242 tokens while the first turn read 0 and wrote 18,444: that prompt was taken before later extensions finished `session_start`, before resource discovery added skills to the base prompt, and without the per-turn `before_agent_start` additions. OpenAI reuses a prefix only up to a block boundary, so a shorter developer message is never read. The prefix now comes from the same state the first turn reads, after session start has settled.
 
 ### Why an extension could not handle it
 
-Session stats and the cost breakdown are computed in core from session entries; there is no hook to contribute usage from a custom entry.
+Session stats and the cost breakdown are computed in core from session entries; there is no hook to contribute usage from a custom entry. The turn's composed system prompt, tool list, loop reasoning, and provider auth/`extraBody` resolution live in `AgentSession`, `Agent`, and `ModelRuntime`, and the end of session-start resource discovery has no event an extension can await.
 
 ### Expected merge conflict zones
 
-- LOW: the builtin import block and the entry loop at the top of `getSessionStats` in `agent-session.ts`; the import block and the `branch_summary`/`compaction` branch of `getUsageCostBreakdown` in `usage-totals.ts`.
+- LOW: the builtin import block, the `_sessionStartEvent` field block, `bindExtensions` (settlement handle and its `finally`), the reload `session_start` block, the context-action object after `getSystemPromptOptions`, and the entry loop at the top of `getSessionStats` in `agent-session.ts`.
+- LOW: the new `prepareSimpleRequest` method before `completeSimple` in `model-runtime.ts`.
+- LOW: the import block and the `branch_summary`/`compaction` branch of `getUsageCostBreakdown` in `usage-totals.ts`.
 
 ## 2026-09-24 - Fast /resume listing: chunked summary reader and persistent summary index (senpi#2087)
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { warmPromptCache } from "../src/api/warm-prompt-cache.ts";
-import { getModel } from "../src/compat.ts";
+import { getModel, streamSimple } from "../src/compat.ts";
 import type { Context, Model } from "../src/types.ts";
 
 const context: Context = {
@@ -72,6 +72,36 @@ describe("warmPromptCache for OpenAI Responses GPT-5.6+", () => {
 		if (!result.supported) return;
 		expect(result.usage).toMatchObject({ input: 1, output: 0, cacheRead: 0, cacheWrite: 5169 });
 		expect(result.usage.cost?.cacheWrite).toBeCloseTo((5169 * model.cost.cacheWrite) / 1_000_000, 12);
+	});
+
+	it("sends the next turn's instructions, tools, reasoning, tier, and cache options unchanged", async () => {
+		const model = getModel("openai", "gpt-6-luna");
+		const options = {
+			apiKey: "test-key",
+			reasoning: "high",
+			serviceTier: "priority",
+			cacheRetention: "long",
+			sessionId: "session-2096",
+		} as const;
+		let turnPayload: Record<string, unknown> | undefined;
+		await streamSimple(model, context, {
+			...options,
+			onPayload: (payload) => {
+				turnPayload = payload as Record<string, unknown>;
+				throw new Error("turn payload captured");
+			},
+		}).result();
+		const { fetch, bodies } = captureFetch("priority");
+		await warmPromptCache(model, context, { ...options, fetch });
+
+		const warm = bodies[0];
+		const turnInput = turnPayload?.input as unknown[] | undefined;
+		expect(turnInput).toHaveLength(2);
+		expect(warm?.input).toEqual(turnInput?.slice(0, 1));
+		for (const field of ["model", "instructions", "tools", "reasoning", "text", "service_tier", "include", "store"]) {
+			expect(warm?.[field], field).toEqual(turnPayload?.[field]);
+		}
+		expect(warm?.prompt_cache_options).toEqual({ ...(turnPayload?.prompt_cache_options as object), prewarm: true });
 	});
 
 	it("keeps the long-retention ttl and the next turn's service tier on the prewarm request", async () => {

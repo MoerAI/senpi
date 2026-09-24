@@ -6,7 +6,7 @@
 
 ### Added
 
-- OpenAI GPT-5.6+ sessions on `api.openai.com` prewarm the prompt cache (system prompt + tools) once at session start without delaying the first turn; skipped when `cacheRetention` is `none`, and the billed cache write is counted in session stats. ([#2096](https://github.com/code-yeongyu/senpi/issues/2096))
+- OpenAI GPT-5.6+ sessions on `api.openai.com` prewarm the prompt cache once at session start without delaying the first turn. The prewarm sends the first turn's own prefix (the system prompt after `before_agent_start` additions and discovered skills, the same tools, reasoning effort, and service tier), so that turn reads the cache; it is skipped when `cacheRetention` is `none`, and the billed cache write is counted in session stats. Extensions see `before_agent_start` with `event.preview: true` during that composition and can read the prefix through `ctx.getPromptCachePrefixRequest()`. ([#2096](https://github.com/code-yeongyu/senpi/issues/2096))
 - The `websearch` builtin supports Kagi (`"provider": "kagi"`) and SERPdive (`"provider": "serpdive"`) search providers; both need an `apiKey`. Ported from pi-websearch 0.4.0. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
 - The `rules` builtin discovers rule files in `.pi/rules/` (project) and `~/.pi/rules/` (home), ahead of `.omo/rules/`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
 
