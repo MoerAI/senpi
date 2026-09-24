@@ -8,6 +8,8 @@
 
 ### Changed
 
+- The package now bundles the desktop computer-use engine (`@code-yeongyu/senpi-desktop-engine` with a per-platform `senpi-desktop-engine` executable) and its protocol package. Nothing uses them yet; the `computer` tool that drives them lands in a later release. ([#2129](https://github.com/code-yeongyu/senpi/pull/2129))
+
 ### Fixed
 
 ### Removed
