@@ -1,3 +1,21 @@
+## 2026-09-24 - Lenient tool-name matching through one shared matcher (senpi#2111)
+
+### What changed
+
+- `packages/agent/src/tool-name-alias.ts`: `resolveToolNameAlias` delegates to `resolveToolNameMatch` from `@earendil-works/pi-ai/utils/tool-name-match` instead of carrying its own regex and fold. It now also folds the full requested name (`MCP__srv__tool` -> `mcp__srv__Tool`), strips namespaces whose id contains underscores (`mcp__my_server__Memory` -> `memory`), and strips the namespace a registered tool carries (`create_issue` -> `mcp_github_create_issue`). It resolves only on a unique match, as before.
+
+### Why
+
+- The agent copy folded only the namespace-stripped suffix while the Anthropic tool-reference copy folded both the full name and the suffix. That drift is how senpi#2104 happened, and it left several plausible spellings answering `Tool <name> not found`.
+
+### Why an extension could not handle it
+
+- Tool-call name resolution runs inside the agent loop before any hook sees the call.
+
+### Expected merge conflict zones
+
+- LOW: `tool-name-alias.ts` (fork-only).
+
 ## 2026-09-24 - Strip a gateway namespace whatever the casing of its prefix (senpi#2104)
 
 ### What changed

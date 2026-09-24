@@ -1,28 +1,14 @@
+import { resolveToolNameMatch } from "@earendil-works/pi-ai/utils/tool-name-match";
 import type { AgentContext, AgentLoopConfig, AgentTool, AgentToolCall, AgentToolResult } from "./types.ts";
 
 /**
- * Some provider wire paths show the model non-native tools as
- * `mcp__<id>__<Name>` (recased, under a namespace senpi never defined), and a
- * model can carry that shape into a call for a tool it learned by its bare
- * name. Resolve such a call only when exactly one available tool matches after
- * stripping the namespace and folding case and `-`/`_` separators; never guess
- * between two candidates. The model can recase the prefix too (`Mcp__<id>__`),
- * so the prefix matches in any case.
+ * A model can call a tool by a name it was never registered under: recased,
+ * under a gateway namespace (`mcp__<id>__<Name>`, any case), or without the
+ * namespace a registered tool carries. The shared matcher resolves such a name
+ * only when exactly one available tool matches; it never guesses.
  */
-const GATEWAY_TOOL_NAMESPACE = /^mcp__[^_]+__(.+)$/i;
-
-function foldToolName(name: string): string {
-	return name.toLowerCase().replaceAll(/[-_]/g, "");
-}
-
 export function resolveToolNameAlias(requested: string, available: Iterable<string>): string | undefined {
-	const names = [...new Set(available)];
-	if (names.includes(requested)) return requested;
-	const unnamespaced = GATEWAY_TOOL_NAMESPACE.exec(requested)?.[1] ?? requested;
-	if (names.includes(unnamespaced)) return unnamespaced;
-	const key = foldToolName(unnamespaced);
-	const matches = names.filter((name) => foldToolName(name) === key);
-	return matches.length === 1 ? matches[0] : undefined;
+	return resolveToolNameMatch(requested, available);
 }
 
 export function toolNameCorrectionNotice(requested: string, resolved: string): string {

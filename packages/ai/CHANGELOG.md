@@ -6,6 +6,7 @@
 
 ### Added
 
+- `@earendil-works/pi-ai/utils/tool-name-match` exports `resolveToolNameMatch`, the lenient tool-name matcher shared by the agent loop's tool-call correction and the Anthropic tool-reference repair. It folds case and `-`/`_`, strips an `mcp_`/`mcp__` namespace on either side, and resolves only on a unique match. ([#2111](https://github.com/code-yeongyu/senpi/issues/2111))
 - `compat.supportsConfigurationUpdate` on OpenAI Responses models marks models that accept `configuration_update` input items, and `supportsConfigurationUpdate(model)` reads it. The catalog sets it on the `openai` GPT-5.6 and GPT-6 rows (including `-fast`) and on `chatgpt-subscription` `gpt-6-astra` / `gpt-6-astra-fast`; mid-session effort changes on those models go through the item instead of a top-level `reasoning.effort` change. ([#2094](https://github.com/code-yeongyu/senpi/issues/2094))
 
 ### Changed
