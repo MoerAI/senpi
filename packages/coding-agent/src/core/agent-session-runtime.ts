@@ -17,6 +17,7 @@ import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
 import { reserveSessionWrite, unregisterSessionWriter } from "./session-write-reservation.ts";
+import { resetTimings, time } from "./timings.ts";
 
 /**
  * Result returned by runtime creation.
@@ -210,9 +211,13 @@ export class AgentSessionRuntime {
 	}
 
 	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
+		const mark = (label: string): void => {
+			if (reason === "resume") time(label, "switch");
+		};
 		// Settle the active response before replacement so the outgoing turn and
 		// any completed tool results are persisted to the old session.
 		await this.session.abort();
+		mark("abort");
 		const oldRunner = this.session.extensionRunner;
 		// Test hosts and partial runner implementations may lack identity introspection;
 		// skip removal reporting there rather than break the replacement itself.
@@ -228,12 +233,14 @@ export class AgentSessionRuntime {
 			reason,
 			targetSessionFile,
 		});
+		mark("shutdown");
 		this.beforeSessionInvalidate?.();
 		const replaced = this.session.sessionManager;
 		this.session.dispose();
 		// Nothing writes to the replaced manager once its session is disposed, so the
 		// shared host may hand its session file to another worker.
 		unregisterSessionWriter(replaced);
+		mark("dispose");
 	}
 
 	private async reportRemovedExtensions(): Promise<void> {
@@ -273,14 +280,17 @@ export class AgentSessionRuntime {
 			projectTrustContextFactory?: (cwd: string) => ProjectTrustContext;
 		},
 	): Promise<{ cancelled: boolean }> {
+		resetTimings("switch");
 		const beforeResult = await this.emitBeforeSwitch("resume", sessionPath);
 		if (beforeResult.cancelled) {
 			return beforeResult;
 		}
+		time("beforeSwitch", "switch");
 
 		const previousSessionFile = this.session.sessionFile;
 		const sessionManager = SessionManager.open(sessionPath, undefined, options?.cwdOverride);
 		assertSessionCwdExists(sessionManager, this.cwd);
+		time("open", "switch");
 		await this.teardownCurrent("resume", sessionManager.getSessionFile());
 		await this.apply(
 			await this.createRuntime({
@@ -292,7 +302,9 @@ export class AgentSessionRuntime {
 				launchProfile: this._launchProfile,
 			}),
 		);
+		time("apply", "switch");
 		await this.finishSessionReplacement(options?.withSession);
+		time("rebind", "switch");
 		return { cancelled: false };
 	}
 
