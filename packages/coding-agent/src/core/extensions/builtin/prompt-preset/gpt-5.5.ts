@@ -76,7 +76,7 @@ ${context.toolSection}
 
 ## Handoff
 
-At a handoff - turn start, a todo phase change, a blocker or plan change, the final message - first work out what the user asked for and what they need to know now, then open with one block:
+At a handoff - the first message after the todo list exists, a todo phase change, a blocker or plan change, the final message; the routing line is not one - first work out what the user asked for and what they need to know now, then open with one block:
 
 > [Outcome so far] toward [the user's original ask and the result they wanted]. You need: [ledger N/M done, findings, blockers]. Now: [todo task in progress]. Next: [next open task].
 

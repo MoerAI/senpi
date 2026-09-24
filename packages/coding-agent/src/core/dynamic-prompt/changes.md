@@ -1,5 +1,23 @@
 # changes.md — dynamic-prompt
 
+## Handoff moments: the routing line is not a handoff (2026-09-24, real-surface QA)
+
+### What changed
+
+- `handoff.ts`: `A handoff is the start of a turn, each todo phase change, ...` -> `A handoff is the first message after the todo list exists, each todo phase change, a blocker or plan change, and the final message; the routing line is not one.` The same moment list is reworded in the three GPT cores (`extensions/builtin/prompt-preset/changes.md`). +9 words in the rendered shared core.
+
+### Why
+
+- A real run on `xai/grok-4.7` against merged main (senpi#2121 QA) opened the turn with the Intent Gate routing line, initialized the todo, and never wrote the handoff block until the final message: the model read "the start of a turn" as already satisfied by the routing line, and the phase-change moments passed with free-form narration. Category B (misframing): the moment was named by position (turn start) instead of by the state the user needs reported (the plan now exists). Naming the first post-todo message and excluding the routing line removes the ambiguity without adding a rule.
+
+### Why an extension could not handle it
+
+- The sentence is core prompt text; an extension could only append a second, competing definition.
+
+### Expected merge conflict zones
+
+- `handoff.ts` first paragraph. Fork-only file.
+
 ## Handoff contract replaces the announcement ban; completion bullet (2026-09-24)
 
 ### What changed

@@ -1,5 +1,23 @@
 # prompt-preset Extension Changes
 
+## 2026-09-24 - GPT cores: the routing line is not a handoff (real-surface QA)
+
+### What changed
+
+- `gpt-5.5.ts`, `gpt-5.6.ts`, `gpt-6-astra.ts` (`handoff-report` directive): `At a handoff - turn start, a todo phase change, ...` -> `At a handoff - the first message after the todo list exists, a todo phase change, a blocker or plan change, the final message; the routing line is not one - ...`. Mirrors the shared-core `handoff.ts` rewording (`dynamic-prompt/changes.md`); the Claude, Kimi, and Grok cores render the shared builder and pick it up there. +9 words per GPT core.
+
+### Why
+
+- Category B: on the real `xai/grok-4.7` run the routing line satisfied "turn start" in the model's reading, so the first handoff block only appeared in the final message. Naming the moment by state (the plan now exists) removes the ambiguity in every family at once.
+
+### Why an extension could not handle it
+
+- Preset core text; an extension could only append a competing definition.
+
+### Expected merge conflict zones
+
+- The `## Handoff` paragraph of `gpt-5.5.ts` / `gpt-5.6.ts` and the `HANDOFF_REPORT` constant in `gpt-6-astra.ts`. Fork-only files.
+
 ## 2026-09-24 - Grok 4.7 tuned against the field trace; the 4.6 byte-copy contract retired
 
 ### What changed
