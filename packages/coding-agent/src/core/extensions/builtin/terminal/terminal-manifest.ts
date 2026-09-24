@@ -98,6 +98,14 @@ export class TerminalManifestWriter {
 	}
 
 	/**
+	 * A restore that re-spawned watches changed their runtime identity: write once so the NEXT
+	 * crash-restart finds (and stops) these processes rather than starting second copies.
+	 */
+	persistRestored(): Promise<void> {
+		return this.#entries.size > 0 ? this.#persist() : Promise.resolve();
+	}
+
+	/**
 	 * Reload seam (SF-2): a reload generation starts with an empty writer, and its first
 	 * transition would rewrite the manifest without the entries the previous generation
 	 * recorded. Seed the live (non-suspended) entries and background sessions from disk

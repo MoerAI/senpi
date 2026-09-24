@@ -8,6 +8,7 @@ import {
 	WAKE_SOURCE_STATE_EVENT,
 } from "../monitor-state-event.ts";
 import type { MonitorNotifier } from "./monitor-notify.ts";
+import { removeMonitorStateDir, terminalStateDir } from "./monitor-state-dir.ts";
 import type { MonitorStatusTicker } from "./monitor-status-ticker.ts";
 import type { TerminalNotifier } from "./notify.ts";
 import type { PersistenceState } from "./restore-session.ts";
@@ -46,6 +47,19 @@ export function bundleSinks(pi: ExtensionAPI, state: TerminalExtensionState): Te
 		onMonitorEnded: (event) => {
 			pi.events?.emit(TERMINAL_MONITOR_ENDED_EVENT, event);
 			pi.rpc?.emit(TERMINAL_MONITOR_ENDED_EVENT, event);
+			// A watch that ended in this process (its command exited, it was killed or expired) never
+			// runs again, so its restore baseline goes. Disposal is a shutdown or reload: the watch is
+			// suspended, not ended, and a later restore still needs the dir.
+			if (event.reason === "disposed") return;
+			const dir = terminalStateDir(state.ctx);
+			const monitorId = state.bundle?.manager.monitorIdOf(event.id);
+			if (dir === undefined || monitorId === undefined) return;
+			removeMonitorStateDir(dir, monitorId).catch((error: unknown) => {
+				state.ctx?.ui?.notify?.(
+					`Could not remove the state dir of ${monitorId}: ${error instanceof Error ? error.message : String(error)}`,
+					"warning",
+				);
+			});
 		},
 		onMonitorState: (snapshot, transition = true) => {
 			if (!state.parked) state.statusTicker.sync(snapshot);

@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { ownProcessStartedAtMs, processBootAtMs, sameBoot, sameProcessStart } from "./process-identity.ts";
+import {
+	ownProcessStartedAtMs,
+	PROCESS_START_TOLERANCE_MS,
+	processBootAtMs,
+	sameBoot,
+	sameProcessStart,
+} from "./process-identity.ts";
 import { readProcessStartMs as defaultReadProcessStartMs } from "./process-start-probe.ts";
 
 export const LEASE_RECORD_VERSION = 2;
@@ -114,10 +120,15 @@ export function readLeaseRecord(raw: string): LeaseRecord | "unparseable" {
 }
 
 async function readLeaseFile(path: string): Promise<LeaseRecord | "missing" | "unparseable"> {
+	const raw = await readLeaseText(path);
+	return raw === undefined ? "missing" : readLeaseRecord(raw);
+}
+
+async function readLeaseText(path: string): Promise<string | undefined> {
 	try {
-		return readLeaseRecord(await readFile(path, "utf8"));
+		return await readFile(path, "utf8");
 	} catch (error) {
-		if (errorCode(error) === "ENOENT") return "missing";
+		if (errorCode(error) === "ENOENT") return undefined;
 		throw error;
 	}
 }
@@ -144,7 +155,6 @@ export async function classifyLease(
 		return "self";
 	}
 	if (!probeAlive(existing.pid, probes.isProcessAlive)) return "dead";
-	const recordedStart = existing.processStartedAtMs ?? existing.startedAtMs;
 	let observedStart: number | undefined;
 	try {
 		observedStart = await probes.readProcessStartMs(existing.pid);
@@ -152,7 +162,12 @@ export async function classifyLease(
 		observedStart = undefined;
 	}
 	if (observedStart === undefined) return "live-foreign";
-	return sameProcessStart(recordedStart, observedStart) ? "live-foreign" : "reused";
+	if (existing.processStartedAtMs === undefined) {
+		// A v1 record's startedAtMs is when the lease was taken, so its holder started no later
+		// than that; a process that started afterwards on the same pid is a reuse.
+		return observedStart <= existing.startedAtMs + PROCESS_START_TOLERANCE_MS ? "live-foreign" : "reused";
+	}
+	return sameProcessStart(existing.processStartedAtMs, observedStart) ? "live-foreign" : "reused";
 }
 
 function holderOf(record: LeaseRecord): LeaseHolder {
@@ -181,6 +196,37 @@ async function writeRecord(path: string, record: LeaseRecord, exclusive: boolean
 		await file.close();
 	}
 	await rename(temp, path);
+}
+
+/**
+ * Reclaim only the lease that was inspected. Two waiters can judge the same stale file dead; a
+ * plain unlink by path lets the slower one delete the lease the faster one just created. Moving
+ * the file aside is atomic, so exactly one waiter gets it; that waiter then checks it moved the
+ * record it inspected, and restores a fresh lease it grabbed by mistake instead of deleting it.
+ */
+async function reclaimInspected(path: string, inspected: string): Promise<void> {
+	const aside = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.reclaim`;
+	try {
+		await rename(path, aside);
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return;
+		throw error;
+	}
+	const moved = await readFile(aside, "utf8");
+	if (moved !== inspected) {
+		// Someone else's fresh lease: put it back unless a third writer already replaced it.
+		try {
+			const back = await open(path, "wx");
+			try {
+				await back.writeFile(moved, "utf8");
+			} finally {
+				await back.close();
+			}
+		} catch (error) {
+			if (errorCode(error) !== "EEXIST") throw error;
+		}
+	}
+	await unlinkIfPresent(aside);
 }
 
 async function unlinkIfPresent(path: string): Promise<void> {
@@ -227,9 +273,11 @@ export async function acquireTerminalLease(options: AcquireTerminalLeaseOptions)
 		} catch (error) {
 			if (errorCode(error) !== "EEXIST") throw error;
 		}
-		const existing = await readLeaseFile(path);
-		if (existing === "missing" || existing === "unparseable") {
-			await unlinkIfPresent(path);
+		const raw = await readLeaseText(path);
+		if (raw === undefined) continue;
+		const existing = readLeaseRecord(raw);
+		if (existing === "unparseable") {
+			await reclaimInspected(path, raw);
 			continue;
 		}
 		const verdict = await classifyLease({ ...existing, pid: existing.pid }, { ...self, pid }, probes);
@@ -238,12 +286,19 @@ export async function acquireTerminalLease(options: AcquireTerminalLeaseOptions)
 			return acquired();
 		}
 		if (verdict === "live-foreign") return { acquired: false, holder: holderOf(existing) };
-		await unlinkIfPresent(path);
+		await reclaimInspected(path, raw);
 	}
 	const existing = await readLeaseFile(path);
 	if (existing === "missing" || existing === "unparseable") {
-		await writeRecord(path, record, true);
-		return acquired();
+		try {
+			await writeRecord(path, record, true);
+			return acquired();
+		} catch (error) {
+			if (errorCode(error) !== "EEXIST") throw error;
+		}
+		const winner = await readLeaseFile(path);
+		if (winner !== "missing" && winner !== "unparseable") return { acquired: false, holder: holderOf(winner) };
+		throw new Error(`terminal lease ${path} kept changing while it was being acquired`);
 	}
 	return { acquired: false, holder: holderOf(existing) };
 }

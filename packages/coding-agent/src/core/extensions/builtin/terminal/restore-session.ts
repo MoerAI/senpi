@@ -99,7 +99,7 @@ function restoreHandlers(state: PersistenceState, toolCtx: TerminalToolContext, 
 			const result = await handler(monitor, context);
 			// Only a LIVE entry is re-adopted, so the next persist keeps it and drops the rest.
 			if (result.outcome === "restored" || result.outcome === "muted") {
-				writer.adoptRestored(monitor);
+				writer.adoptRestored(result.runtime === undefined ? monitor : { ...monitor, runtime: result.runtime });
 				registry.adoptFireWindow(monitor.monitorId, monitor.fireWindow);
 			}
 			return result;
@@ -157,12 +157,23 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 		state.recordedBackgroundIds.clear();
 		const bundle = state.bundle;
 		if (bundle !== null && existsSync(writer.store.filePath)) {
-			const digest = await restoreTerminalState({
-				manifest: writer.store,
-				handlers: restoreHandlers(state, toolCtx, bundle),
-				sessionFile: sessionManager.getSessionFile?.(),
-				processStartedAtMs: ownProcessStartedAtMs(),
-			});
+			let digest: RestoreDigest;
+			try {
+				digest = await restoreTerminalState({
+					manifest: writer.store,
+					handlers: restoreHandlers(state, toolCtx, bundle),
+					sessionFile: sessionManager.getSessionFile?.(),
+					processStartedAtMs: ownProcessStartedAtMs(),
+				});
+			} catch (error) {
+				// A restore that throws (an unreadable transcript, a kill error on a confirmed orphan)
+				// still decides: the session hears it failed, and the lease stays bound for shutdown.
+				ctx?.ui?.notify?.(
+					`Terminal restore failed: ${error instanceof Error ? error.message : String(error)}`,
+					"warning",
+				);
+				digest = { ...emptyDigest(), storeError: true };
+			}
 			// A watch that did not come back never runs again: its baseline dir goes with it.
 			await Promise.all(
 				digest.results
@@ -177,8 +188,12 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 				state.digestSlot.set(buildRestoreDigest(digest, { generation, outcome: "decided" }));
 			}
 		}
+
 		// Bound AFTER the restore read the file: draining queued specs writes the manifest.
 		bindTerminalManifestWriter(sessionKey, writer);
+		// Persist the re-adopted entries now: their fresh runtime identity is what lets the NEXT
+		// crash-restart find and stop these watchers instead of starting a second copy.
+		await writer.persistRestored();
 		state.ensurePersistence = null;
 		const self = { pid: process.pid, bootAtMs: processBootAtMs(), processStartedAtMs: ownProcessStartedAtMs() };
 		// Housekeeping only: a failed sweep leaves the files for the next start to reclaim.
@@ -230,8 +245,11 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 
 /** session_shutdown (not reload): stop waiting, finish any restore, suspend and flush, release. */
 export async function stopPersistence(state: PersistenceState, sessionKey: string): Promise<void> {
-	state.keeper?.stop();
+	const keeper = state.keeper;
+	keeper?.stop();
 	state.keeper = null;
+	// A tick in flight may still be acquiring (then releases) or taking over (then restores).
+	await keeper?.settled();
 	const lease = state.lease;
 	state.lease = null;
 	if (lease !== null) retireLeaseToken(lease.token);

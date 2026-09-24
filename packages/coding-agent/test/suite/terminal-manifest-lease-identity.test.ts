@@ -48,6 +48,51 @@ function selfIdentity(pid = process.pid) {
 }
 
 describe("terminal lease identity (v2)", () => {
+	it("a slow reclaimer never deletes the fresh lease a faster one took from the same stale file", async () => {
+		const dir = await tempDir();
+		const path = join(dir, "s.lease");
+		// The stale holder's pid answers but belongs to a later process (pid reuse), so both racers
+		// must probe it; racer A is held inside that probe until racer B has fully acquired.
+		await writeFile(path, JSON.stringify(v2Record({ pid: 2_147_000_001, token: "reused-holder" })), "utf8");
+		let resumeA: () => void = () => {};
+		const aHeld = new Promise<void>((resolve) => {
+			resumeA = resolve;
+		});
+		let aEntered: () => void = () => {};
+		const aInProbe = new Promise<void>((resolve) => {
+			aEntered = resolve;
+		});
+		const racer = (pid: number, hold: boolean) => {
+			let first = hold;
+			return acquireTerminalLease({
+				dir,
+				encodedSessionId: "s",
+				now: () => NOW,
+				self: selfIdentity(pid),
+				isProcessAlive: alive,
+				readProcessStartMs: async () => {
+					if (first) {
+						first = false;
+						aEntered();
+						await aHeld;
+					}
+					return NOW - 5_000;
+				},
+			});
+		};
+		const slow = racer(1_001, true);
+		await aInProbe;
+		const fast = await racer(1_002, false);
+		expect(fast.acquired).toBe(true);
+		resumeA();
+		const slowResult = await slow;
+		expect(slowResult).toMatchObject({ acquired: false, holder: { pid: 1_002 } });
+		const onDisk = readLeaseRecord(await readFile(path, "utf8"));
+		expect(onDisk).not.toBe("unparseable");
+		if (onDisk === "unparseable" || !fast.acquired) return;
+		expect(onDisk.token).toBe(fast.token);
+	});
+
 	it("writes a v2 record that the legacy v1 reader still parses", async () => {
 		const dir = await tempDir();
 		const result = await acquireTerminalLease({

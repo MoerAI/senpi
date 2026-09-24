@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,6 +85,35 @@ async function ticks(count: number): Promise<void> {
 }
 
 describe("terminal lease keeper", () => {
+	it("hands the lease back when stop() lands while its takeover acquire is in flight", async () => {
+		const dir = await tempDir();
+		const path = await writeForeignLease(dir);
+		// The tick sees the holder gone; the acquire then finds the pid answering again (reused by a
+		// process that started an hour later), and stop() lands inside that probe: mid-acquire.
+		let aliveChecks = 0;
+		const onTakeover = vi.fn();
+		const keeper: LeaseKeeper = createLeaseKeeper({
+			dir,
+			encodedSessionId: "s",
+			intervalMs: TICK_MS,
+			now: () => NOW,
+			self,
+			isProcessAlive: (pid: number) => pid !== HOLDER_PID || ++aliveChecks > 1,
+			readProcessStartMs: async () => {
+				keeper.stop();
+				return HOLDER_START + 3_600_000;
+			},
+			onTakeover,
+		});
+		keepers.push(keeper);
+		keeper.start({ pid: HOLDER_PID, startedAtMs: HOLDER_START });
+		await vi.advanceTimersByTimeAsync(TICK_MS);
+		await keeper.settled();
+		expect(onTakeover).not.toHaveBeenCalled();
+		expect(keeper.state).toBe("stopped");
+		expect(existsSync(path)).toBe(false);
+	});
+
 	it("stays a waiter while the holder is alive and never spawns per tick", async () => {
 		const dir = await tempDir();
 		await writeForeignLease(dir);

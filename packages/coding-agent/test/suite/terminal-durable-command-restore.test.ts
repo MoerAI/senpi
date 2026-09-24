@@ -86,7 +86,8 @@ describe.runIf(process.platform !== "win32")("restartable-command restore: grace
 			{ downtimeMs: 60_000 },
 		);
 		expect(result.outcome).toBe("lost");
-		expect(result.reason).toMatch(/^exited 127 in \d+ms/);
+		// The shell's own code for an unreadable script differs by OS (bash 127, dash 2): pin non-zero + the message.
+		expect(result.reason).toMatch(/^exited [1-9]\d* in \d+ms: .*gone\.sh/);
 	});
 
 	it("restores a watch that is still running at the end of the grace window, with the restore env", async () => {

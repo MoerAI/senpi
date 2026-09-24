@@ -326,7 +326,8 @@ describe("restartable-command durability class", () => {
 			{ downtimeMs: 0 },
 		);
 
-		expect(outcome).toEqual({ outcome: "restored" });
+		// The re-spawned identity comes back so the manifest can find this process after the next crash.
+		expect(outcome).toEqual({ outcome: "restored", runtime: expect.objectContaining({ pid: expect.any(Number) }) });
 		expect(requests).toHaveLength(1);
 		expect(requests[0]?.command).toBe("cat");
 		expect(requests[0]?.cwd).toBe(workDir);

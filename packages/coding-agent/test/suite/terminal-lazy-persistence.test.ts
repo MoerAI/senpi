@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -148,6 +148,32 @@ describe("terminal persistence is lazy and survives a reload", () => {
 		await generation.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
 		live = [];
 		expect(existsSync(survivorDir)).toBe(true);
+	});
+
+	it("a persistent watch whose command ends on its own loses its state dir once the end is observed", async () => {
+		const generation = await start("startup");
+		const monitor = generation.tools.get("monitor");
+		if (!monitor) throw new Error("monitor tool missing");
+		const trigger = join(stateDir, "..", "end-now");
+		const created = await monitor.execute("create-self-ending", {
+			description: "self-ending watch",
+			command: `while [ ! -e '${trigger}' ]; do sleep 0.1; done; exit 3`,
+			persistent: true,
+		});
+		const monitorId = String(created.details?.monitor_id);
+		const dir = join(stateDir, "state", monitorId);
+		expect(existsSync(dir)).toBe(true);
+		const gone = new Promise<void>((resolve, reject) => {
+			const watcher = watch(join(stateDir, "state"), () => {
+				if (existsSync(dir)) return;
+				watcher.close();
+				resolve();
+			});
+			watcher.on("error", reject);
+		});
+		writeFileSync(trigger, "");
+		await gone;
+		expect(existsSync(dir)).toBe(false);
 	});
 
 	it("a reload keeps the pre-reload durable entries when the next transition writes", async () => {

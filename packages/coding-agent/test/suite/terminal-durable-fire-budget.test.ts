@@ -37,6 +37,10 @@ class FakeRuntime {
 		return "";
 	}
 
+	identity(): undefined {
+		return undefined;
+	}
+
 	onOutput(listener: (chunk: string) => void): () => void {
 		this.#listeners.add(listener);
 		return () => this.#listeners.delete(listener);

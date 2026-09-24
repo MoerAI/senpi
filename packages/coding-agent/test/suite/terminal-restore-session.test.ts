@@ -189,6 +189,46 @@ describe.runIf(process.platform !== "win32")("terminal restore session: lease, k
 		expect(isAlive(oldPid)).toBe(false);
 	});
 
+	it("(a2) two crashes in a row still leave exactly one watcher: the restore records the new process", async () => {
+		const crash = async (): Promise<void> => {
+			const dead = spawn("true", { stdio: "ignore" });
+			await exited(dead);
+			const lease = JSON.parse(readFileSync(leasePath(), "utf8")) as Record<string, unknown>;
+			writeFileSync(leasePath(), JSON.stringify({ ...lease, pid: dead.pid, token: `crashed-${dead.pid}` }));
+		};
+		const runtimePid = (monitorId: string): number => {
+			const saved = JSON.parse(readFileSync(manifestPath(), "utf8")) as {
+				monitors: Array<{ monitorId: string; runtime?: { pid: number } }>;
+			};
+			return saved.monitors.find((entry) => entry.monitorId === monitorId)?.runtime?.pid ?? 0;
+		};
+		const first = await start("startup");
+		const created = await first.tools.get("monitor")?.execute("tick", {
+			description: "ticker",
+			command: "while true; do echo tick; sleep 1; done",
+			persistent: true,
+		});
+		const monitorId = String(created?.details?.monitor_id);
+		const originalPid = runtimePid(monitorId);
+		live = live.filter((generation) => generation !== first);
+		await crash();
+
+		const second = await start("startup");
+		await whenRestoreDecided(sessionId);
+		const respawnedPid = runtimePid(monitorId);
+		expect(respawnedPid).not.toBe(originalPid);
+		expect(isAlive(respawnedPid)).toBe(true);
+		live = live.filter((generation) => generation !== second);
+		await crash();
+
+		const third = await start("startup");
+		await whenRestoreDecided(sessionId);
+		expect(detailsOf(digests(third)[0]).monitors).toEqual([
+			expect.objectContaining({ monitorId, outcome: "restored", orphan: { pid: respawnedPid, action: "killed" } }),
+		]);
+		expect(isAlive(respawnedPid)).toBe(false);
+	});
+
 	it("(b) a live foreign holder defers the restore; its exit hands the session over with exactly one digest", async () => {
 		writeManifest([persistedWatch("mon_TAKEOVER00000001", "cat")]);
 		const holder = await foreignHolderLease();
@@ -215,7 +255,7 @@ describe.runIf(process.platform !== "win32")("terminal restore session: lease, k
 		expect(detailsOf(digests(generation)[0]).monitors[0]).toMatchObject({ outcome: "restored" });
 	});
 
-	it("(d) a watch whose script is gone is lost with its exit code; lost and expired state dirs are removed", async () => {
+	it("(d) a watch whose script is gone is lost with its non-zero exit code; lost and expired state dirs are removed", async () => {
 		const expired = { ...persistedWatch("mon_EXPIREDWATCH001", "cat"), expiresAt: Date.now() - 1_000 };
 		writeManifest([persistedWatch("mon_MISSINGSCRIPT01", `sh ${join(tmp, "missing.sh")}`), expired]);
 		const stateDirOf = (monitorId: string) => join(stateDir, "state", monitorId);
@@ -230,7 +270,7 @@ describe.runIf(process.platform !== "win32")("terminal restore session: lease, k
 			["mon_EXPIREDWATCH001", "expired"],
 		]);
 		expect(detailsOf(digests(generation)[0]).monitors[0]).toMatchObject({
-			reason: expect.stringMatching(/^exited 127/),
+			reason: expect.stringMatching(/^exited [1-9]\d* in \d+ms: .*missing\.sh/),
 		});
 		expect(existsSync(stateDirOf("mon_MISSINGSCRIPT01"))).toBe(false);
 		expect(existsSync(stateDirOf("mon_EXPIREDWATCH001"))).toBe(false);

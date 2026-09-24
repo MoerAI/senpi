@@ -101,11 +101,12 @@ function argvMatches(observed: string | undefined, argv: readonly string[]): boo
 /**
  * A pid alone is never trusted: after a crash or reboot the OS recycles it, so killing on a bare
  * pid match can take down an unrelated process. Ownership needs the pid alive on the same boot,
- * the same start instant, and a per-platform content marker (env on Linux, argv elsewhere).
+ * the same start instant, and a per-platform content marker (env on Linux, argv elsewhere). A
+ * background session carries no monitor id in its environment, so it is matched by argv everywhere.
  */
 export async function confirmOwner(
 	runtime: ChildProcessIdentity,
-	monitorId: string,
+	monitorId: string | undefined,
 	probes: OwnerProbes = {},
 ): Promise<OwnerVerdict> {
 	const platform = probes.platform ?? process.platform;
@@ -116,7 +117,7 @@ export async function confirmOwner(
 		if (evidence?.startedAtMs === undefined || !Number.isFinite(evidence.startedAtMs)) return "unverifiable";
 		if (Math.abs(evidence.startedAtMs - runtime.startedAtMs) > OWNER_START_TOLERANCE_MS) return "unverifiable";
 		const marked =
-			platform === "linux"
+			platform === "linux" && monitorId !== undefined
 				? (evidence.environ ?? "").split("\0").includes(`SENPI_MONITOR_ID=${monitorId}`)
 				: argvMatches(evidence.argv, runtime.argv);
 		return marked ? "confirmed" : "unverifiable";

@@ -5,6 +5,7 @@ import {
 	acquireTerminalLease,
 	type LeaseHolder,
 	type LeaseSelfIdentity,
+	releaseTerminalLease,
 } from "./manifest-lease.ts";
 
 export const LEASE_KEEPER_INTERVAL_MS = 10_000;
@@ -80,7 +81,12 @@ export function createLeaseKeeper(options: LeaseKeeperOptions): LeaseKeeper {
 			isProcessAlive: options.isProcessAlive,
 			readProcessStartMs: options.readProcessStartMs,
 		});
-		if (state !== "waiting") return;
+		if (state !== "waiting") {
+			// stop() landed while the acquire was in flight: hand the lease straight back, or this
+			// process would hold a lease no generation of it can ever release or re-enter.
+			if (result.acquired) await releaseTerminalLease(result);
+			return;
+		}
 		if (result.acquired) {
 			state = "owner";
 			timer = undefined;

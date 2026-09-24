@@ -185,6 +185,7 @@ export function createRestartableCommandHandler(deps: RestartableCommandDeps): R
 		// A persisted mute is re-applied by the FRESH runtime id; the registry resolves
 		// records by runtime id only, so the mon_ id would silently no-op here.
 		const outcome = reapplyPersistedMute(deps.registry, monitor, spawned.id);
-		return { outcome, ...(orphan !== undefined ? { orphan } : {}) };
+		const runtime = spawned.runtime.identity();
+		return { outcome, ...(orphan !== undefined ? { orphan } : {}), ...(runtime !== undefined ? { runtime } : {}) };
 	};
 }

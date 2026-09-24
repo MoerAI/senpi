@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { TerminalManager } from "../../src/core/extensions/builtin/terminal/manager.ts";
 import { MonitorRegistry } from "../../src/core/extensions/builtin/terminal/monitor-registry.ts";
-import { processBootAtMs } from "../../src/core/extensions/builtin/terminal/process-identity.ts";
+import { processBootAtMs, sameBoot } from "../../src/core/extensions/builtin/terminal/process-identity.ts";
 import { TerminalManifestWriter } from "../../src/core/extensions/builtin/terminal/terminal-manifest.ts";
 import type { TerminalToolContext } from "../../src/core/extensions/builtin/terminal/tools/context.ts";
 import {
@@ -76,7 +76,8 @@ describe("monitor create records the child's runtime identity", () => {
 			);
 			expect(runtime.startedAtMs).toBeGreaterThanOrEqual(before - 1_000);
 			expect(runtime.startedAtMs).toBeLessThanOrEqual(Date.now());
-			expect(runtime.bootAtMs).toBe(processBootAtMs());
+			// The boot instant is now - uptime (whole seconds), so two reads can differ by a second.
+			expect(sameBoot(runtime.bootAtMs, processBootAtMs())).toBe(true);
 			expect(runtime.argv.at(-1)).toBe("while true; do sleep 1; done");
 			expect(entry?.deadlineMs).toBeUndefined();
 		},

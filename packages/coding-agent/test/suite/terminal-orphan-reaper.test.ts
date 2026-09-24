@@ -55,6 +55,15 @@ describe("orphan reaper", () => {
 			expect(p.kill).toHaveBeenCalledWith(-4242, "SIGTERM");
 		});
 
+		it("linux: a background session (no monitor id in its env) is confirmed by argv", async () => {
+			const p = probes("linux", {
+				startedAtMs: RUNTIME.startedAtMs,
+				environ: "PATH=/bin\0",
+				argv: RUNTIME.argv.join(" "),
+			});
+			await expect(confirmOwner(RUNTIME, undefined, p)).resolves.toBe("confirmed");
+		});
+
 		it("linux: a different monitor's marker (even a prefix match) is not the owner", async () => {
 			const environ = `SENPI_MONITOR_ID=${MONITOR_ID}2\0`;
 			const p = probes("linux", { startedAtMs: RUNTIME.startedAtMs, environ, argv: RUNTIME.argv.join(" ") });

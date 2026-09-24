@@ -8,6 +8,7 @@
 
 import type { SidecarStore } from "../../../session-sidecar-store.ts";
 import { confirmOwner } from "./orphan-reaper.ts";
+import type { ChildProcessIdentity } from "./process-identity.ts";
 import { sessionActivityBeforeMs } from "./session-activity.ts";
 import type { ManifestBackgroundSession, ManifestMonitor, TerminalManifest } from "./terminal-manifest.ts";
 
@@ -21,6 +22,8 @@ export interface RestoreHandlerResult {
 	readonly reason?: string;
 	/** The watcher a crash left running: killed before the respawn, or left alone when unverifiable. */
 	readonly orphan?: { readonly pid: number; readonly action: "killed" | "unverified" };
+	/** The re-spawned process, so the manifest can find it after the next crash. */
+	readonly runtime?: ChildProcessIdentity;
 }
 
 export interface RestoreContext {
@@ -128,7 +131,7 @@ function emptyDigest(): RestoreDigest {
 
 async function defaultBackgroundAlive(session: ManifestBackgroundSession): Promise<boolean> {
 	if (session.runtime === undefined) return false;
-	return (await confirmOwner(session.runtime, session.id)) === "confirmed";
+	return (await confirmOwner(session.runtime, undefined)) === "confirmed";
 }
 
 function resultFor(monitor: ManifestMonitor, outcome: MonitorRestoreOutcome, handled?: RestoreHandlerResult) {

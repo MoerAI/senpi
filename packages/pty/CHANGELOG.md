@@ -4,7 +4,7 @@
 
 ### Added
 
-- `TerminalSession` exposes the child's `pid` and `processGroupId` on every backend (native, pipe fallback, Bun), so callers can record the process identity of a session. ([#2108](https://github.com/code-yeongyu/senpi/issues/2108))
+- `TerminalSession` exposes the child's `pid` on every backend (native, pipe fallback, Bun) and its `processGroupId` where the backend knows it (native and pipe fallback), so callers can record the process identity of a session. ([#2108](https://github.com/code-yeongyu/senpi/issues/2108))
 - Added `TerminalSession.terminate({ signal, graceMs, forcedGraceMs })`, which signals the session, waits for the exit, escalates to `SIGKILL`, and resolves with the settled exit (or `null` when the process outlives both waits).
 - Added `SessionRegistry` options `forcedExitGraceMs` (wait after the escalated `SIGKILL`, default 1s) and `detachedExitGraceMs` (detached-child grace before `SIGKILL`, default 1s).
 - Added an opt-in Bun `Bun.spawn` terminal backend for persistent PTY sessions when `SENPI_BUN_TERMINAL` is truthy; the existing native and pipe-fallback paths remain the defaults.
