@@ -1,7 +1,6 @@
 // allow: SIZE_OK — one eval render pipeline avoids the runtime/render TDZ that motivated this module boundary.
 import {
 	type AgentToolResult,
-	highlightCode,
 	sanitizeTerminalLabel,
 	type Theme,
 	type ThemeColor,
@@ -10,6 +9,7 @@ import {
 	truncateToVisualLines,
 } from "@code-yeongyu/senpi";
 import type { TruncationMeta } from "../output/output-meta.ts";
+import { highlightedCode } from "./code-preview.ts";
 import { displayCode } from "./display-code.ts";
 import { normalizeEvalSummary } from "./eval-request.ts";
 import {
@@ -26,7 +26,6 @@ import { codePointPrefix, formatDuration, renderToolCallWidget } from "./tool-wi
 import type {
 	EvalCellResult,
 	EvalInputSchema,
-	EvalLanguage,
 	EvalResultDetails,
 	EvalStatusEvent,
 	EvalToolDetails,
@@ -269,6 +268,8 @@ type RenderEnvironment = {
 	readonly meta: TruncationMeta | undefined;
 	/** Render-time clock, injected so elapsed time is deterministic under test. */
 	readonly now: number;
+	/** Repaints the row once a background-formatted code preview is ready; absent while args stream. */
+	readonly repaint?: () => void;
 };
 type CellBadges = {
 	readonly reset: boolean;
@@ -286,27 +287,6 @@ type DetailedRenderContext = {
 
 function assertNever(value: never): never {
 	throw new TypeError(`Unhandled eval render variant: ${String(value)}`);
-}
-
-function languageForHighlighter(language: EvalLanguage): "python" | "javascript" | "ruby" | "julia" {
-	switch (language) {
-		case "py":
-			return "python";
-		case "js":
-			return "javascript";
-		case "rb":
-			return "ruby";
-		case "jl":
-			return "julia";
-		default:
-			return assertNever(language);
-	}
-}
-
-function highlightedCode(code: string, language: EvalLanguage, theme: Theme | undefined): string {
-	const normalizedCode = code.trim().length > 0 ? code : "...";
-	const lines = highlightCode(displayCode(normalizedCode, language), languageForHighlighter(language));
-	return (theme === undefined ? lines.map((line) => line.replace(/\u001b\[[0-9;]*m/gu, "")) : lines).join("\n");
 }
 
 function spinner(frame: number | undefined): string {
@@ -644,7 +624,7 @@ function renderCell(cell: EvalCellResult, environment: RenderEnvironment, badges
 	}
 	const innerWidth = Math.max(1, environment.width - 2);
 	const codePreview = previewText(
-		highlightedCode(cell.code, cell.language, environment.theme),
+		highlightedCode(cell.code, cell.language, environment.theme, environment.repaint),
 		environment.expanded ? Number.POSITIVE_INFINITY : CODE_PREVIEW_LINES,
 		innerWidth,
 	);
@@ -926,7 +906,9 @@ export function renderEvalCall(
 				text: style(
 					theme,
 					"mdCodeBlock",
-					args.code.trim().length > 0 ? displayCode(args.code, args.language) : "...",
+					args.code.trim().length > 0
+						? displayCode(args.code, args.language, context.argsComplete ? context.invalidate : undefined)
+						: "...",
 				),
 				maxVisualLines: context.expanded ? undefined : CODE_PREVIEW_LINES,
 				collapseKind: "code",
@@ -946,6 +928,7 @@ export function renderEvalCall(
 					width,
 					meta: undefined,
 					now: renderNow(context),
+					...(context.argsComplete ? { repaint: context.invalidate } : {}),
 				};
 				const cell: EvalCellResult = {
 					index: 0,
@@ -998,6 +981,7 @@ export function renderEvalResult(
 							width,
 							meta: details.meta,
 							now: renderNow(context),
+							repaint: context.invalidate,
 						},
 						args: context.args,
 						showImageFallback: context.showImages && imageProtocol === null,
