@@ -28,7 +28,8 @@ export interface LeaseKeeperOptions {
 export interface LeaseKeeper {
 	readonly state: LeaseKeeperState;
 	onTick?: () => void;
-	start(holder: LeaseHolder): void;
+	/** Wait on `holder`; null when it is unknown (e.g. the acquire failed), so every tick re-acquires. */
+	start(holder: LeaseHolder | null): void;
 	stop(): void;
 	/** Resolves after the tick currently in flight (if any) has settled; tests drain fake timers with it. */
 	settled(): Promise<void>;

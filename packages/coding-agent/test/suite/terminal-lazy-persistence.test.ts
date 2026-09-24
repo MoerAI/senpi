@@ -1,11 +1,45 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TERMINAL_MONITOR_ENDED_EVENT } from "../../src/core/extensions/builtin/monitor-state-event.ts";
 import { registerTerminalExtension } from "../../src/core/extensions/builtin/terminal/extension.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../src/core/extensions/types.ts";
 import { initTheme, theme } from "../../src/modes/interactive/theme/theme.ts";
+
+const removals = vi.hoisted(() => ({
+	started: [] as Array<{ monitorId: string; done: Promise<void> }>,
+	listeners: new Set<(entry: { monitorId: string; done: Promise<void> }) => void>(),
+}));
+
+vi.mock("../../src/core/extensions/builtin/terminal/monitor-state-dir.ts", async (importOriginal) => {
+	const original =
+		await importOriginal<typeof import("../../src/core/extensions/builtin/terminal/monitor-state-dir.ts")>();
+	return {
+		...original,
+		removeMonitorStateDir: (terminalDir: string, monitorId: string) => {
+			const done = original.removeMonitorStateDir(terminalDir, monitorId);
+			const entry = { monitorId, done };
+			removals.started.push(entry);
+			for (const listener of removals.listeners) listener(entry);
+			return done;
+		},
+	};
+});
+
+/** Resolves with the monitor id once the product's removal of that monitor's state dir has finished. */
+function removalFor(monitorId: string): Promise<string> {
+	const started = removals.started.find((entry) => entry.monitorId === monitorId);
+	if (started) return started.done.then(() => monitorId);
+	return new Promise((resolve, reject) => {
+		const listener = (entry: { monitorId: string; done: Promise<void> }) => {
+			if (entry.monitorId !== monitorId) return;
+			removals.listeners.delete(listener);
+			entry.done.then(() => resolve(monitorId), reject);
+		};
+		removals.listeners.add(listener);
+	});
+}
 
 type Handler = (event: unknown, ctx: ExtensionContext) => Promise<unknown> | unknown;
 
@@ -176,29 +210,16 @@ describe("terminal persistence is lazy and survives a reload", () => {
 		const monitorId = String(created.details?.monitor_id);
 		const dir = join(stateDir, "state", monitorId);
 		expect(existsSync(dir)).toBe(true);
-		const stateRoot = join(stateDir, "state");
-		const removed = new Promise<boolean>((resolve) => {
-			// Bounded: without the removal this settles false and the test fails on the value.
-			const bound = setTimeout(() => resolve(false), 10_000);
-			const done = () => {
-				clearTimeout(bound);
-				resolve(true);
-			};
-			const watcher = watch(stateRoot, () => {
-				if (existsSync(dir)) return;
-				watcher.close();
-				done();
-			});
-			generation.onMonitorEnded(() => {
-				queueMicrotask(() => {
-					if (existsSync(dir)) return;
-					watcher.close();
-					done();
-				});
-			});
-		});
+		// Wait on the product's own removal (its real rm, wrapped by the mock above), bounded: without
+		// the removal this settles false and the test fails on the value, never on a timeout.
+		removals.started.length = 0;
+		const removal = removalFor(monitorId);
 		writeFileSync(trigger, "");
-		expect(await removed).toBe(true);
+		const removedMonitorId = await Promise.race([
+			removal,
+			new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 10_000)),
+		]);
+		expect(removedMonitorId).toBe(monitorId);
 		expect(existsSync(dir)).toBe(false);
 	});
 

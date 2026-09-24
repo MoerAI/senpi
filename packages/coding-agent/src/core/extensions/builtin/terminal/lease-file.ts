@@ -135,8 +135,14 @@ export async function reclaimLockState(lock: string, probes: LockProbes = {}): P
 		);
 		return age > UNREADABLE_LOCK_STALE_MS ? { state: "stale", raw } : { state: "held" };
 	}
-	if (holder.pid === process.pid) return { state: "held", holder };
 	if (!sameBoot(holder.bootAtMs, processBootAtMs())) return { state: "stale", raw };
+	if (holder.pid === process.pid) {
+		// Our own pid: held only by this very process (another reclaim in flight here), never by a
+		// crashed earlier process whose pid this one now wears.
+		return sameProcessStart(holder.processStartedAtMs, ownProcessStartedAtMs())
+			? { state: "held", holder }
+			: { state: "stale", raw };
+	}
 	if (!(probes.isProcessAlive ?? pidAlive)(holder.pid)) return { state: "stale", raw };
 	const observed = await (probes.readProcessStartMs ?? defaultReadProcessStartMs)(holder.pid).catch(() => undefined);
 	if (observed === undefined || sameProcessStart(holder.processStartedAtMs, observed))

@@ -85,6 +85,40 @@ async function ticks(count: number): Promise<void> {
 }
 
 describe("terminal lease keeper", () => {
+	it("keeps waiting after a failed tick and still takes over once the holder is gone", async () => {
+		const dir = await tempDir();
+		await writeForeignLease(dir);
+		// The keeper's own liveness check swallows probe errors, but the acquire it runs does not:
+		// the first acquire's probe throws (an unexpected errno), so that tick fails.
+		let acquireProbeCalls = 0;
+		const errors: unknown[] = [];
+		const onTakeover = vi.fn();
+		const keeper = createLeaseKeeper({
+			dir,
+			encodedSessionId: "s",
+			intervalMs: TICK_MS,
+			now: () => NOW,
+			self,
+			isProcessAlive: (pid: number) => {
+				if (pid !== HOLDER_PID) return true;
+				acquireProbeCalls += 1;
+				if (acquireProbeCalls === 1) throw Object.assign(new Error("probe failed"), { code: "EIO" });
+				return false;
+			},
+			readProcessStartMs: async () => HOLDER_START,
+			onTakeover,
+			onError: (error) => errors.push(error),
+		});
+		keepers.push(keeper);
+		keeper.start(null);
+		await ticks(1);
+		expect(errors).toHaveLength(1);
+		expect(keeper.state).toBe("waiting");
+		await ticks(1);
+		expect(onTakeover).toHaveBeenCalledTimes(1);
+		expect(keeper.state).toBe("owner");
+	});
+
 	it("hands the lease back when stop() lands while its takeover acquire is in flight", async () => {
 		const dir = await tempDir();
 		const path = await writeForeignLease(dir);

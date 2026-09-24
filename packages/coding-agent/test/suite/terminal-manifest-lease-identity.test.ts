@@ -13,6 +13,7 @@ import {
 } from "../../src/core/extensions/builtin/terminal/manifest-lease.ts";
 import {
 	BOOT_INSTANT_TOLERANCE_MS,
+	ownProcessStartedAtMs,
 	processBootAtMs,
 } from "../../src/core/extensions/builtin/terminal/process-identity.ts";
 
@@ -83,6 +84,33 @@ describe("terminal lease identity (v2)", () => {
 		reclaimerStart = reclaimer.processStartedAtMs;
 		reclaimerAlive = false;
 		await expect(acquire()).resolves.toMatchObject({ acquired: true });
+	});
+
+	it("breaks a lock left under this process's own pid by an earlier process that wore it", async () => {
+		const dir = await tempDir();
+		const path = join(dir, "s.lease");
+		const stale = JSON.stringify(v2Record({ pid: 2_147_000_005, token: "dead-holder" }));
+		await writeFile(path, stale, "utf8");
+		// Same pid as this process, but a start instant an hour earlier: a crashed predecessor's lock.
+		await writeFile(
+			`${path}.lock`,
+			JSON.stringify({
+				pid: process.pid,
+				bootAtMs: processBootAtMs(),
+				processStartedAtMs: ownProcessStartedAtMs() - 3_600_000,
+			}),
+			"utf8",
+		);
+		const result = await acquireTerminalLease({
+			dir,
+			encodedSessionId: "s",
+			now: () => NOW,
+			self: selfIdentity(),
+			isProcessAlive: (pid: number) => pid !== 2_147_000_005,
+			readProcessStartMs: async () => NOW - 5_000,
+		});
+		expect(result.acquired).toBe(true);
+		if (result.acquired) await releaseTerminalLease(result);
 	});
 
 	it("treats an unreadable lock as held until it is old enough to have been abandoned", async () => {

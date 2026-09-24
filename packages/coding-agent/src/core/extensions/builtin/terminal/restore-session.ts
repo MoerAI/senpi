@@ -205,10 +205,17 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 		decided();
 	};
 
-	const wait = (holder: LeaseHolder): void => {
-		ctx?.ui?.setStatus?.(RESTORE_STATUS_KEY, `monitors held by pid ${holder.pid}`);
+	const wait = (holder: LeaseHolder | null): void => {
+		ctx?.ui?.setStatus?.(
+			RESTORE_STATUS_KEY,
+			holder === null ? "monitors waiting for the session lease" : `monitors held by pid ${holder.pid}`,
+		);
 		state.digestSlot.set(
-			buildRestoreDigest(emptyDigest(), { generation, outcome: "deferred", holderPid: holder.pid }),
+			buildRestoreDigest(emptyDigest(), {
+				generation,
+				outcome: "deferred",
+				...(holder === null ? {} : { holderPid: holder.pid }),
+			}),
 		);
 		state.keeper?.stop();
 		state.keeper = createLeaseKeeper({
@@ -222,8 +229,9 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 				return state.restoreInFlight;
 			},
 			onError: (error) => {
+				const waiting = state.keeper?.state === "waiting";
 				ctx?.ui?.notify?.(
-					`Terminal lease check failed, still waiting: ${error instanceof Error ? error.message : String(error)}`,
+					`Terminal lease ${waiting ? "check failed, still waiting" : "takeover failed"}: ${error instanceof Error ? error.message : String(error)}`,
 					"warning",
 				);
 			},
@@ -232,7 +240,19 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 	};
 
 	const acquire = async (): Promise<void> => {
-		const lease = await acquireTerminalLease({ dir, encodedSessionId: encoded });
+		let lease: Awaited<ReturnType<typeof acquireTerminalLease>>;
+		try {
+			lease = await acquireTerminalLease({ dir, encodedSessionId: encoded });
+		} catch (error) {
+			// The lease kept changing (or the dir failed): never leave the session undecided; wait and
+			// let the keeper re-acquire on its next tick.
+			ctx?.ui?.notify?.(
+				`Terminal lease not acquired yet, retrying: ${error instanceof Error ? error.message : String(error)}`,
+				"warning",
+			);
+			wait(null);
+			return;
+		}
 		if (lease.acquired) {
 			state.restoreInFlight = own(lease);
 			return;
