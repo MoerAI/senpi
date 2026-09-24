@@ -2,7 +2,7 @@
 
 ### What changed
 
-- `packages/ai/scripts/generate-models.ts`: `applyOpenAIExplicitPromptCacheMetadata` also sets `compat.supportsAllowedTools: true` on provider `openai` / api `openai-responses` rows with `cost.cacheWrite > 0` (the GPT-5.6+ family). Regenerated `packages/ai/src/providers/data/` with `--strict`.
+- `packages/ai/scripts/generate-models.ts`: `applyOpenAIExplicitPromptCacheMetadata` also sets `compat.supportsAllowedTools: true` on provider `openai` / api `openai-responses` rows with `cost.cacheWrite > 0` (the GPT-5.6+ family). Regenerated `packages/ai/src/providers/data/` with `--strict`: `openai.json` gains only the flag on the 12 GPT-5.6 / GPT-6 rows (base + `-fast`); `.manifest.json` follows. Incidental upstream drift: four OpenRouter pricing/context refreshes in `openrouter.json` (deepseek-v4-flash, kimi-k2.7-code, qwen3-30b-a3b-instruct-2507). No model id was added or removed.
 
 ### Why
 
