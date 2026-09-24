@@ -1061,9 +1061,11 @@ function buildParams(
 		messages,
 		stream: true,
 		prompt_cache_key:
-			(model.baseUrl.includes("api.openai.com") && cacheRetention !== "none") ||
-			(cacheRetention === "long" && compat.supportsLongCacheRetention) ||
-			(compat.supportsPromptCacheKey && cacheRetention !== "none")
+			cacheRetention !== "none" &&
+			!(model.baseUrl.includes("api.openai.com") && model.cost.cacheWrite > 0) &&
+			(model.baseUrl.includes("api.openai.com") ||
+				(cacheRetention === "long" && compat.supportsLongCacheRetention) ||
+				compat.supportsPromptCacheKey)
 				? clampOpenAIPromptCacheKey(options?.sessionId)
 				: undefined,
 		prompt_cache_retention: cacheRetention === "long" && compat.supportsLongCacheRetention ? "24h" : undefined,

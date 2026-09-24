@@ -311,6 +311,35 @@ describe("openai-completions prompt caching", () => {
 		expect(headers["x-session-affinity"]).toBeUndefined();
 	});
 
+	// senpi#2097: GPT-5.6+ on api.openai.com must not send a per-session prompt_cache_key.
+	it("omits prompt_cache_key for gpt-6-luna on api.openai.com", async () => {
+		const luna = getModel("openai", "gpt-6-luna");
+		const model = createModel({
+			id: luna.id,
+			provider: luna.provider,
+			baseUrl: luna.baseUrl,
+			cost: luna.cost,
+		});
+
+		const { payload } = await captureRequest({ sessionId: "session-2097" }, model);
+
+		expect(payload?.prompt_cache_key).toBeUndefined();
+	});
+
+	it("sets prompt_cache_key for gpt-5.5 on api.openai.com", async () => {
+		const gpt55 = getModel("openai", "gpt-5.5");
+		const model = createModel({
+			id: gpt55.id,
+			provider: gpt55.provider,
+			baseUrl: gpt55.baseUrl,
+			cost: gpt55.cost,
+		});
+
+		const { payload } = await captureRequest({ sessionId: "session-2097" }, model);
+
+		expect(payload?.prompt_cache_key).toBe("session-2097");
+	});
+
 	it("lets explicit headers override generated session-affinity headers", async () => {
 		const model = createModel({
 			baseUrl: "https://proxy.example.com/v1",
