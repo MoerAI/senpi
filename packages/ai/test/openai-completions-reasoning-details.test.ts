@@ -113,6 +113,36 @@ function withoutStreamingIndex<T extends Record<string, unknown>>(details: reado
 	return details.map(({ index: _index, ...rest }) => rest);
 }
 
+function storedAssistantMessage(content: AssistantMessage["content"]): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: "openai-completions",
+		provider: "openrouter",
+		model: "google/gemini-test",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
+
+function replayStoredThinking(signature: string): Promise<AssistantMessage> {
+	mockState.chunkSets = [[chunk({ content: "ok" }), chunk({}, "stop")]];
+	return runOpenAICompletionsStream([
+		storedAssistantMessage([
+			{ type: "thinking", thinking: "stored thinking", thinkingSignature: signature },
+			{ type: "toolCall", id: "call_stored", name: "read", arguments: { path: "README.md" } },
+		]),
+	]);
+}
+
 describe("openai-completions reasoning_details streaming", () => {
 	beforeEach(() => {
 		mockState.chunkSets = [];
@@ -395,5 +425,89 @@ describe("openai-completions reasoning_details streaming", () => {
 			},
 		]);
 		expect(JSON.stringify(replayed)).not.toContain('"index"');
+	});
+
+	// senpi#2125: the defect class behind #2122 is not the name `index`. A stored entry is an
+	// open record, so any key a provider streams — or a future build persists — is echoed back
+	// to the provider. The replay must be BUILT from the input schema, not filtered by name.
+	it("replays only the fields the input schema defines, dropping unknown keys", async () => {
+		const storedSignature = JSON.stringify([
+			{
+				type: "reasoning.text",
+				text: "Plan the edit before touching the file.",
+				signature: "sha256:stored-text",
+				id: "reasoning-1",
+				format: "anthropic-claude-v1",
+				index: 0,
+				chunk_ordinal: 7,
+				delta_id: "delta-abc",
+			},
+			{
+				type: "reasoning.summary",
+				summary: "Edited the file.",
+				id: "reasoning-2",
+				index: 1,
+				streaming_state: { open: false },
+			},
+		]);
+
+		await replayStoredThinking(storedSignature);
+
+		const replayed = getAssistantPayload(mockState.payloads[0])?.reasoning_details;
+		expect(replayed).toEqual([
+			{
+				type: "reasoning.text",
+				id: "reasoning-1",
+				format: "anthropic-claude-v1",
+				text: "Plan the edit before touching the file.",
+				signature: "sha256:stored-text",
+			},
+			{ type: "reasoning.summary", id: "reasoning-2", summary: "Edited the file." },
+		]);
+		const serialized = JSON.stringify(replayed);
+		for (const key of ['"index"', '"chunk_ordinal"', '"delta_id"', '"streaming_state"']) {
+			expect(serialized, key).not.toContain(key);
+		}
+	});
+
+	it("projects all three detail types and keeps the nulls the schema allows", async () => {
+		const storedSignature = JSON.stringify([
+			{ type: "reasoning.text", text: "Unsigned thought.", signature: null, id: null, index: 0 },
+			{ type: "reasoning.encrypted", id: "reasoning-enc", data: "opaque-blob", index: 1 },
+			{ type: "reasoning.summary", summary: "Done.", format: "openai-responses-v1", index: 2 },
+		]);
+
+		await replayStoredThinking(storedSignature);
+
+		expect(getAssistantPayload(mockState.payloads[0])?.reasoning_details).toEqual([
+			{ type: "reasoning.text", id: null, text: "Unsigned thought.", signature: null },
+			{ type: "reasoning.encrypted", id: "reasoning-enc", data: "opaque-blob" },
+			{ type: "reasoning.summary", format: "openai-responses-v1", summary: "Done." },
+		]);
+	});
+
+	it("projects the legacy encrypted detail replayed from a tool call signature", async () => {
+		mockState.chunkSets = [[chunk({ content: "ok" }), chunk({}, "stop")]];
+		const legacyToolCallMessage = storedAssistantMessage([
+			{
+				type: "toolCall",
+				id: "call_legacy",
+				name: "read",
+				arguments: { path: "README.md" },
+				thoughtSignature: JSON.stringify({
+					type: "reasoning.encrypted",
+					id: "legacy-1",
+					data: "legacy-encrypted-blob",
+					index: 0,
+					chunk_ordinal: 3,
+				}),
+			},
+		]);
+
+		await runOpenAICompletionsStream([legacyToolCallMessage]);
+
+		const replayed = getAssistantPayload(mockState.payloads[0])?.reasoning_details;
+		expect(replayed).toEqual([{ type: "reasoning.encrypted", id: "legacy-1", data: "legacy-encrypted-blob" }]);
+		expect(JSON.stringify(replayed)).not.toContain('"chunk_ordinal"');
 	});
 });

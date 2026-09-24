@@ -1,3 +1,21 @@
+## 2026-09-24 - Build replayed reasoning_details from the input schema (senpi#2125)
+
+### What changed
+
+- `packages/ai/src/api/openai-completions.ts`: `stripStreamingIndex` is replaced by `toReplayableReasoningDetail` / `toReplayableReasoningDetails`, which CONSTRUCT each replayed entry instead of copying the stored one. An entry carries `type`, `id` and `format` when present, and exactly the payload its type defines: `reasoning.text` -> `text` plus optional `signature`, `reasoning.summary` -> `summary`, `reasoning.encrypted` -> `data`. `null` is preserved where the schema allows it (`id`, `signature`) because the provider sent it. The switch is exhaustive over the same union `isOpenAIReasoningDetail` validates, so a new detail type or payload field fails to compile until both sides agree. The call site at `assistantMsg.reasoning_details` is the only consumer, so both replay sources — the signed array parsed from a thinking block's `thinkingSignature` and the legacy encrypted detail parsed from a tool call's `thoughtSignature` — are projected. Stream assembly, `fillMissingCommonReasoningDetailFields`, and the persisted `thinkingSignature` are unchanged.
+
+### Why
+
+- A parsed detail is an open record (`OpenAIReasoningDetailBase` extends `Record<string, JsonValue>`) and `isOpenAIReasoningDetail` only type-checks the fields it knows, so every other key survived into the request. senpi#2122 removed one such key, `index`, by name; any other output-only key reproduces the same permanently-wedged conversation, because a gateway that validates its input reasoning schema rejects the request and the offending key lives in stored history. Constructing the entry makes every unknown key absent by construction rather than by name, which is how `assistantMsg.tool_calls` in the same function has always been built (`{ id, type, function: { name, arguments } }`) — the reasoning replay was the one path that echoed a stored object.
+
+### Why an extension could not handle it
+
+- The projection runs inside `convertMessages` while the adapter builds the Chat Completions request; `onPayload` sees the finished body and would have to re-derive the reasoning-detail conversion to repair it.
+
+### Expected merge conflict zones
+
+- LOW: the helper beside `appendOpenAIReasoningDetail` and the single `assistantMsg.reasoning_details` assignment in `convertMessages` (`openai-completions.ts`).
+
 ## 2026-09-24 - Replay reasoning_details without the streaming index (senpi#2122)
 
 ### What changed
