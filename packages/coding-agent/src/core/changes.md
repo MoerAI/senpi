@@ -1,3 +1,23 @@
+## 2026-09-25 - `todo.turnEndBackstop` setting (senpi#2121)
+
+### What changed
+
+- `packages/coding-agent/src/core/settings-shapes.ts`: `TodoSettings.turnEndBackstop`, default `true`.
+- `packages/coding-agent/src/core/settings-manager.ts`: `getTodoTurnEndBackstop()`, which returns the merged value and falls back to `true` for a missing or non-boolean value.
+- `packages/coding-agent/docs/settings.md`: a `todo.turnEndBackstop` row in the Todo section.
+
+### Why
+
+The goal builtin's turn-end backstop (`builtin/goal/todo-owed-backstop.ts`) needs a user switch to silence the hidden nudge for sessions that want unattended turns to end without it.
+
+### Why an extension could not handle it
+
+Settings shapes and their resolved defaults live in the settings manager; the goal builtin reads the resolved value through `SettingsManager` the way todotools reads `todo.firstTurnPlan`.
+
+### Expected merge conflict zones
+
+- LOW: the `TodoSettings` interface in `settings-shapes.ts`; the getter block next to `getTodoFirstTurnPlan()` in `settings-manager.ts`; the Todo table in `docs/settings.md`.
+
 ## 2026-09-25 - `todo.firstTurnPlan` setting (senpi#2121)
 
 ### What changed

@@ -19,6 +19,7 @@ import { accountGoalUsage, readGoal, updateGoal } from "./store.ts";
 import { GOAL_STORE_CHANGED_EVENT, isGoalStoreChangedEvent } from "./store-changed-event.ts";
 import { goalStoreRef as buildGoalStoreRef } from "./store-ref.ts";
 import { staleGoalTodoReminder, todoResultAddsOpenTasks } from "./todo-gate.ts";
+import { TodoOwedBackstop } from "./todo-owed-backstop.ts";
 import { registerGoalTools } from "./tool-registration.ts";
 import { TurnUsageTracker } from "./turn-usage.ts";
 import type { Goal, GoalAccountingMode, GoalStoreRef } from "./types.ts";
@@ -56,12 +57,14 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		},
 		goalWaitTicker,
 	);
+	const todoOwedBackstop = new TodoOwedBackstop(pi);
 	const directInputLifecycle = new GoalDirectInputLifecycle({
 		monitor: monitorContinuation,
 		goalStoreRef,
 		beginAgentGoalAccounting,
 		refreshGoalUi: refreshGoalUiBestEffort,
 		resumeAfterSuppressedLoad: (resumeCtx, goal) => queueGoalContinuationForCurrentSession(pi, resumeCtx, goal),
+		onAcceptedDirectInput: () => todoOwedBackstop.resetChain(),
 	});
 
 	const goalTicker = new GoalElapsedTicker({
@@ -125,6 +128,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		activeContext = ctx;
 		monitorContinuation.start(ctx);
 		directInputLifecycle.reset();
+		todoOwedBackstop.resetChain();
 		const ref = goalStoreRef(ctx);
 		await migrateLegacyGoalFile(ref);
 		const goal = await readGoal(goalStoreRef(ctx));
@@ -168,6 +172,10 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				await queueGoalContinuationForCurrentSession(pi, ctx, goal);
 			}
 		}
+	});
+
+	pi.on("session_tree", async () => {
+		todoOwedBackstop.resetChain();
 	});
 
 	pi.on("input", async (event, ctx) => {
@@ -251,6 +259,13 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			goal = continuationGoal;
 			syncContinuationGoal(ctx, goal);
 		}
+		todoOwedBackstop.afterAgentEnd({
+			ctx,
+			event,
+			goal,
+			continuationPending,
+			hasActiveWakeSources: monitorContinuation.hasActiveWakeSources(),
+		});
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
