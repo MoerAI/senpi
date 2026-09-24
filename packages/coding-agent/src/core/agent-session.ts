@@ -41,6 +41,7 @@ import {
 	contentText,
 	providerNotConfiguredMessage,
 	SERVER_FALLBACK_ABORTED_DIAGNOSTIC,
+	supportsConfigurationUpdate,
 	type ThinkingSelection,
 } from "@earendil-works/pi-ai";
 import type {
@@ -5226,7 +5227,7 @@ export class AgentSession {
 		const previousReasoningBaseline = this.agent.state.reasoningBaseline;
 		const previousAbortServerSideFallback = this.agent.abortServerSideFallback;
 		this.agent.state.model = model;
-		if (!(model.id === "gpt-6-astra" && (model.provider === "openai" || model.provider === "chatgpt-subscription"))) {
+		if (!supportsConfigurationUpdate(model)) {
 			this.agent.state.reasoningBaseline = undefined;
 		}
 		const scopedMatch = this._scopedModels.find((sm) => modelsAreEqual(sm.model, model));
@@ -5541,11 +5542,7 @@ export class AgentSession {
 		if (isChanging || selectionChanged) {
 			this.sessionManager.appendThinkingLevelChange(effectiveLevel, effectiveSelection);
 			const model = this.model;
-			if (
-				isChanging &&
-				model?.id === "gpt-6-astra" &&
-				(model.provider === "openai" || model.provider === "chatgpt-subscription")
-			) {
+			if (isChanging && model !== undefined && supportsConfigurationUpdate(model)) {
 				this.agent.state.reasoningBaseline ??= previousLevel;
 				this.sessionManager.appendConfigurationUpdate(effectiveLevel);
 				this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
@@ -6334,8 +6331,8 @@ export class AgentSession {
 			const modelAfterCompaction = this.model;
 			if (
 				latestConfigurationEffort !== undefined &&
-				modelAfterCompaction?.id === "gpt-6-astra" &&
-				(modelAfterCompaction.provider === "openai" || modelAfterCompaction.provider === "chatgpt-subscription")
+				modelAfterCompaction !== undefined &&
+				supportsConfigurationUpdate(modelAfterCompaction)
 			) {
 				this.sessionManager.appendConfigurationUpdate(latestConfigurationEffort);
 			}

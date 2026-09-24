@@ -1,3 +1,22 @@
+## 2026-09-24 - configuration_update follows a catalog capability flag (senpi#2094)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: the three `gpt-6-astra` + `openai`/`chatgpt-subscription` checks read `supportsConfigurationUpdate(model)` from `@earendil-works/pi-ai` instead: the model-switch reset of `reasoningBaseline`, the thinking-level change that appends a `configuration_update` entry, and the post-compaction re-append of the latest effort.
+- `packages/coding-agent/test/suite/regressions/issue-2094-configuration-update-capability.test.ts`: faux-provider coverage of all three paths for a flagged and an unflagged model.
+
+### Why
+
+Every model the catalog flags keeps its prompt cache across thinking-level changes; before this only gpt-6-astra did, and every other GPT-5.6/GPT-6 row re-sent the whole prefix uncached after an effort change.
+
+### Why an extension could not handle it
+
+The session entry stream, `reasoningBaseline`, and the compaction commit are owned by `AgentSession`; no extension hook can append a session entry inside `setThinkingLevel` or between the compaction entry and the rebuilt context.
+
+### Expected merge conflict zones
+
+- LOW: the `@earendil-works/pi-ai` value import block, the `reasoningBaseline` reset in the model-switch path, the `appendConfigurationUpdate` block in `setThinkingLevel`, and the `latestConfigurationEffort` re-append after `appendCompaction`.
+
 ## 2026-09-23 - Streaming tool-call events name the tool a call resolves to (senpi#2068)
 
 ### What changed
