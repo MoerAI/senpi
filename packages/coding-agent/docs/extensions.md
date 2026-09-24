@@ -690,6 +690,8 @@ The `systemPromptOptions` field gives extensions access to the same structured d
 
 Inside `before_agent_start`, `event.systemPrompt` and `ctx.getSystemPrompt()` both reflect the chained system prompt as of the current handler. Later `before_agent_start` handlers can still modify it again.
 
+`event.preview` is `true` when senpi composes the next turn's system prompt before any user prompt exists: the session-start prompt-cache prewarm sends the first turn's prefix ahead of time, and `ctx.getPromptCachePrefixRequest()` returns that prefix to extensions. In a preview `event.prompt` is empty and no turn follows. Return the same `systemPrompt` a real turn would get, and skip anything that consumes one-shot state, starts work, or changes the session (the builtin `compaction` and `hooks` handlers return early).
+
 #### agent_start / agent_end / agent_settled
 
 `agent_start` fires when a low-level agent run begins. `agent_end` fires when that run ends, but senpi may still auto-retry, auto-compact and retry, or continue with queued follow-up messages. Use `agent_settled` for status integrations that need to know senpi will not continue running automatically.

@@ -458,6 +458,7 @@ export class ExtensionRunner {
 		runtimeHookSourcePaths: [],
 	});
 	private getSystemPromptOptionsFn: () => BuildSystemPromptOptions = () => ({ cwd: this.cwd });
+	private getPromptCachePrefixRequestFn: ExtensionContextActions["getPromptCachePrefixRequest"] = undefined;
 	private getAgentDirFn: () => string = () => getAgentDir();
 	private newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
 	private forkHandler: ForkHandler = async () => ({ cancelled: false });
@@ -559,6 +560,7 @@ export class ExtensionRunner {
 		this.getLoadedHookSourcesFn = contextActions.getLoadedHookSources;
 		if (contextActions.getAgentDir) this.getAgentDirFn = contextActions.getAgentDir;
 		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
+		this.getPromptCachePrefixRequestFn = contextActions.getPromptCachePrefixRequest;
 
 		for (const extension of this.extensions) {
 			for (const [name, hint] of extension.removedToolHints ?? []) {
@@ -1252,6 +1254,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.prepareProviderRequest(messages, excludeBeforeProviderRequestExtensionPath);
 			},
+			getPromptCachePrefixRequest: async () => {
+				runner.assertActive();
+				return await runner.getPromptCachePrefixRequestFn?.();
+			},
 			beginCompaction: (options) => {
 				runner.assertActive();
 				compactionSignal = runner.beginCompactionFn?.(options);
@@ -1838,6 +1844,7 @@ export class ExtensionRunner {
 		images: ImageContent[] | undefined,
 		systemPrompt: string,
 		systemPromptOptions: BuildSystemPromptOptions,
+		options: { readonly preview?: boolean } = {},
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
 		let currentSystemPrompt = systemPrompt;
 		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
@@ -1865,6 +1872,7 @@ export class ExtensionRunner {
 						images,
 						systemPrompt: currentSystemPrompt,
 						systemPromptOptions,
+						...(options.preview === true ? { preview: true } : {}),
 					};
 					const handlerResult = await handler(event, ctx);
 

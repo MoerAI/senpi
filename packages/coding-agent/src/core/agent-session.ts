@@ -141,6 +141,7 @@ import { areExperimentalFeaturesEnabled } from "./experimental.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./extensions/builtin/anthropic-subscription/account-management.ts";
+import { getPromptCachePrewarmUsage } from "./extensions/builtin/cache-keepalive/prewarm-entry.ts";
 import {
 	type ModelUsabilityAdmission,
 	ModelUsabilityBudgetError,
@@ -224,6 +225,7 @@ import { ModelRegistry } from "./model-registry.ts";
 import { type AvailableModelsSource, getModelNarrowingPatterns, resolveModelScope } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { PROMPT_CACHE_SAFE_WAIT_ENV, resolvePromptCacheSafeWaitSeconds } from "./prompt-cache-budget.ts";
+import { buildPromptCachePrefixRequest } from "./prompt-cache-prefix-request.ts";
 import { expandPromptTemplateWithMetadata, type PromptTemplate } from "./prompt-templates.ts";
 import { createProviderTimeoutRetryPlan, runBoundedRetryContinuation } from "./provider-timeout-retry.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
@@ -1051,6 +1053,9 @@ export class AgentSession {
 	private _excludedToolNames?: Set<string>;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
+	// Settles once session_start handlers, default-tool enforcement, and resource discovery
+	// (which rebuilds the base prompt with discovered skills) have run.
+	private _sessionStartSettled: Promise<void> = Promise.resolve();
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
@@ -7460,6 +7465,7 @@ export class AgentSession {
 
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
 		const finishBindingWork = this._sessionWorkBarrier.begin();
+		const settleSessionStart = this._beginSessionStartSettlement();
 		const bindingPromptReadiness = new Set<Promise<void>>();
 		this._extensionBindingPromptReadiness = bindingPromptReadiness;
 		try {
@@ -7492,8 +7498,17 @@ export class AgentSession {
 				this._extensionBindingPromptReadiness = undefined;
 			}
 			finishBindingWork();
+			void Promise.allSettled(bindingPromptReadiness).then(settleSessionStart);
 		}
 		await Promise.all(bindingPromptReadiness);
+	}
+
+	private _beginSessionStartSettlement(): () => void {
+		let settle!: () => void;
+		this._sessionStartSettled = new Promise<void>((resolve) => {
+			settle = resolve;
+		});
+		return settle;
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
@@ -7825,6 +7840,17 @@ export class AgentSession {
 						runtimeHookSourcePaths: [],
 					},
 				getSystemPromptOptions: () => this._baseSystemPromptOptions,
+				getPromptCachePrefixRequest: async () => {
+					await this._sessionStartSettled;
+					return await buildPromptCachePrefixRequest({
+						agent: this.agent,
+						runner: this._extensionRunner,
+						modelRuntime: this._modelRuntime,
+						getServiceTier: () => this.effectiveServiceTier,
+						getBaseSystemPrompt: () => this._baseSystemPrompt,
+						getBaseSystemPromptOptions: () => this._baseSystemPromptOptions,
+					});
+				},
 			},
 			{
 				registerProvider: (name, config) => {
@@ -8156,13 +8182,18 @@ export class AgentSession {
 			this._extensionShutdownHandler ||
 			this._extensionErrorListener;
 		if (hasBindings) {
-			await options?.beforeSessionStart?.();
-			this.syncPromptCacheSafeWaitEnv();
-			await this._extensionRunner.emit({
-				type: "session_start",
-				reason: "reload",
-			});
-			await this.extendResourcesFromExtensions("reload");
+			const settleSessionStart = this._beginSessionStartSettlement();
+			try {
+				await options?.beforeSessionStart?.();
+				this.syncPromptCacheSafeWaitEnv();
+				await this._extensionRunner.emit({
+					type: "session_start",
+					reason: "reload",
+				});
+				await this.extendResourcesFromExtensions("reload");
+			} finally {
+				settleSessionStart();
+			}
 		}
 		time("lifecycle", "reload");
 		return { cancelled: false };
@@ -9470,6 +9501,8 @@ export class AgentSession {
 			if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
 				addUsageToTotals(usageTotals, entry.usage);
 			}
+			const prewarmUsage = getPromptCachePrewarmUsage(entry);
+			if (prewarmUsage) addUsageToTotals(usageTotals, prewarmUsage);
 			if (entry.type !== "message") continue;
 			totalMessages++;
 			const message = entry.message;

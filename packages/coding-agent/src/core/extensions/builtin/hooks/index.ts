@@ -209,6 +209,8 @@ export default function hooksExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", async (event) => {
+		// UserPromptSubmit context belongs to the prompt that queued it, never to a preview.
+		if (event.preview === true) return undefined;
 		const pending = pendingPromptContexts.shift();
 		if (pending === undefined) return undefined;
 

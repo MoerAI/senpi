@@ -1,5 +1,30 @@
 # Core Extensions Changes
 
+## 2026-09-24 - before_agent_start preview pass and the prompt-cache prefix request (senpi#2096)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/types.ts`: `BeforeAgentStartEvent` gains optional `preview?: boolean`; new `PromptCachePrefixRequest` (`model`, `context`, `options`); `ExtensionContext.getPromptCachePrefixRequest?()` and `ExtensionContextActions.getPromptCachePrefixRequest?`.
+- `packages/coding-agent/src/core/extensions/runner.ts`: `emitBeforeAgentStart` takes an optional fifth `{ preview }` argument and sets `event.preview: true` when it is set; the bound `getPromptCachePrefixRequest` action is exposed on every handler context.
+- Fork-only builtins: `builtin/compaction/index.ts` and `builtin/hooks/index.ts` return early from `before_agent_start` on a preview, so it runs no compaction, reminder, or restoration and does not consume a queued UserPromptSubmit context.
+
+### Why
+
+The session-start OpenAI prompt-cache prewarm must send the first turn's exact prefix, and that turn's system prompt is only known after `before_agent_start`. The preview pass runs the same handlers with an empty prompt so the prewarm gets the same system prompt without a turn.
+
+### Why an extension could not handle it
+
+Only the host can run the `before_agent_start` chain, and only the host knows the tools, loop options, and provider preparation the next turn uses.
+
+### Extension impact
+
+- Additive: `preview` is absent on every real turn. Handlers with one-shot side effects should return early when `event.preview` is `true`; handlers that only compute a system prompt need no change.
+
+### Expected merge conflict zones
+
+- LOW: the end of `BeforeAgentStartEvent`, the `prepareProviderRequest` neighbourhood of `ExtensionContext`, `ProviderRequestPreparation`'s neighbourhood, and the end of `ExtensionContextActions` in `types.ts`.
+- LOW: the `getSystemPromptOptionsFn` field and its `bindCore` assignment, the `prepareProviderRequest` context entry, and the `emitBeforeAgentStart` signature/event literal in `runner.ts`.
+
 ## 2026-09-23 - Entry renderers can replace the card directly before them (senpi#2051)
 
 ### What changed

@@ -832,6 +832,8 @@ export default function compactionExtension(
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
+		// A preview composes a prompt no turn follows: no compaction, reminder, or restoration.
+		if (event.preview === true) return undefined;
 		sessionIdleSinceAgentEnd = false;
 		cancelIdleWarmupRetry();
 		const message = checkpointState.attachRestorationDirective(

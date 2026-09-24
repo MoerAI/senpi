@@ -546,6 +546,13 @@ export interface ExtensionContext {
 	 * boundary. Persisted session messages are never modified.
 	 */
 	prepareProviderRequest?(messages: AgentMessage[]): Promise<ProviderRequestPreparation>;
+	/**
+	 * The provider request prefix the next user turn will send, with an empty conversation:
+	 * the system prompt composed through a `before_agent_start` preview pass, the session's
+	 * tools in request order, and the request options (auth, reasoning, service tier, payload
+	 * hooks) resolved the way the turn resolves them. `undefined` when no model is selected.
+	 */
+	getPromptCachePrefixRequest?(): Promise<PromptCachePrefixRequest | undefined>;
 	/** Start user-visible compaction feedback before an extension has a precomputed summary to apply. */
 	beginCompaction?(options: BeginCompactionOptions): AbortSignal | undefined;
 	/** Stream user-visible compaction content while an extension-generated summary is available. */
@@ -577,6 +584,13 @@ export interface ExtensionContext {
 	 * after the handler finished are ignored.
 	 */
 	updateToolHookStatus?(statusMessage: string): void;
+}
+
+/** Provider request prefix of the next user turn (see `ExtensionContext.getPromptCachePrefixRequest`). */
+export interface PromptCachePrefixRequest {
+	readonly model: Model<Api>;
+	readonly context: Context;
+	readonly options: SimpleStreamOptions;
 }
 
 /** Request-local transformations shared by normal and compaction provider calls. */
@@ -1157,6 +1171,13 @@ export interface BeforeAgentStartEvent {
 	systemPrompt: string;
 	/** Structured options used to build the system prompt. Extensions can inspect this to understand what Pi loaded without re-discovering resources. */
 	systemPromptOptions: BuildSystemPromptOptions;
+	/**
+	 * `true` when the host composes the next turn's system prompt ahead of any user prompt
+	 * (the session-start prompt-cache prewarm). `prompt` is empty and no turn follows, so a
+	 * handler must return the system prompt it would return for a real turn but must not
+	 * consume one-shot state, start work, or change session state.
+	 */
+	preview?: boolean;
 }
 
 /** Fired when an agent loop starts */
@@ -2509,6 +2530,7 @@ export interface ExtensionContextActions {
 	getSystemPrompt: () => string;
 	getLoadedHookSources: () => LoadedHookSources;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
+	getPromptCachePrefixRequest?: () => Promise<PromptCachePrefixRequest | undefined>;
 }
 
 export interface LoadedHookSources {
