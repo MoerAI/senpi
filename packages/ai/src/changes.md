@@ -1,3 +1,23 @@
+## 2026-09-24 - Fold adjacent same-role messages for Bedrock Converse and Gemini (senpi#2114)
+
+### What changed
+
+- `packages/ai/src/api/bedrock-converse-stream.ts`: `convertMessages` pushes every Converse message through the new `appendMessage`, which appends the content blocks of a message whose role matches the previous wire message to that message instead of opening a new one. Adjacent user messages (text and image blocks) and a user prompt that follows the merged tool-result user message become one user message, blocks in order. The cache point is still appended after the loop, so it lands at the end of the merged last user message.
+- `packages/ai/src/api/google-shared.ts`: `convertMessages` pushes every `Content` through the new `appendContent` with the same rule. It replaces the Cloud Code Assist special case that merged only a function response into a previous function-response turn, and the Gemini < 3 "Tool result image:" parts now join the tool-result user turn instead of opening an adjacent one (which had also split the function responses of one model turn across two user turns). `google-generative-ai.ts` and `google-vertex.ts` use this converter and are unchanged.
+
+### Why
+
+- Since senpi#2106 the coding agent sends a hidden environment-context user message right before the prompt, so a first turn carries two adjacent user messages. Bedrock Converse rejects a conversation whose roles do not alternate ("A conversation must alternate between user and assistant roles"), and Gemini expects `contents` to alternate between user and model (the `@google/genai` Chat history contract; generateContent answers 400 "Please ensure that multiturn requests alternate between user and model").
+- Audited and left unchanged because their providers accept adjacent same-role messages: `mistral-conversations.ts` (mistral-common `_validate_message_order` allows user after user and user after tool), `anthropic-messages.ts` (the Messages API combines consecutive same-role turns), and the OpenAI Chat Completions / Responses adapters.
+
+### Why an extension could not handle it
+
+- The Converse and Gemini wire messages are built inside the adapters' `convertMessages`; `onPayload` sees the finished request, and rewriting role sequences there would duplicate each adapter's block conversion and cache-point placement.
+
+### Expected merge conflict zones
+
+- MEDIUM: `convertMessages` in `bedrock-converse-stream.ts` (the three `result.push` sites for user, assistant, and tool-result messages) and in `google-shared.ts` (the user, model, and function-response push sites plus the removed Cloud Code Assist merge block).
+
 ## 2026-09-24 - Shared lenient tool-name matcher (senpi#2111)
 
 ### What changed
