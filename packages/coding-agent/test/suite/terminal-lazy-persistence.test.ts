@@ -178,7 +178,12 @@ describe("terminal persistence is lazy and survives a reload", () => {
 		expect(existsSync(dir)).toBe(true);
 		const stateRoot = join(stateDir, "state");
 		const removed = new Promise<boolean>((resolve) => {
-			const done = () => resolve(true);
+			// Bounded: without the removal this settles false and the test fails on the value.
+			const bound = setTimeout(() => resolve(false), 10_000);
+			const done = () => {
+				clearTimeout(bound);
+				resolve(true);
+			};
 			const watcher = watch(stateRoot, () => {
 				if (existsSync(dir)) return;
 				watcher.close();

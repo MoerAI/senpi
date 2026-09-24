@@ -332,6 +332,15 @@ await new Promise((resolve) => setTimeout(resolve, 3000));`;
 		expect(digests(generation)).toHaveLength(1);
 	});
 
+	it("(g2) an unreadable manifest is left exactly as it was (fail closed)", async () => {
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(manifestPath(), "{not a manifest");
+		const generation = await start("resume");
+		await whenRestoreDecided(sessionId);
+		expect(detailsOf(digests(generation)[0]).outcome).toBe("corrupt");
+		expect(readFileSync(manifestPath(), "utf8")).toBe("{not a manifest");
+	});
+
 	it("(g) a print-mode start restores nothing and takes no lease", async () => {
 		writeManifest([persistedWatch("mon_PRINTMODE000001", "cat")]);
 		const generation = await start("startup", { mode: "print" });

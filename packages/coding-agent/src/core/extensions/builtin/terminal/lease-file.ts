@@ -1,16 +1,15 @@
 /**
- * File-level primitives for the terminal lease. A lease file is never visible half-written: it is
- * written to a private temp file first and then published with `link` (exclusive: fails with
- * EEXIST when a lease exists) or `rename` (replace). Reclaiming a stale lease happens under an
- * exclusive `<lease>.lock`, and only removes the file when it still holds exactly the record that
- * was judged stale, so a fresh lease another process just published is never deleted.
+ * File-level primitives for the terminal lease. On a filesystem with hard links a lease file is
+ * never visible half-written: it is written to a private temp file first and then published with
+ * `link` (exclusive: fails with EEXIST when a lease exists) or `rename` (replace). Every removal of
+ * a lease, by an acquire or by the GC, goes through `reclaimInspected`: under an exclusive
+ * `<lease>.lock`, and only while the file still holds exactly the record that was judged stale, so
+ * a fresh lease another process just published is never deleted. A lock is broken only when the
+ * process that holds it is gone, never by age.
  */
 
 import { randomUUID } from "node:crypto";
-import { link, open, readFile, rename, stat, unlink } from "node:fs/promises";
-
-/** A reclaim holds the lock for a few file operations; a lock older than this was left by a crash. */
-export const RECLAIM_LOCK_STALE_MS = 10_000;
+import { link, open, readFile, rename, unlink } from "node:fs/promises";
 
 export function errorCode(error: unknown): string | undefined {
 	if (typeof error === "object" && error !== null && "code" in error && typeof error.code === "string") {
@@ -77,7 +76,29 @@ export async function publishReplace(path: string, content: string): Promise<voi
 	}
 }
 
-async function takeReclaimLock(lock: string, now: number): Promise<boolean> {
+function pidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return errorCode(error) === "EPERM";
+	}
+}
+
+/** True while the process that wrote this reclaim lock still runs; an unreadable lock counts as held. */
+export async function reclaimLockHeld(lock: string, isAlive: (pid: number) => boolean = pidAlive): Promise<boolean> {
+	const raw = await readLeaseText(lock);
+	if (raw === undefined) return false;
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed === "object" && parsed !== null && "pid" in parsed && typeof parsed.pid === "number") {
+			return isAlive(parsed.pid);
+		}
+	} catch {}
+	return true;
+}
+
+async function takeReclaimLock(lock: string, now: number, isAlive: (pid: number) => boolean): Promise<boolean> {
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
 			await publishExclusive(lock, JSON.stringify({ pid: process.pid, atMs: now }));
@@ -85,26 +106,28 @@ async function takeReclaimLock(lock: string, now: number): Promise<boolean> {
 		} catch (error) {
 			if (errorCode(error) !== "EEXIST") throw error;
 		}
-		const held = await stat(lock).catch((error: unknown) => {
-			if (errorCode(error) === "ENOENT") return undefined;
-			throw error;
-		});
-		if (held !== undefined && now - held.mtimeMs < RECLAIM_LOCK_STALE_MS) return false;
+		if (await reclaimLockHeld(lock, isAlive)) return false;
 		await unlinkIfPresent(lock);
 	}
 	return false;
 }
 
 /**
- * Remove the lease at `path` only if it still holds `inspected`. Returns false when another
- * process is reclaiming right now (the caller re-reads and decides again).
+ * Remove the lease at `path` only if it still holds `inspected`: `removed`, `changed` (another
+ * process replaced it meanwhile; left alone), or `busy` (another process is reclaiming right now).
  */
-export async function reclaimInspected(path: string, inspected: string, now: number): Promise<boolean> {
+export async function reclaimInspected(
+	path: string,
+	inspected: string,
+	now: number,
+	isAlive: (pid: number) => boolean = pidAlive,
+): Promise<"removed" | "changed" | "busy"> {
 	const lock = `${path}.lock`;
-	if (!(await takeReclaimLock(lock, now))) return false;
+	if (!(await takeReclaimLock(lock, now, isAlive))) return "busy";
 	try {
-		if ((await readLeaseText(path)) === inspected) await unlinkIfPresent(path);
-		return true;
+		if ((await readLeaseText(path)) !== inspected) return "changed";
+		await unlinkIfPresent(path);
+		return "removed";
 	} finally {
 		await unlinkIfPresent(lock);
 	}

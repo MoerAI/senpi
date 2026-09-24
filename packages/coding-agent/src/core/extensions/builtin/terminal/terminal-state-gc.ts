@@ -4,6 +4,7 @@
 
 import { readdir as defaultReaddir, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { reclaimInspected, reclaimLockHeld } from "./lease-file.ts";
 import { classifyLease, type LeaseSelfIdentity, readLeaseRecord } from "./manifest-lease.ts";
 import { readProcessStartMs as defaultReadProcessStartMs } from "./process-start-probe.ts";
 
@@ -18,6 +19,8 @@ async function unlinkIfPresent(path: string): Promise<void> {
 		if (!isEnoent(error)) throw error;
 	}
 }
+
+const ABANDONED_TEMP_MS = 30_000;
 
 export async function sweepTerminalStateDir(
 	dir: string,
@@ -42,22 +45,25 @@ export async function sweepTerminalStateDir(
 		if (options.keep.has(name)) continue;
 		const path = join(dir, name);
 		try {
-			// Reclaim lock and temp files left by a crash are stale once a few seconds old.
-			if (name.endsWith(".lock") || name.endsWith(".tmp") || name.endsWith(".reclaim")) {
+			// A reclaim lock goes only once its holder is gone; a temp file is published within
+			// milliseconds of being written, so one this old was abandoned by a crash.
+			if (name.endsWith(".lock")) {
+				if (!(await reclaimLockHeld(path, probes.isProcessAlive))) await unlinkIfPresent(path);
+				continue;
+			}
+			if (name.endsWith(".tmp") || name.endsWith(".reclaim")) {
 				const info = await stat(path).catch(() => undefined);
-				if (info !== undefined && Date.now() - info.mtimeMs > 30_000) await unlinkIfPresent(path);
+				if (info !== undefined && Date.now() - info.mtimeMs > ABANDONED_TEMP_MS) await unlinkIfPresent(path);
 				continue;
 			}
 			if (name.endsWith(".lease")) {
-				const record = readLeaseRecord(await readFile(path, "utf8"));
-				if (record === "unparseable") {
-					await unlinkIfPresent(path);
-					removedLeases += 1;
-					continue;
-				}
-				const verdict = await classifyLease(record, options.self, probes);
-				if (verdict === "dead" || verdict === "reused") {
-					await unlinkIfPresent(path);
+				const raw = await readFile(path, "utf8");
+				const record = readLeaseRecord(raw);
+				const verdict = record === "unparseable" ? "dead" : await classifyLease(record, options.self, probes);
+				// Removal goes through the same inspected-record reclaim as an acquire, so a lease
+				// another process published while this sweep was probing is never deleted.
+				const stale = verdict === "dead" || verdict === "reused";
+				if (stale && (await reclaimInspected(path, raw, Date.now(), probes.isProcessAlive)) === "removed") {
 					removedLeases += 1;
 				}
 			} else if (name.endsWith(".json")) {

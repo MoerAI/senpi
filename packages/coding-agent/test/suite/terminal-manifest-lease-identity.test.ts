@@ -48,6 +48,30 @@ function selfIdentity(pid = process.pid) {
 }
 
 describe("terminal lease identity (v2)", () => {
+	it("breaks a reclaim lock only when the process holding it is gone", async () => {
+		const dir = await tempDir();
+		const path = join(dir, "s.lease");
+		const stale = JSON.stringify(v2Record({ pid: 2_147_000_002, token: "dead-holder" }));
+		const acquire = () =>
+			acquireTerminalLease({
+				dir,
+				encodedSessionId: "s",
+				now: () => NOW,
+				self: selfIdentity(),
+				isProcessAlive: (pid: number) => pid !== 2_147_000_002,
+				readProcessStartMs: async () => NOW - 5_000,
+			});
+		// A live reclaimer (this very process) holds the lock: the stale lease must not be taken.
+		await writeFile(path, stale, "utf8");
+		await writeFile(`${path}.lock`, JSON.stringify({ pid: process.pid, atMs: NOW }), "utf8");
+		await expect(acquire()).resolves.toMatchObject({ acquired: false });
+		expect(await readFile(path, "utf8")).toBe(stale);
+		// The reclaimer died mid-reclaim: its lock is broken and the stale lease is reclaimed.
+		await writeFile(`${path}.lock`, JSON.stringify({ pid: 2_147_000_003, atMs: NOW }), "utf8");
+		await expect(acquire()).resolves.toMatchObject({ acquired: true });
+		expect(existsSync(`${path}.lock`)).toBe(false);
+	});
+
 	it("a slow reclaimer never deletes the fresh lease a faster one took from the same stale file", async () => {
 		const dir = await tempDir();
 		const path = join(dir, "s.lease");

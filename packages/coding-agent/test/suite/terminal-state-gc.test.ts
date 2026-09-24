@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -55,6 +55,50 @@ async function write(dir: string, name: string, body: string): Promise<void> {
 }
 
 describe("terminal state gc", () => {
+	it("never deletes a lease another process published while the sweep was probing the stale one", async () => {
+		const dir = await tempDir();
+		const name = "raced.lease";
+		await write(dir, name, JSON.stringify(v2(LIVE_PID, { processStartedAtMs: LIVE_START - 3_600_000 })));
+		const fresh = JSON.stringify(v2(444_444, { processStartedAtMs: NOW - 1_000 }));
+		const swept = await sweepTerminalStateDir(dir, {
+			self,
+			keep: new Set(),
+			isProcessAlive: () => true,
+			// The sweep judges the old record reused; while it probes, another process replaces it.
+			readProcessStartMs: async () => {
+				await writeFile(join(dir, name), fresh, "utf8");
+				return LIVE_START;
+			},
+		});
+		expect(await readFile(join(dir, name), "utf8")).toBe(fresh);
+		expect(swept.removedLeases).toBe(0);
+	});
+
+	it("keeps a reclaim lock whose holder is alive and removes one whose holder is gone", async () => {
+		const dir = await tempDir();
+		await write(dir, "held.lease.lock", JSON.stringify({ pid: LIVE_PID, atMs: 1 }));
+		await write(dir, "orphaned.lease.lock", JSON.stringify({ pid: DEAD_V1_PID, atMs: 1 }));
+		await sweepTerminalStateDir(dir, {
+			self,
+			keep: new Set(),
+			isProcessAlive: (pid) => pid === LIVE_PID,
+			readProcessStartMs: async () => LIVE_START,
+		});
+		expect(existsSync(join(dir, "held.lease.lock"))).toBe(true);
+		expect(existsSync(join(dir, "orphaned.lease.lock"))).toBe(false);
+	});
+
+	it("removes a temp file abandoned by a crash and keeps one that is being published", async () => {
+		const dir = await tempDir();
+		await write(dir, "s.lease.1.a.tmp", "{}");
+		await write(dir, "s.lease.2.b.tmp", "{}");
+		const old = new Date(Date.now() - 60_000);
+		await utimes(join(dir, "s.lease.1.a.tmp"), old, old);
+		await sweepTerminalStateDir(dir, { self, keep: new Set(), readProcessStartMs: async () => LIVE_START });
+		expect(existsSync(join(dir, "s.lease.1.a.tmp"))).toBe(false);
+		expect(existsSync(join(dir, "s.lease.2.b.tmp"))).toBe(true);
+	});
+
 	it("reclaims dead and empty files, keeps live/self/unparseable json, and bounds the scan", async () => {
 		const dir = await tempDir();
 		await write(dir, FILES.otherBoot, JSON.stringify(v2(DEAD_BOOT_PID, { bootAtMs: BOOT - 3_600_000 })));
