@@ -85,7 +85,10 @@ describe("regression #8724: in-memory fork during an active tool turn", () => {
 		await runtime.session.bindExtensions({});
 
 		expect(forkResult).toEqual({ cancelled: false, selectedText: "first prompt" });
-		expect(runtime.session.messages).toEqual([]);
+		// senpi#2093: the environment-context entry precedes the forked-at user message, so the fork keeps it.
+		expect(
+			runtime.session.messages.map((message) => (message.role === "custom" ? message.customType : message.role)),
+		).toEqual(["environment-context"]);
 		expect(runtime.session.sessionManager.getEntries().filter((entry) => entry.type === "message")).toEqual([]);
 
 		let capturedRoles: string[] = [];
@@ -97,6 +100,6 @@ describe("regression #8724: in-memory fork during an active tool turn", () => {
 		]);
 		await runtime.session.prompt("next prompt");
 
-		expect(capturedRoles).toEqual(["user"]);
+		expect(capturedRoles).toEqual(["user", "user"]);
 	});
 });
