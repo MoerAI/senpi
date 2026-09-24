@@ -9,11 +9,17 @@
 - The `websearch` builtin supports Kagi (`"provider": "kagi"`) and SERPdive (`"provider": "serpdive"`) search providers; both need an `apiKey`. Ported from pi-websearch 0.4.0. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
 - The `rules` builtin discovers rule files in `.pi/rules/` (project) and `~/.pi/rules/` (home), ahead of `.omo/rules/`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
 
+- Setting `TIMING=1` in the environment now prints per-phase switch timings in the "Resumed session" status line when `/resume` opens another session. ([#2087](https://github.com/code-yeongyu/senpi/issues/2087))
+
 ### Changed
 
 - Dynamic project rules reach the enclosing git repository root: reading a file inside a workspace member (a nested `package.json` or `Cargo.toml`) now also applies repository-level `.github/instructions` rules. Ported from pi-rules 0.2.0. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
 - Goal continuation prompts describe the objective as untrusted goal data instead of user-provided data, since the model may have written it with `create_goal`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
 - The vendored builtin manifest pins the 2026-09-24 pi-* extension releases and now also records `anthropic-web-search`, `openai-web-search` and `anthropic-bash`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+
+- The `/resume` picker filters sessions in 0.6 to 27 ms per keystroke on a 1,088-session directory, down from 75 to 235 ms. Search text (raw, case-folded, and whitespace-normalized) is computed once per session row at list time and reused across keystrokes; fuzzy matching runs over the pre-lowered form, and session tree path resolution happens once for the whole list. ([#2087](https://github.com/code-yeongyu/senpi/issues/2087))
+
+- The `/resume` picker writes a `.session-summaries.index` file in each sessions directory and reads summaries from it on the next launch instead of streaming every `.jsonl` file individually. On a 1,088-session / 2.46 GB directory, the picker opens in 0.6 to 2.0 s cold instead of 15 to 29 s. The index is append-only with last-write-wins deduplication per session file, compacted atomically when stored bytes exceed twice the live size or 256 MiB; a corrupt or version-mismatched index is silently deleted and rebuilt. The underlying session reader now uses a chunked 1 MiB buffer instead of `readline`, removing an 18x per-line overhead and a correctness gap where `readline` split records at U+2028/U+2029 Unicode line separators. ([#2087](https://github.com/code-yeongyu/senpi/issues/2087))
 
 ### Fixed
 
