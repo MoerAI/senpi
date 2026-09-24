@@ -550,9 +550,14 @@ export interface ExtensionContext {
 	 * The provider request prefix the next user turn will send, with an empty conversation:
 	 * the system prompt composed through a `before_agent_start` preview pass, the session's
 	 * tools in request order, and the request options (auth, reasoning, service tier, payload
-	 * hooks) resolved the way the turn resolves them. `undefined` when no model is selected.
+	 * hooks) resolved the way the turn resolves them.
+	 *
+	 * The preview pass invokes only handlers registered with `{ previewSafe: true }`, so the
+	 * result is `skipped` when any `before_agent_start` handler is not preview-safe, when no
+	 * model is selected, and when `signal` aborts or a user prompt starts composing its turn
+	 * before the prefix is built.
 	 */
-	getPromptCachePrefixRequest?(): Promise<PromptCachePrefixRequest | undefined>;
+	getPromptCachePrefixRequest?(options?: PromptCachePrefixRequestOptions): Promise<PromptCachePrefixResult>;
 	/** Start user-visible compaction feedback before an extension has a precomputed summary to apply. */
 	beginCompaction?(options: BeginCompactionOptions): AbortSignal | undefined;
 	/** Stream user-visible compaction content while an extension-generated summary is available. */
@@ -592,6 +597,16 @@ export interface PromptCachePrefixRequest {
 	readonly context: Context;
 	readonly options: SimpleStreamOptions;
 }
+
+export interface PromptCachePrefixRequestOptions {
+	/** Aborting stops the preview pass before its next handler and resolves the build as `skipped`. */
+	readonly signal?: AbortSignal;
+}
+
+/** Outcome of `ExtensionContext.getPromptCachePrefixRequest`. */
+export type PromptCachePrefixResult =
+	| { readonly status: "ready"; readonly request: PromptCachePrefixRequest }
+	| { readonly status: "skipped"; readonly reason: string };
 
 /** Request-local transformations shared by normal and compaction provider calls. */
 export interface ProviderRequestPreparation {
@@ -1175,9 +1190,22 @@ export interface BeforeAgentStartEvent {
 	 * `true` when the host composes the next turn's system prompt ahead of any user prompt
 	 * (the session-start prompt-cache prewarm). `prompt` is empty and no turn follows, so a
 	 * handler must return the system prompt it would return for a real turn but must not
-	 * consume one-shot state, start work, or change session state.
+	 * consume one-shot state, start work, or change session state. Only handlers registered
+	 * with `{ previewSafe: true }` receive a preview.
 	 */
 	preview?: boolean;
+}
+
+/** Registration options for `pi.on("before_agent_start", handler, options)`. */
+export interface BeforeAgentStartHandlerOptions {
+	/**
+	 * Declares that the handler has no side effects when `event.preview` is `true`: it only
+	 * computes the system prompt a real turn would get, and consumes no one-shot state,
+	 * starts no work, and changes nothing a later turn observes. Only preview-safe handlers
+	 * run in a preview; while any registered `before_agent_start` handler is not preview-safe,
+	 * the host skips previews (and with them the session-start prompt-cache prewarm).
+	 */
+	previewSafe?: boolean;
 }
 
 /** Fired when an agent loop starts */
@@ -1884,7 +1912,11 @@ export interface ExtensionAPI {
 	): void;
 	on(event: "before_provider_headers", handler: ExtensionHandler<BeforeProviderHeadersEvent>): void;
 	on(event: "after_provider_response", handler: ExtensionHandler<AfterProviderResponseEvent>): void;
-	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
+	on(
+		event: "before_agent_start",
+		handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>,
+		options?: BeforeAgentStartHandlerOptions,
+	): void;
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;
 	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): void;
@@ -2530,7 +2562,7 @@ export interface ExtensionContextActions {
 	getSystemPrompt: () => string;
 	getLoadedHookSources: () => LoadedHookSources;
 	getSystemPromptOptions?: () => BuildSystemPromptOptions;
-	getPromptCachePrefixRequest?: () => Promise<PromptCachePrefixRequest | undefined>;
+	getPromptCachePrefixRequest?: (options?: PromptCachePrefixRequestOptions) => Promise<PromptCachePrefixResult>;
 }
 
 export interface LoadedHookSources {
@@ -2595,6 +2627,8 @@ export interface Extension {
 	hidden?: boolean;
 	sourceInfo: SourceInfo;
 	handlers: Map<string, HandlerFn[]>;
+	/** `before_agent_start` handlers registered with `{ previewSafe: true }`. */
+	previewSafeHandlers?: WeakSet<HandlerFn>;
 	tools: Map<string, RegisteredTool>;
 	/** Optional for compatibility with extension records created before this additive registry. */
 	removedToolHints?: Map<string, string>;

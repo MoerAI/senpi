@@ -498,12 +498,16 @@ export function registerTerminalExtension(pi: ExtensionAPI): void {
 		state.monitorNotifier?.noteActivity();
 	});
 
-	pi.on("before_agent_start", async (event) => {
-		if (state.steppedAside) return undefined;
-		return {
-			systemPrompt: `${event.systemPrompt}\n${buildTerminalPromptSection({ evalOnly: isEvalOnlyRouting(pi) })}`,
-		};
-	});
+	pi.on(
+		"before_agent_start",
+		async (event) => {
+			if (state.steppedAside) return undefined;
+			return {
+				systemPrompt: `${event.systemPrompt}\n${buildTerminalPromptSection({ evalOnly: isEvalOnlyRouting(pi) })}`,
+			};
+		},
+		{ previewSafe: true },
+	);
 
 	pi.on("session_shutdown", async (event, ctx) => {
 		state.monitorNotifier?.dispose();

@@ -225,7 +225,7 @@ import { ModelRegistry } from "./model-registry.ts";
 import { type AvailableModelsSource, getModelNarrowingPatterns, resolveModelScope } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { PROMPT_CACHE_SAFE_WAIT_ENV, resolvePromptCacheSafeWaitSeconds } from "./prompt-cache-budget.ts";
-import { buildPromptCachePrefixRequest } from "./prompt-cache-prefix-request.ts";
+import { PromptCachePrefixBuilds } from "./prompt-cache-prefix-request.ts";
 import { expandPromptTemplateWithMetadata, type PromptTemplate } from "./prompt-templates.ts";
 import { createProviderTimeoutRetryPlan, runBoundedRetryContinuation } from "./provider-timeout-retry.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
@@ -1056,6 +1056,7 @@ export class AgentSession {
 	// Settles once session_start handlers, default-tool enforcement, and resource discovery
 	// (which rebuilds the base prompt with discovered skills) have run.
 	private _sessionStartSettled: Promise<void> = Promise.resolve();
+	private readonly _promptCachePrefixBuilds = new PromptCachePrefixBuilds();
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
@@ -4092,6 +4093,7 @@ export class AgentSession {
 
 			// Emit before_agent_start extension event
 			this._refreshToolDeclarationsForModel();
+			this._promptCachePrefixBuilds.cancelAll();
 			const result = await this._extensionRunner.emitBeforeAgentStart(
 				expandedText,
 				currentImages,
@@ -4606,6 +4608,7 @@ export class AgentSession {
 				try {
 					await this._enforceCompactionBeforeProvider(this._findLastAssistantMessage(), false, "pre_prompt");
 					this._refreshToolDeclarationsForModel();
+					this._promptCachePrefixBuilds.cancelAll();
 					const result = await this._extensionRunner.emitBeforeAgentStart(
 						contentText(appMessage.content, ""),
 						undefined,
@@ -7840,17 +7843,19 @@ export class AgentSession {
 						runtimeHookSourcePaths: [],
 					},
 				getSystemPromptOptions: () => this._baseSystemPromptOptions,
-				getPromptCachePrefixRequest: async () => {
-					await this._sessionStartSettled;
-					return await buildPromptCachePrefixRequest({
-						agent: this.agent,
-						runner: this._extensionRunner,
-						modelRuntime: this._modelRuntime,
-						getServiceTier: () => this.effectiveServiceTier,
-						getBaseSystemPrompt: () => this._baseSystemPrompt,
-						getBaseSystemPromptOptions: () => this._baseSystemPromptOptions,
-					});
-				},
+				getPromptCachePrefixRequest: (options) =>
+					this._promptCachePrefixBuilds.build(
+						{
+							agent: this.agent,
+							runner: this._extensionRunner,
+							modelRuntime: this._modelRuntime,
+							ready: this._sessionStartSettled,
+							getServiceTier: () => this.effectiveServiceTier,
+							getBaseSystemPrompt: () => this._baseSystemPrompt,
+							getBaseSystemPromptOptions: () => this._baseSystemPromptOptions,
+						},
+						options,
+					),
 			},
 			{
 				registerProvider: (name, config) => {

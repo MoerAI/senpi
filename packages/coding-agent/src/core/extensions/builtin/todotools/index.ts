@@ -66,11 +66,15 @@ export default function todotoolsExtension(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("before_agent_start", async (event) => {
-		return {
-			systemPrompt: `${event.systemPrompt}\n${TASK_MANAGEMENT_SECTION}`,
-		};
-	});
+	pi.on(
+		"before_agent_start",
+		async (event) => {
+			return {
+				systemPrompt: `${event.systemPrompt}\n${TASK_MANAGEMENT_SECTION}`,
+			};
+		},
+		{ previewSafe: true },
+	);
 
 	registerTodoTool(pi, { getCurrentPhases, setCurrentPhases, syncWidget });
 	registerTodoCommand(pi, { getCurrentPhases, setCurrentPhases, syncWidget });

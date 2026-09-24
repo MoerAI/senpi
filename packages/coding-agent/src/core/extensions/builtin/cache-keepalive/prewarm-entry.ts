@@ -5,7 +5,8 @@ export const PROMPT_CACHE_PREWARM_ENTRY_TYPE = "prompt-cache-prewarm";
 
 export type PromptCachePrewarmEntryData =
 	| { readonly phase: "warmed"; readonly provider: string; readonly model: string; readonly usage: Usage }
-	| { readonly phase: "failed"; readonly provider: string; readonly model: string; readonly error: string };
+	| { readonly phase: "failed"; readonly provider: string; readonly model: string; readonly error: string }
+	| { readonly phase: "skipped"; readonly provider: string; readonly model: string; readonly reason: string };
 
 function isFiniteNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value);

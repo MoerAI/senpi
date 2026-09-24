@@ -1,5 +1,33 @@
 # Core Extensions Changes
 
+## 2026-09-24 - before_agent_start handlers opt in to the preview pass with `previewSafe` (senpi#2115)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/types.ts`: new `BeforeAgentStartHandlerOptions` (`previewSafe?: boolean`), accepted as the optional third argument of the `before_agent_start` overload of `ExtensionAPI.on`; `Extension` gains optional `previewSafeHandlers?: WeakSet<HandlerFn>`. `ExtensionContext.getPromptCachePrefixRequest?(options?)` and `ExtensionContextActions.getPromptCachePrefixRequest?` take `PromptCachePrefixRequestOptions` (`signal`) and resolve a `PromptCachePrefixResult` (`{ status: "ready", request }` or `{ status: "skipped", reason }`) instead of `PromptCachePrefixRequest | undefined`. The `preview` doc on `BeforeAgentStartEvent` says only preview-safe handlers receive it.
+- `packages/coding-agent/src/core/extensions/loader.ts`: `on(event, handler, options)` records a `before_agent_start` handler registered with `{ previewSafe: true }` in `extension.previewSafeHandlers`.
+- `packages/coding-agent/src/core/extensions/runner.ts`: new `getPreviewUnsafeBeforeAgentStartPaths()` lists extensions with a `before_agent_start` handler that is not preview-safe; `emitBeforeAgentStart`'s fifth argument gains `signal`, a preview invokes only preview-safe handlers, and an aborted signal stops dispatch before the next handler. The bound `getPromptCachePrefixRequest` context action forwards its options and resolves `skipped` when the host binds no builder.
+- Fork-only builtins: every builtin `before_agent_start` handler registers `{ previewSafe: true }`. `anthropic-bash`, `anthropic-web-search`, `openai-web-search`, `bash-timeout`, `terminal`, `todotools`, `prompt-preset`, and `imagegen` only compute a system prompt. `compaction` and `hooks` already returned early on a preview. `prompt-url-widget` now returns early on a preview; `rules` composes the same block on a preview without touching `nativeContextPaths` or the static-injection marks; `openai-image-gen` reads the arbitration on a preview without committing `state` or `setNativeBypass`; `mcp` awaits only the session-start attach on a preview and skips the elicitation UI binding and skill-declared server attach.
+
+### Why
+
+Extensions written against the pre-#2096 contract never check `event.preview`, so running them in a preview executed real-turn side effects for a turn that does not exist (an external memory extension lost its drained notices). Only a handler's author can say whether it is side-effect free, so the preview must be opt-in per handler, and a preview that cannot include every handler would compose the wrong prefix, so it is skipped rather than run partially.
+
+### Why an extension could not handle it
+
+Handler registration and dispatch are owned by the loader and runner; an extension cannot mark another extension's handler or keep the host from invoking it.
+
+### Extension impact
+
+- `pi.on("before_agent_start", handler)` is unchanged for real turns. A handler that is side-effect free when `event.preview` is `true` should register with `{ previewSafe: true }`; while any registered handler lacks it, the session-start prompt-cache prewarm is skipped and records a `prompt-cache-prewarm` entry with phase `skipped` and the reason.
+- Breaking for callers of `ctx.getPromptCachePrefixRequest()` (introduced by #2096 in 2026.9.24-2): read `result.status` and `result.request`.
+
+### Expected merge conflict zones
+
+- LOW: the `getPromptCachePrefixRequest` doc and signature in `ExtensionContext`, the block after `PromptCachePrefixRequest`, the end of `BeforeAgentStartEvent`, the `before_agent_start` overload of `ExtensionAPI.on`, the `handlers` field of `Extension`, and the end of `ExtensionContextActions` in `types.ts`.
+- LOW: the `on` registration method and the `./types.ts` import block in `loader.ts`.
+- LOW: the `getPromptCachePrefixRequest` context entry and the `emitBeforeAgentStart` signature and dispatch loop in `runner.ts`.
+
 ## 2026-09-24 - before_agent_start preview pass and the prompt-cache prefix request (senpi#2096)
 
 ### What changed

@@ -4,11 +4,17 @@
 
 ### Breaking Changes
 
+- `ctx.getPromptCachePrefixRequest()` resolves `{ status: "ready", request }` or `{ status: "skipped", reason }` instead of the request or `undefined`, and accepts `{ signal }`. ([#2115](https://github.com/code-yeongyu/senpi/issues/2115))
+
 ### Added
+
+- `pi.on("before_agent_start", handler, { previewSafe: true })` declares a handler side-effect free in a preview. Only such handlers run in the session-start prompt-cache preview. ([#2115](https://github.com/code-yeongyu/senpi/issues/2115))
 
 ### Changed
 
 ### Fixed
+
+- The session-start prompt-cache prewarm no longer runs `before_agent_start` handlers that never opted in to previews, so an extension that consumes one-shot state there (such as delivering queued notices) no longer loses it before the first turn. While such a handler is registered the prewarm is skipped and a `prompt-cache-prewarm` entry records `phase: "skipped"` with the reason; a prompt that starts its turn while the preview is still composing cancels it. ([#2115](https://github.com/code-yeongyu/senpi/issues/2115))
 
 ### Removed
 

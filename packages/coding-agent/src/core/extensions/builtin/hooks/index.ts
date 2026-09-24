@@ -1,5 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
-import type { BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext, LoadedHookSources } from "../../types.ts";
+import type {
+	BeforeAgentStartEvent,
+	BeforeAgentStartEventResult,
+	ExtensionAPI,
+	ExtensionContext,
+	ExtensionHandler,
+	LoadedHookSources,
+} from "../../types.ts";
 import { formatResultText } from "../ask-user/format.ts";
 import {
 	ASK_USER_ASKED_EVENT,
@@ -208,7 +215,7 @@ export default function hooksExtension(pi: ExtensionAPI): void {
 		return { action: "continue" };
 	});
 
-	pi.on("before_agent_start", async (event) => {
+	const onBeforeAgentStart: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult> = async (event) => {
 		// UserPromptSubmit context belongs to the prompt that queued it, never to a preview.
 		if (event.preview === true) return undefined;
 		const pending = pendingPromptContexts.shift();
@@ -234,7 +241,8 @@ export default function hooksExtension(pi: ExtensionAPI): void {
 			result.systemPrompt = systemPrompt;
 		}
 		return result;
-	});
+	};
+	pi.on("before_agent_start", onBeforeAgentStart, { previewSafe: true });
 
 	pi.on("tool_call", async (event, ctx) => {
 		pendingPreToolContexts.delete(event.toolCallId);

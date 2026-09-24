@@ -2,21 +2,60 @@ import { type Agent, buildProviderContext, type ThinkingLevel } from "@earendil-
 import type { ModelsSimpleStreamOptions, ProviderHeaders } from "@earendil-works/pi-ai";
 import { isValidThinkingLevel } from "../cli/args.ts";
 import type { ExtensionRunner } from "./extensions/runner.ts";
-import type { BuildSystemPromptOptions, PromptCachePrefixRequest, ServiceTier } from "./extensions/types.ts";
+import type {
+	BuildSystemPromptOptions,
+	PromptCachePrefixRequestOptions,
+	PromptCachePrefixResult,
+	ServiceTier,
+} from "./extensions/types.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 
 export interface PromptCachePrefixSources {
 	readonly agent: Agent;
 	readonly runner: ExtensionRunner;
 	readonly modelRuntime: ModelRuntime;
+	/** Settles once the session start the prefix depends on (tools, discovered skills) has run. */
+	readonly ready: Promise<void>;
 	getServiceTier(): ServiceTier | undefined;
 	getBaseSystemPrompt(): string;
 	getBaseSystemPromptOptions(): BuildSystemPromptOptions;
 }
 
+export const PROMPT_STARTED_REASON = "a prompt started composing its turn before the prefix was built";
+
 // A handler may await work that rebuilds the base prompt (an MCP attach registering tools);
 // one more pass composes from the rebuilt base, the one the first turn will start from.
 const MAX_COMPOSITION_PASSES = 2;
+
+const CANCELLED = Symbol("prompt-cache-prefix-cancelled");
+
+/**
+ * The session's in-flight prefix builds (senpi#2115). A real turn's `before_agent_start`
+ * must never run beside a preview pass, so the host cancels every build before it emits one.
+ */
+export class PromptCachePrefixBuilds {
+	readonly #inFlight = new Set<AbortController>();
+
+	async build(
+		sources: PromptCachePrefixSources,
+		options: PromptCachePrefixRequestOptions = {},
+	): Promise<PromptCachePrefixResult> {
+		const controller = new AbortController();
+		const signal =
+			options.signal === undefined ? controller.signal : AbortSignal.any([options.signal, controller.signal]);
+		this.#inFlight.add(controller);
+		try {
+			return await buildPromptCachePrefixRequest(sources, signal);
+		} finally {
+			this.#inFlight.delete(controller);
+		}
+	}
+
+	cancelAll(): void {
+		for (const controller of this.#inFlight) controller.abort(PROMPT_STARTED_REASON);
+		this.#inFlight.clear();
+	}
+}
 
 /**
  * Build the provider request prefix of the next user turn (senpi#2096). Each input comes
@@ -32,15 +71,26 @@ const MAX_COMPOSITION_PASSES = 2;
  *   the active model;
  * - auth, headers, `extraBody`, env, and the upstream model id: `ModelRuntime` resolves
  *   them exactly as it does before `streamSimple`.
+ *
+ * The preview pass runs only handlers registered `previewSafe` (senpi#2115): a handler that
+ * never declared itself safe could consume one-shot state for a turn that does not exist,
+ * so while one is registered the build is skipped before any handler runs.
  */
 export async function buildPromptCachePrefixRequest(
 	sources: PromptCachePrefixSources,
-): Promise<PromptCachePrefixRequest | undefined> {
-	const systemPrompt = await composeTurnSystemPrompt(sources);
+	signal: AbortSignal,
+): Promise<PromptCachePrefixResult> {
+	if ((await untilAborted(sources.ready, signal)) === CANCELLED) return cancelled(signal);
+	const unsafe = sources.runner.getPreviewUnsafeBeforeAgentStartPaths();
+	if (unsafe.length > 0) {
+		return skipped(`before_agent_start handlers not registered previewSafe: ${unsafe.join(", ")}`);
+	}
+	const systemPrompt = await untilAborted(composeTurnSystemPrompt(sources, signal), signal);
+	if (systemPrompt === CANCELLED) return cancelled(signal);
 	const { agent, runner } = sources;
 	const state = agent.state;
 	const model = state.model;
-	if (model === undefined) return undefined;
+	if (model === undefined) return skipped("no model selected");
 	const options: ModelsSimpleStreamOptions = {};
 	const reasoning = loopReasoning(state.reasoningBaseline, state.thinkingLevel);
 	if (reasoning !== undefined) options.reasoning = reasoning;
@@ -53,7 +103,8 @@ export async function buildPromptCachePrefixRequest(
 	if (runner.hasHandlers("before_provider_headers")) {
 		options.transformHeaders = async (headers: ProviderHeaders) => await runner.emitBeforeProviderHeaders(headers);
 	}
-	const prepared = await sources.modelRuntime.prepareSimpleRequest(model, options);
+	const prepared = await untilAborted(sources.modelRuntime.prepareSimpleRequest(model, options), signal);
+	if (prepared === CANCELLED) return cancelled(signal);
 	const context = await buildProviderContext(
 		{
 			systemPrompt,
@@ -63,24 +114,47 @@ export async function buildPromptCachePrefixRequest(
 		},
 		{ convertToLlm: () => [], model },
 	);
-	return { model: prepared.model, context, options: prepared.options };
+	if (signal.aborted) return cancelled(signal);
+	return { status: "ready", request: { model: prepared.model, context, options: prepared.options } };
 }
 
-async function composeTurnSystemPrompt(sources: PromptCachePrefixSources): Promise<string> {
+async function composeTurnSystemPrompt(sources: PromptCachePrefixSources, signal: AbortSignal): Promise<string> {
 	let systemPrompt = sources.getBaseSystemPrompt();
-	for (let pass = 0; pass < MAX_COMPOSITION_PASSES; pass += 1) {
+	for (let pass = 0; pass < MAX_COMPOSITION_PASSES && !signal.aborted; pass += 1) {
 		const base = sources.getBaseSystemPrompt();
 		const result = await sources.runner.emitBeforeAgentStart(
 			"",
 			undefined,
 			base,
 			sources.getBaseSystemPromptOptions(),
-			{ preview: true },
+			{ preview: true, signal },
 		);
 		systemPrompt = result?.systemPrompt ?? base;
 		if (sources.getBaseSystemPrompt() === base) break;
 	}
 	return systemPrompt;
+}
+
+async function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T | typeof CANCELLED> {
+	if (signal.aborted) return CANCELLED;
+	let onAbort: (() => void) | undefined;
+	const aborted = new Promise<typeof CANCELLED>((resolve) => {
+		onAbort = () => resolve(CANCELLED);
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+	try {
+		return await Promise.race([work, aborted]);
+	} finally {
+		if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+	}
+}
+
+function skipped(reason: string): PromptCachePrefixResult {
+	return { status: "skipped", reason };
+}
+
+function cancelled(signal: AbortSignal): PromptCachePrefixResult {
+	return skipped(typeof signal.reason === "string" ? signal.reason : "prefix build cancelled");
 }
 
 // Mirrors Agent.createLoopConfig(): the configuration-update baseline wins over the level.

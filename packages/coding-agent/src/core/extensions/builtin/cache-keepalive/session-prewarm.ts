@@ -33,6 +33,9 @@ export interface SessionPrewarm {
  * The request is the host's `getPromptCachePrefixRequest()` prefix, the first user turn's
  * request with an empty conversation, because the platform reuses a prefix only up to a
  * block boundary: a prewarmed system prompt that stops short of the turn's is never read.
+ * When the host cannot build that prefix without side effects (an extension handler that is
+ * not preview-safe, or a user prompt that already started its turn), a `skipped` entry
+ * records why (senpi#2115).
  * The request runs detached from the turn pipeline, so it can never delay or fail the
  * first user turn; its billed usage is recorded as a custom entry that session stats count.
  */
@@ -48,8 +51,13 @@ export function createSessionPrewarm(pi: ExtensionAPI, dependencies: SessionPrew
 	async function run(ctx: ExtensionContext, model: Model<any>, controller: AbortController): Promise<void> {
 		const { signal } = controller;
 		try {
-			const request = await ctx.getPromptCachePrefixRequest?.();
-			if (signal.aborted || request === undefined) return;
+			const prefix = await ctx.getPromptCachePrefixRequest?.({ signal });
+			if (signal.aborted || prefix === undefined) return;
+			if (prefix.status === "skipped") {
+				append({ phase: "skipped", provider: model.provider, model: model.id, reason: prefix.reason });
+				return;
+			}
+			const { request } = prefix;
 			const result = await dependencies.warm(request.model, request.context, {
 				...request.options,
 				signal,
