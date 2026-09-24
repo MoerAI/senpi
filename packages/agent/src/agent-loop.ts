@@ -11,6 +11,7 @@ import {
 	type CursorExecResolvedCarrier,
 	EventStream,
 	isCursorExecResolved,
+	supportsAllowedToolChoice,
 	type ToolResultMessage,
 	validateToolArguments,
 } from "@earendil-works/pi-ai";
@@ -401,15 +402,39 @@ async function runLoop(
 	await emit({ type: "agent_end", messages: newMessages });
 }
 
+/**
+ * senpi#2095: a model that accepts an allowed-tools restriction receives every declared tool plus the
+ * callable subset by name; any other model receives the callable tools alone, as before.
+ */
+function providerTools(
+	context: AgentContext,
+	model: AgentLoopConfig["model"] | undefined,
+): Pick<Context, "tools" | "activeToolNames"> {
+	const declaredTools = context.declaredTools;
+	if (declaredTools === undefined || model === undefined || !supportsAllowedToolChoice(model)) {
+		return { tools: context.tools };
+	}
+	const activeTools = context.tools ?? [];
+	const declaredNames = new Set(declaredTools.map((tool) => tool.name));
+	return {
+		tools: [...declaredTools, ...activeTools.filter((tool) => !declaredNames.has(tool.name))],
+		activeToolNames: activeTools.map((tool) => tool.name),
+	};
+}
+
 /** Build the provider context using the same transform and conversion pipeline as an agent request. */
 export async function buildProviderContext(
 	context: AgentContext,
-	config: Pick<AgentLoopConfig, "convertToLlm" | "transformContext">,
+	config: Pick<AgentLoopConfig, "convertToLlm" | "transformContext"> & Partial<Pick<AgentLoopConfig, "model">>,
 	signal?: AbortSignal,
 ): Promise<Context> {
 	let messages = context.messages;
 	if (config.transformContext) messages = await config.transformContext(messages, signal);
-	return { systemPrompt: context.systemPrompt, messages: await config.convertToLlm(messages), tools: context.tools };
+	return {
+		systemPrompt: context.systemPrompt,
+		messages: await config.convertToLlm(messages),
+		...providerTools(context, config.model),
+	};
 }
 
 /**

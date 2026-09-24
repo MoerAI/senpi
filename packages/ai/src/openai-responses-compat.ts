@@ -1,3 +1,6 @@
+import type { Model } from "./model.ts";
+import type { Api } from "./types.ts";
+
 export type SessionAffinityFormat = "openai" | "openai-nosession" | "openrouter";
 
 export interface OpenAIResponsesCompat {
@@ -25,4 +28,16 @@ export interface OpenAIResponsesCompat {
 	supportsExplicitPromptCacheMode?: boolean;
 	/** Whether the provider accepts the `max_output_tokens` parameter. Some Codex-protocol gateways reject it. Default: true. */
 	supportsMaxOutputTokens?: boolean;
+	/**
+	 * Whether the model accepts `tool_choice: { type: "allowed_tools" }`. When set, callers keep every
+	 * declared tool in `tools` and restrict the callable subset through `Context.activeToolNames`, so a
+	 * shrinking tool set does not rewrite the cached prompt prefix. Honored by the `openai-responses`
+	 * adapter. Default: false.
+	 */
+	supportsAllowedTools?: boolean;
+}
+
+/** Whether a model's compat declares `allowed_tools` support (see {@link OpenAIResponsesCompat.supportsAllowedTools}). */
+export function supportsAllowedToolChoice(model: Model<Api>): boolean {
+	return (model.compat as OpenAIResponsesCompat | undefined)?.supportsAllowedTools === true;
 }

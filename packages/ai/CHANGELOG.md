@@ -6,6 +6,8 @@
 
 ### Added
 
+- OpenAI Responses models with the new `supportsAllowedTools` compat flag (set on the GPT-5.6+ OpenAI catalog rows) keep every declared tool in `tools` and restrict the callable subset named by the new `Context.activeToolNames` through `tool_choice: allowed_tools` (`none` when the subset is empty), so removing a tool no longer invalidates the prompt cache. `supportsAllowedToolChoice(model)` reports the flag. ([#2095](https://github.com/code-yeongyu/senpi/issues/2095))
+
 ### Changed
 
 ### Fixed

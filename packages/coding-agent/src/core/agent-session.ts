@@ -41,6 +41,7 @@ import {
 	contentText,
 	providerNotConfiguredMessage,
 	SERVER_FALLBACK_ABORTED_DIAGNOSTIC,
+	supportsAllowedToolChoice,
 	type ThinkingSelection,
 } from "@earendil-works/pi-ai";
 import type {
@@ -1029,6 +1030,12 @@ export class AgentSession {
 	private readonly _publishedEvalOnlyHintNames = new Set<string>();
 	/** Active-tool selection as requested by callers, before eval-only filtering. */
 	private _requestedActiveToolNames?: string[];
+	/** Every tool that has been active this session, in first-activation order (senpi#2095). */
+	private readonly _declaredToolNames: string[] = [];
+	/** Tool names the base system prompt was last built from. */
+	private _promptToolNames: readonly string[] = [];
+	/** Whether the last tool declaration used the session-wide declared set. */
+	private _promptDeclaresSessionTools = false;
 	private _allowedToolNames?: Set<string>;
 	private _excludedToolNames?: Set<string>;
 	private _baseToolsOverride?: Record<string, AgentTool>;
@@ -1553,6 +1560,7 @@ export class AgentSession {
 				previousContext = previousSnapshot.context ?? postLateCompactionTurn.context;
 			}
 
+			this._refreshToolDeclarationsForModel();
 			return {
 				...previousSnapshot,
 				context: {
@@ -1560,6 +1568,7 @@ export class AgentSession {
 					messages: previousContext.messages,
 					systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
 					tools: this.agent.state.tools.slice(),
+					declaredTools: this.agent.state.declaredTools?.slice(),
 				},
 				model: this.agent.state.model,
 				thinkingLevel: this.agent.state.thinkingLevel,
@@ -3374,10 +3383,12 @@ export class AgentSession {
 			validToolNames.length !== this.agent.state.tools.length ||
 			validToolNames.some((name, index) => name !== this.agent.state.tools[index]?.name);
 		this.agent.state.tools = tools;
+		for (const name of validToolNames) {
+			if (!this._declaredToolNames.includes(name)) this._declaredToolNames.push(name);
+		}
 
 		// Rebuild base system prompt with new tool set
-		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
-		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+		this._applyToolDeclarations(validToolNames);
 		if (activeToolNamesChanged) {
 			// A tool change emitted while extensions are still binding belongs to the
 			// binding itself, not to a mid-session change. The session was already
@@ -3388,6 +3399,48 @@ export class AgentSession {
 				this._incrementMessageRevision();
 			}
 		}
+	}
+
+	/**
+	 * senpi#2095: a model that accepts `allowed_tools` is declared every tool this session has
+	 * activated, and the prompt's tool section lists that same set, so the active set shrinking or
+	 * re-growing restricts callability through `tool_choice` instead of rewriting the cached prefix.
+	 * Any other model is declared exactly the active tools.
+	 */
+	private _declaresSessionTools(): boolean {
+		const model = this.model;
+		return model !== undefined && supportsAllowedToolChoice(model);
+	}
+
+	private _toolDeclarationNames(activeToolNames: readonly string[]): string[] {
+		if (!this._declaresSessionTools()) return [...activeToolNames];
+		return this._declaredToolNames.filter((name) => this._toolRegistry.has(name));
+	}
+
+	private _applyToolDeclarations(activeToolNames: readonly string[]): void {
+		this._promptDeclaresSessionTools = this._declaresSessionTools();
+		const declaredNames = this._toolDeclarationNames(activeToolNames);
+		const declaresInactiveTools =
+			declaredNames.length !== activeToolNames.length ||
+			declaredNames.some((name, index) => name !== activeToolNames[index]);
+		this.agent.state.declaredTools = declaresInactiveTools
+			? declaredNames.flatMap((name) => this._toolRegistry.get(name) ?? [])
+			: undefined;
+		this._baseSystemPrompt = this._rebuildSystemPrompt(declaredNames);
+		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+	}
+
+	/**
+	 * Re-derive the declaration after a model change. Only a switch into or out of a model that declares
+	 * the session set can move it, and the prompt is rebuilt only when its tool list actually moves.
+	 */
+	private _refreshToolDeclarationsForModel(): void {
+		if (!this._declaresSessionTools() && !this._promptDeclaresSessionTools) return;
+		const declaredNames = this._toolDeclarationNames(this.getActiveToolNames());
+		const unchanged =
+			declaredNames.length === this._promptToolNames.length &&
+			declaredNames.every((name, index) => name === this._promptToolNames[index]);
+		if (!unchanged) this._applyToolDeclarations(this.getActiveToolNames());
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -3526,6 +3579,7 @@ export class AgentSession {
 
 	private _rebuildSystemPrompt(toolNames: string[]): string {
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
+		this._promptToolNames = validToolNames;
 		// An eval-only tool is hidden from the model but still callable as `tool.<name>(...)`,
 		// so its own snippet and guidelines still apply and must survive the withholding.
 		// `selectedTools` stays the model-visible list; only the contributions are widened.
@@ -4017,6 +4071,7 @@ export class AgentSession {
 			}
 
 			// Emit before_agent_start extension event
+			this._refreshToolDeclarationsForModel();
 			const result = await this._extensionRunner.emitBeforeAgentStart(
 				expandedText,
 				currentImages,
@@ -4529,6 +4584,7 @@ export class AgentSession {
 				this._triggerTurnAdmissionAbortGeneration = userAbortGeneration;
 				try {
 					await this._enforceCompactionBeforeProvider(this._findLastAssistantMessage(), false, "pre_prompt");
+					this._refreshToolDeclarationsForModel();
 					const result = await this._extensionRunner.emitBeforeAgentStart(
 						contentText(appMessage.content, ""),
 						undefined,
@@ -7446,7 +7502,7 @@ export class AgentSession {
 
 		this._resourceLoader.extendResources(extensionPaths);
 		if (skillPaths.length > 0 || promptPaths.length > 0 || themePaths.length > 0) {
-			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+			this._baseSystemPrompt = this._rebuildSystemPrompt(this._toolDeclarationNames(this.getActiveToolNames()));
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
 	}

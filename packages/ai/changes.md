@@ -1,3 +1,22 @@
+## 2026-09-24 - Flag GPT-5.6+ OpenAI rows as accepting allowed_tools (senpi#2095)
+
+### What changed
+
+- `packages/ai/scripts/generate-models.ts`: `applyOpenAIExplicitPromptCacheMetadata` also sets `compat.supportsAllowedTools: true` on provider `openai` / api `openai-responses` rows with `cost.cacheWrite > 0` (the GPT-5.6+ family). Regenerated `packages/ai/src/providers/data/` with `--strict`.
+
+### Why
+
+Those models keep the prompt cache warm when the `tools` list is unchanged and the callable subset moves to `tool_choice: allowed_tools`; the runtime needs a catalog flag to choose that request shape.
+
+### Why an extension could not handle it
+
+The catalog shards ship inside this package and are written only by the generator.
+
+### Expected merge conflict zones
+
+- `packages/ai/scripts/generate-models.ts`: `applyOpenAIExplicitPromptCacheMetadata`.
+- `packages/ai/src/providers/data/*.json` + `.manifest.json`: regenerate rather than merge.
+
 ## 2026-09-23 - GPT-6 Sol and GPT-6 Luna catalog rows
 
 ### What changed

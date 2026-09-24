@@ -1075,6 +1075,8 @@ function applyOpenAIToolSearchMetadata(model: Model<Api>): void {
 
 // OpenAI charges prompt-cache writes starting with the GPT-5.6 family, and exactly
 // those models accept `prompt_cache_options`; older models reject the parameter.
+// The same family keeps the cache warm across tool-set changes by accepting
+// `tool_choice: allowed_tools` with an unchanged `tools` list (senpi#2095).
 // https://developers.openai.com/api/docs/guides/prompt-caching
 function applyOpenAIExplicitPromptCacheMetadata(model: Model<Api>): void {
 	if (model.provider !== "openai" || model.api !== "openai-responses") return;
@@ -1082,6 +1084,7 @@ function applyOpenAIExplicitPromptCacheMetadata(model: Model<Api>): void {
 	model.compat = {
 		...(model.compat as OpenAIResponsesCompat | undefined),
 		supportsExplicitPromptCacheMode: true,
+		supportsAllowedTools: true,
 	};
 }
 
