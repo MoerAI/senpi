@@ -947,6 +947,11 @@ export class SettingsManager {
 		return configured === "remind" || configured === "off" ? configured : "force";
 	}
 
+	getTodoTurnEndBackstop(): boolean {
+		const configured = this.settings.todo?.turnEndBackstop;
+		return typeof configured === "boolean" ? configured : true;
+	}
+
 	isProjectTrusted(): boolean {
 		return this.projectTrusted;
 	}

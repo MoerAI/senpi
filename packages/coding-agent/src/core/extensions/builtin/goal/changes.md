@@ -1,5 +1,26 @@
 # goal Extension Changes
 
+## 2026-09-25 - Turn-end todo-owed backstop for main sessions without an active goal (senpi#2121)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/goal/todo-owed-backstop.ts` (new): `TodoOwedBackstop` evaluates at the tail of the `agent_end` handler, after `continueGoalAfterAgentEnd` returned. A turn owes a nudge only when every clause holds: main session (`ctx.sessionManager.getHeader()?.parentSession === undefined` and `ctx.mode` not in `{print, json}` - the set `terminal/notify.ts` never wakes; child sessions are untagged today, so they pass and are treated as main), `event.aborted !== true` and `didAgentEndCleanly(event.messages)` with a last stopReason other than `length`, no pending messages, no active goal, no continuation pending, at least one open todo task (`todo-gate.ts openTodoTaskContents`), no live wake source (`monitor-continuation.ts hasActiveWakeSources`), no `ask_user_question` / `request_user_input` tool call in the run's messages, a final paragraph that does not end a sentence with `?`, and `todo.turnEndBackstop` enabled. Delivery is a hidden followUp exactly like `queueHiddenGoalPrompt` (`pi.sendMessage({ customType: "senpi.todo-owed", content, display: false }, { triggerTurn: true, deliverAs: "followUp" })`) with the Ask/Now/Next anchors from `todotools/state.ts getLatestTodoStateFromBranchEntries` + `describeAskNowNext`; the second delivery prefixes "Second and final reminder. ". After two, `ctx.ui.notify("Agent stopped with N open todo tasks (Now: ...). Send a message to continue.", "warning")` fires once per chain, then nothing. `todo_owed_reminder` is emitted per delivery/cap; every suppression logs one debug line naming the first failing clause. No timers anywhere.
+- `packages/coding-agent/src/core/extensions/builtin/goal/index.ts`: instantiates the backstop, resets its chain on `session_start` and `session_tree`, and calls `afterAgentEnd` at the tail of the `agent_end` handler.
+- `packages/coding-agent/src/core/extensions/builtin/goal/direct-input-lifecycle.ts`: optional `onAcceptedDirectInput` dependency, fired for every accepted non-extension input; the goal builtin wires it to reset the backstop chain.
+- `packages/coding-agent/src/core/extensions/builtin/goal/continuation.ts`: `didAgentEndCleanly` is now exported (the backstop reuses the goal's own clean-end predicate instead of restating it).
+
+### Why
+
+A text-only end of turn with open todo work and no question stops an unattended run mid-task. The Anthropic Opus 5.5 guide ("Unattended agentic runs") prescribes exactly this harness shape: name the open items in a short user message and stop after two or three automatic continuations. The goal path already owns the turn end when a goal is active; this backstop covers only the gap where nothing does.
+
+### Why an extension could not handle it
+
+The predicate needs the goal builtin's own continuation state (clean-end predicate, continuation latch, wake sources, direct-input lifecycle); a foreign extension cannot see any of it.
+
+### Expected merge conflict zones
+
+- LOW in `index.ts` (tail of the `agent_end` handler, the `session_start` reset), `direct-input-lifecycle.ts` (dis injection), `continuation.ts` (the `export` keyword).
+
 ## 2026-09-24 - Sync with pi-goal 0.3.1 (senpi#2079)
 
 ### What changed
