@@ -34,6 +34,11 @@ export interface TerminalToolContext {
 	readonly onMonitorRearmed?: (id: string) => void;
 	/** Clears notifier bookkeeping when multiple paused monitors are resumed. */
 	readonly onMonitorsResumed?: (ids: readonly string[]) => void;
+	/**
+	 * Lazy persistence: bind the session's lease and manifest recorder before the first durable
+	 * registration. Resolves immediately when persistence is already bound or unavailable.
+	 */
+	readonly ensurePersistence?: () => Promise<void>;
 }
 
 /** Minimal tool-result shape returned by the terminal tools. */
