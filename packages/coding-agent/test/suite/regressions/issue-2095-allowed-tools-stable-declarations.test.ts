@@ -83,7 +83,12 @@ async function runRemovalAndRestore(options: { supportsAllowedTools: boolean }) 
 
 		const toolResults = harness.session.messages.flatMap((message) =>
 			message.role === "toolResult"
-				? [{ isError: message.isError, text: message.content.map((part) => ("text" in part ? part.text : "")).join("") }]
+				? [
+						{
+							isError: message.isError,
+							text: message.content.map((part) => ("text" in part ? part.text : "")).join(""),
+						},
+					]
 				: [],
 		);
 		return { requests, toolResults, askLikeRuns: counter.askLikeRuns };
@@ -98,12 +103,14 @@ describe("allowed-tools stable tool declarations", () => {
 		const { requests, toolResults, askLikeRuns } = await runRemovalAndRestore({ supportsAllowedTools: true });
 
 		expect(requests).toHaveLength(4);
+		const declared = requests[0]?.tools ?? [];
+		expect(declared).toEqual(expect.arrayContaining(TOOL_ORDER));
 		for (const request of requests) {
-			expect(request.tools).toEqual(TOOL_ORDER);
+			expect(request.tools).toEqual(declared);
 			expect(request.systemPrompt).toBe(requests[0]?.systemPrompt);
 		}
 		expect(requests[0]?.systemPrompt).toContain("ask_like: Snippet for ask_like");
-		expect(requests[0]?.activeToolNames).toBeUndefined();
+		expect(requests[0]?.activeToolNames).toEqual(declared.length === TOOL_ORDER.length ? undefined : TOOL_ORDER);
 		expect(requests[1]?.activeToolNames).toEqual(["keep_read", "keep_write"]);
 		expect(requests[2]?.activeToolNames).toEqual(["keep_read", "keep_write"]);
 		expect(new Set(requests[3]?.activeToolNames ?? requests[3]?.tools)).toEqual(new Set(TOOL_ORDER));

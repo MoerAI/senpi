@@ -1,8 +1,8 @@
 import OpenAI from "openai";
 import type {
+	Tool as OpenAITool,
 	ResponseCreateParamsStreaming,
 	ResponseStreamEvent,
-	Tool as OpenAITool,
 } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel, inferOpenAIThinkingLevelMap, supportsMax, supportsXhigh } from "../models.ts";
 import type {
