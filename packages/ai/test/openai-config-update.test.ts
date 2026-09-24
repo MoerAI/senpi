@@ -79,9 +79,14 @@ describe("OpenAI mid-session configuration updates", () => {
 
 	it("does not update unsupported models or providers", () => {
 		const messages: Message[] = [{ role: "configurationUpdate", content: [], effort: "high", timestamp: 1 }];
-		expect(convert({ id: "gpt-5", provider: "openai", api: "openai-responses", input: ["text"] } as Model<any>, messages)).toEqual([]);
 		expect(
-			convert({ id: "gpt-6-astra", provider: "opencode", api: "openai-responses", input: ["text"] } as Model<any>, messages),
+			convert({ id: "gpt-5", provider: "openai", api: "openai-responses", input: ["text"] } as Model<any>, messages),
+		).toEqual([]);
+		expect(
+			convert(
+				{ id: "gpt-6-astra", provider: "opencode", api: "openai-responses", input: ["text"] } as Model<any>,
+				messages,
+			),
 		).toEqual([]);
 	});
 

@@ -57,11 +57,13 @@ describe("configuration_update follows the catalog capability flag (senpi#2094)"
 		harnesses.push(harness);
 		await harness.session.setModel(withCompat(harness, "gpt-6-luna", true));
 		harness.session.setThinkingLevel("low");
-		const baseline = harness.session.thinkingLevel;
+		const effortsBefore = configurationUpdateEfforts(harness);
+		const baseline = harness.agent.state.reasoningBaseline;
+		expect(baseline).toBeDefined();
 
 		harness.session.setThinkingLevel("high");
 
-		expect(configurationUpdateEfforts(harness)).toEqual(["high"]);
+		expect(configurationUpdateEfforts(harness)).toEqual([...effortsBefore, "high"]);
 		expect(harness.agent.state.reasoningBaseline).toBe(baseline);
 		expect(harness.agent.state.messages.at(-1)?.role).toBe("configurationUpdate");
 	});

@@ -1083,7 +1083,11 @@ export function supportsMax<TApi extends Api>(model: Model<TApi>): boolean {
 	return supportsMaxModel(model);
 }
 
-const CONFIGURATION_UPDATE_APIS: readonly Api[] = ["openai-responses", "openai-codex-responses", "azure-openai-responses"];
+const CONFIGURATION_UPDATE_APIS: readonly Api[] = [
+	"openai-responses",
+	"openai-codex-responses",
+	"azure-openai-responses",
+];
 
 /**
  * Whether a mid-session reasoning-effort change is sent as a Responses `configuration_update`
