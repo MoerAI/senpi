@@ -1,3 +1,21 @@
+## 2026-09-24 - Strip a gateway tool-reference namespace whatever the casing of its prefix (senpi#2104)
+
+### What changed
+
+- `packages/ai/src/api/anthropic-tool-references.ts`: `GATEWAY_TOOL_NAMESPACE` matches the `mcp__<id>__` prefix case-insensitively, so a replayed native tool-search reference such as `Mcp__a4e6__Memory` folds onto the request's `memory` tool instead of being dropped. The unique-match rule is unchanged.
+
+### Why
+
+- The inbound tool-call resolver (senpi#2104) had the same lowercase-only regex. Both copies of the rule now accept any casing of the prefix, so the two paths agree.
+
+### Why an extension could not handle it
+
+- The tool-reference pass runs inside the Anthropic adapter while it builds the request, before any extension sees the payload.
+
+### Expected merge conflict zones
+
+- LOW: the `GATEWAY_TOOL_NAMESPACE` line in `anthropic-tool-references.ts` (fork-only).
+
 ## 2026-09-24 - Parse gateway cache_creation_tokens as prompt-cache writes (senpi#2091)
 
 ### What changed
