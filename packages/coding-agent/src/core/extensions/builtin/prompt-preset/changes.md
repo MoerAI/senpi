@@ -1,5 +1,33 @@
 # prompt-preset Extension Changes
 
+## 2026-09-24 - Grok 4.5 and 4.6 cores: handoff contract and completion bullet
+
+### What changed
+
+- `grok-4.5.ts`: `buildHandoffSection()` renders `## Handoff` before `## Output` in place of the Output's first sentence; the CEO/orchestration and delegation text is untouched. Full completion bullet in `## Hard Limits` (no scope-swap sentence in this core). Header rationale line.
+- `grok-4.6.ts`: the first `## Style` paragraph is deleted and `## Handoff` renders before `## Style`; the announcement ban becomes a permission-begging ban; full completion bullet in `## Hard Limits`. Header finding 3 now says the Handoff block's fixed fields cover the over-reporting half. Header rationale line. This commit leaves `grok-4.7.ts` a stale copy, and `prompt-presets-grok-4-7.test.ts`'s byte-equality assertion fails until the next entry retires it.
+
+Removed sentences and rendered `wc -w` (empty tool list, `resolvePreset` settings force):
+
+| Preset | Removed (exact) | Before | After | Delta by category |
+|--------|-----------------|--------|-------|-------------------|
+| grok-4.5 | `Update only at meaningful phase changes — a discovery that changes the plan, a worker returning, a blocker — one sentence each.` | 780 | 916 | +122 handoff B+C; +36 full completion bullet C; -22 phase-change cadence B |
+| grok-4.6 | `Make every report dense with information the user does not already have: lead with the outcome and what you verified, never restate the task back. While working, stay quiet through small changes and give one short update only at a meaningful phase change - a discovery that changes the plan, a blocker, work spanning many files - with enough substance to let the user decide whether to interrupt. Skip anything the user does not need to act on.`; `announcement language ("Next, I will...") and permission-begging ("Shall I?") are prohibited` -> `permission-begging ("Shall I?") is prohibited` | 1057 | 1131 | +122 handoff B+C; +36 full completion bullet C; -78 quiet/never-restate paragraph B; -6 announcement ban B |
+
+Neither file grew beyond its completion bullet plus the net handoff delta.
+
+### Why
+
+senpi#2121 (user directive 2026-09-24): progress must be legible at every phase change and at the end. Both Grok cores told the model to stay quiet until a "meaningful" phase change and banned announcing the next step, and the Grok field trace behind this issue shows silent runs that ended with done claimed while work was still open. No xAI prompting guide covers progress reporting; the 4.6 field guide's finding that an explicit definition beats exhortation is why the replacement is a fixed block with named moments, not a frequency word.
+
+### Why an extension could not handle it
+
+The sentences are preset core text; an extension could only append a contradicting rule after them.
+
+### Expected merge conflict zones
+
+- `grok-4.5.ts` `## Hard Limits` / `## Output` opening; `grok-4.6.ts` `## Hard Limits` / `## Style` opening; both import blocks and headers. Fork-only files.
+
 ## 2026-09-24 - GPT cores: outcome-first handoff; Astra handoff-report rule
 
 ### What changed
