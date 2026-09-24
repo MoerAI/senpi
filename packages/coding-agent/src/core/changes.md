@@ -1,3 +1,22 @@
+## 2026-09-24 - Fold the environment context into the user message it precedes (senpi#2118)
+
+### What changed
+
+- `packages/coding-agent/src/core/messages.ts`: `convertToLlm` records the converted form of every `environment-context` custom message and, after `dropFailedAssistantTurns`, passes the list through `foldEnvironmentContextIntoNextUserMessage`. An environment context immediately followed by a user-role message becomes that message's leading content block(s) (same text); one that no user message follows stays a standalone user message.
+- `packages/coding-agent/src/core/environment-context.ts` (fork-only): new `foldEnvironmentContextIntoNextUserMessage(messages, environmentMessages)`.
+
+### Why
+
+- The #2093 environment-context message reached every provider as a user message right before the prompt. Bedrock and Gemini were folded in their converters (#2114), but OpenAI Chat Completions still sent two consecutive user messages, which alternation-enforcing chat templates (vLLM's Mistral tool template, Gemma 3) reject. Folding at conversion keeps persistence, rollover, and resume unchanged, keeps the system prompt byte-stable, and fixes the user message bytes once they are sent, so prefix caches are unaffected.
+
+### Why an extension could not handle it
+
+- `convertToLlm` is the host's AgentMessage-to-LLM projection and runs after every `context` hook; an extension cannot reshape its output for every transport, compaction, and side-query caller.
+
+### Expected merge conflict zones
+
+- LOW: the `environment-context.ts` import, the `environmentMessages` set, the `custom` case, and the final `return` of `convertToLlm` in `messages.ts`.
+
 ## 2026-09-24 - Build the prompt-cache prefix only from preview-safe handlers and cancel it when a turn starts (senpi#2115)
 
 ### What changed

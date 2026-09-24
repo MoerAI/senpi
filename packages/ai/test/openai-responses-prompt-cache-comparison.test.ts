@@ -95,6 +95,23 @@ describe("openai-responses prompt_cache_options.comparison_response_id", () => {
 		await expect(capturePromptCacheOptions(luna, messages)).resolves.toEqual({ comparison_response_id: "resp_ok" });
 	});
 
+	// senpi#2118: the platform rejects a comparison id that does not begin with `resp` with HTTP 400.
+	it("omits the comparison when the previous response id is not a Responses id", async () => {
+		const luna = getModel("openai", "gpt-6-luna");
+		const messages = history(assistant(luna, "resp_older"), assistant(luna, "chatcmpl-previous"));
+
+		await expect(capturePromptCacheOptions(luna, messages)).resolves.toBeUndefined();
+	});
+
+	it("omits the comparison when only another provider produced the previous response", async () => {
+		const luna = getModel("openai", "gpt-6-luna");
+		const otherProvider = { ...luna, provider: "openai-proxy" };
+
+		await expect(
+			capturePromptCacheOptions(luna, history(assistant(otherProvider, "resp_from_proxy"))),
+		).resolves.toBeUndefined();
+	});
+
 	it("omits the comparison without a previous response, for cacheRetention none, and off api.openai.com", async () => {
 		const luna = getModel("openai", "gpt-6-luna");
 		const messages = history(assistant(luna, "resp_previous"));

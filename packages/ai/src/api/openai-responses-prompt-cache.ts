@@ -24,7 +24,13 @@ export function isOpenAIResponsesPromptCacheModel(model: Model<any>): boolean {
 	}
 }
 
-/** Response id of the most recent completed assistant turn produced by the same model on this branch. */
+/**
+ * Response id of the most recent completed assistant turn produced by the same
+ * model on this branch, or `undefined` when that id is not a Responses id: the
+ * platform rejects an id that does not begin with `resp` with HTTP 400
+ * (senpi#2118), while an unknown or expired `resp_` id only yields
+ * `comparison_response_not_found` diagnostics.
+ */
 export function findPromptCacheComparisonResponseId(
 	model: Pick<Model<any>, "api" | "provider" | "id">,
 	messages: readonly Message[],
@@ -34,7 +40,9 @@ export function findPromptCacheComparisonResponseId(
 		if (message?.role !== "assistant") continue;
 		if (message.api !== model.api || message.provider !== model.provider || message.model !== model.id) continue;
 		if (message.stopReason === "error" || message.stopReason === "aborted") continue;
-		if (typeof message.responseId === "string" && message.responseId.length > 0) return message.responseId;
+		if (typeof message.responseId === "string" && message.responseId.length > 0) {
+			return message.responseId.startsWith("resp") ? message.responseId : undefined;
+		}
 	}
 	return undefined;
 }

@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- OpenAI Responses GPT-5.6+ requests send `prompt_cache_options.comparison_response_id` only when the previous same-provider, same-model response id begins with `resp`; the platform rejects other ids with HTTP 400. ([#2118](https://github.com/code-yeongyu/senpi/issues/2118))
 - Amazon Bedrock and Google Gemini requests no longer carry adjacent same-role messages: the Bedrock Converse and Gemini converters fold a message whose role matches the previous one into it (blocks in order, Bedrock cache point still last), so the hidden environment-context user message before a prompt, or a prompt after tool results, no longer breaks those providers' user/assistant alternation rule. ([#2114](https://github.com/code-yeongyu/senpi/issues/2114))
 
 ### Removed
