@@ -1,4 +1,9 @@
-//! Shared desktop types, errors, frames, keys, AX registry, and backend traits.
-//! Skeleton: later lanes own the implementation.
+//! Shared desktop wire types, errors, capture frames, keys, AX registry, and
+//! the `Backend`/`AxBackend` traits every platform backend implements.
 
-pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
+pub mod ax;
+pub mod backend;
+pub mod error;
+pub mod frame;
+pub mod keys;
+pub mod types;
