@@ -1,3 +1,23 @@
+## 2026-09-25 - `todo.firstTurnPlan` setting (senpi#2121)
+
+### What changed
+
+- `packages/coding-agent/src/core/settings-shapes.ts`: `TodoFirstTurnPlan` (`"force" | "remind" | "off"`) and `TodoSettings.firstTurnPlan`, default `"force"`.
+- `packages/coding-agent/src/core/settings-manager.ts`: `Settings.todo` and `getTodoFirstTurnPlan()`, which returns the merged value and falls back to `"force"` for a missing or unknown value.
+- `packages/coding-agent/docs/settings.md`: a Todo section documents the setting.
+
+### Why
+
+The todotools first-turn plan opener (`builtin/todotools/first-turn.ts`) needs a user switch between forcing the opening `todo` call, only reminding, and disabling both.
+
+### Why an extension could not handle it
+
+Settings shapes and their resolved defaults live in the settings manager; the builtin reads the resolved value through `SettingsManager` like the other settings-driven builtins.
+
+### Expected merge conflict zones
+
+- LOW: the `Settings` interface and the getter block next to `getAskUserSettings()` in `settings-manager.ts`; the `settings-shapes.ts` import list.
+
 ## 2026-09-24 - Fold the environment context into the user message it precedes (senpi#2118)
 
 ### What changed

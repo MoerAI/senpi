@@ -1,5 +1,66 @@
 # todotools Fork Tracker
 
+## 2026-09-25 - First-turn plan opener and the single decomposition mandate (senpi#2121)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/todotools/first-turn.ts` (new): `shouldArmFirstTurn` (pure gate: not a preview; `todo.firstTurnPlan` is not `off`; the prompt is non-blank and, after trailing quotes/parens/whitespace are stripped, does not end in `?` or `!`; the branch holds no user message; no todo task exists; `todo` is an active tool; the mode is not `print`/`json`), `supportsNamedToolChoice` (Anthropic through the resolved `getAnthropicCompat`, so the Fable / Mythos / Opus 5.5 forced-choice default applies; OpenAI Responses and Chat Completions always), `namedToolChoicePayload` (per-wire shapes), `withForcedTodoChoice`, and `FIRST_TURN_REMINDER`.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/index.ts`: `before_agent_start` (still preview-safe) returns the hidden `senpi.todo-first-turn` custom message when armed and sets an in-memory `pendingForce`. `before_provider_request` injects the named `todo` tool_choice while `pendingForce` is set and the setting is `force`, only when the payload declares `todo`, carries no `tool_choice`, and (Anthropic) has no `enabled`/`adaptive` thinking; the model is re-resolved from the request. The first assistant `message_end`, `agent_end`, `session_abort`, `session_start`, `session_tree`, and `session_shutdown` clear it. The session log records `todo_first_turn` with `mode: "forced" | "reminder-only"`.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/prompt.ts`: `TASK_MANAGEMENT_SECTION` states the decomposition mandate ("A request with three or more distinct steps gets a phased todo before the first edit - ..."); `TODO_TOOL_DESCRIPTION` rewords the solo-call rule to "NEVER end a turn with a todo call as its only tool call - ..." and drops "Solo todo turns waste a round trip.", and its "Task requires 3+ distinct steps" bullet is deleted so the mandate has one home.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/tools/todo.ts`: the matching prompt guideline uses the same end-a-turn framing.
+- `packages/coding-agent/test/suite/fixtures/task-management-section.txt` regenerated; `packages/coding-agent/test/suite/todo-first-turn.test.ts` (new).
+
+Word counts (`wc -w` of the rendered string; category A delete/correct, B reframe, C new context):
+
+| Surface | Before | After | Delta | Category |
+|---|---|---|---|---|
+| `TASK_MANAGEMENT_SECTION` | 70 | 90 | +20 | C: the mandated decomposition sentence replaces the when-to-use sentence (16 -> 36 words, two of them `-`) |
+| `TODO_TOOL_DESCRIPTION` | 398 | 388 | -10 | B: solo-call rule reframed, "Solo todo turns waste a round trip." deleted; A: "Task requires 3+ distinct steps" deleted as the mandate's duplicate |
+| Both (shipped together every turn) | 468 | 478 | +10 | |
+
+The section alone exceeds the plan's +12 budget because the replacement sentence is fixed text and the rest of the section (the "Mark each item done" sentence and `## Evidence`) is kept verbatim; the file-level growth is offset in the tool description.
+
+### Why
+
+Models skipped the plan on the first request and reported progress without a list to anchor it. A hidden first-turn reminder plus a forced `todo` call on providers that accept one makes the opening call a phased init, and the decomposition rule now lives in exactly one place (`TASK_MANAGEMENT_SECTION`) instead of a when-to-create bullet in the tool description.
+
+### Why an extension could not handle it
+
+The prompt strings, the before-agent-start section, and the todo tool's state are owned by this builtin; a separate extension would add a second copy of the rule beside the one shipped here.
+
+### Expected merge conflict zones
+
+- MEDIUM: `index.ts` `before_agent_start` / `before_provider_request` / lifecycle handlers.
+- LOW: `prompt.ts` string bodies and the golden fixture (regenerate rather than merge); `first-turn.ts` is fork-only.
+
+## 2026-09-25 - Ask/Now/Next header on every todo result (senpi#2121)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/todotools/todo-ask.ts` (new): `captureListAsk` anchors a list-creating call (`init`, or `append` into an empty list) to the branch's first user message when no `senpi.todo-state` entry exists yet, else to the newest user message; ask-user answer frames are skipped, and a newer `compaction.todo-restore-request` re-emits its snapshot's ask. Text is `sanitizeTodoText` of the first text block, cut at 200 code points with `… (+N chars)`.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/todo-types.ts`: `TodoAsk`, `TodoState`, optional `ask` on `TodoStateEntry` (schema stays `v2`) and `TodoToolDetails`, `TODO_RESTORE_REQUEST_TYPE`.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/todo-storage.ts`: `getLatestTodoStateFromBranchEntries` returns `{ phases, ask }`; `getLatestPhasesFromBranchEntries` delegates to it; `isTodoAsk` guard.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/todo-format.ts`: `describeAskNowNext` and `formatAskNowNextHeader`; `formatSummary` prepends `Ask:` / `Now:` / `Next:` and a blank line to every summary, thrown errors included.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/tools/todo.ts`: `execute` captures or carries the ask into the state entry and `details.ask`; `renderResult` draws a dim `Ask:` line above the phases when an ask exists.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/index.ts`: in-memory `currentState = { phases, ask }` resynced on `session_start` / `session_tree`; the native mirror carries the ask.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/commands.ts`: `/todo` prints the same header; user edits carry the ask.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/state.ts`: re-exports the new helpers.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/AGENTS.md` (new): directory guide.
+- Tests: `test/suite/todo-ask-now-next.test.ts`; accessor fakes in the existing todo tests gain `getCurrentAsk` / `setCurrentAsk`.
+
+### Why
+
+A todo result named the list but not what it was for, so a model reporting progress had to reconstruct the original request from memory. The header gives every result, and the later turn-end backstop, one mechanical source for the user's ask and the current and next task labels.
+
+### Why an extension could not handle it
+
+The state entry, the tool result text, and the renderer are owned by this builtin; an outside extension cannot add fields to its persisted state or its results.
+
+### Expected merge conflict zones
+
+- MEDIUM: `tools/todo.ts` `execute` and `renderResult`; `todo-format.ts` `formatSummary`.
+- LOW: `todo-storage.ts` branch reader, `index.ts` state holder, `commands.ts` `commit` / `showCurrent`.
+
 ## 2026-09-24 - Sound todo type guards from pi-todotools 0.2.1 (senpi#2079)
 
 ### What changed
