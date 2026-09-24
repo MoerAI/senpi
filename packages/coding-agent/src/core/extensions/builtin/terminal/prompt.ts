@@ -37,10 +37,9 @@ manual \`&\` backgrounding — use the built-in session tools:
     printf 'READY\\n'\`). Stream: \`tail -n 0 -F | grep --line-buffered\`. Filter noise at the
     source and stop with \`kill_bash\`. Persistent command watches are re-run after a restart with
     \`SENPI_MONITOR_RESTORED=1\`; keep any baseline in \`$SENPI_MONITOR_STATE_DIR\` so a move during
-    downtime (up to \`$SENPI_MONITOR_DOWNTIME_MS\` ms) is still reported:
-    \`b="$SENPI_MONITOR_STATE_DIR/base"; p=$(cat "$b" 2>/dev/null || git rev-parse origin/main | tee "$b"); while sleep 30; do n=$(git rev-parse origin/main); [ "$n" != "$p" ] && { echo "MOVED $p..$n"; p=$n; echo "$p" > "$b"; }; done\`.
-    A watch whose command exits is not restarted; make loops tolerate transient failures
-    (\`git fetch -q || true\`).
+    downtime (at most \`$SENPI_MONITOR_DOWNTIME_MS\` ms) is still reported:
+    \`b="$SENPI_MONITOR_STATE_DIR/base"; p=$(cat "$b" 2>/dev/null || git rev-parse origin/main | tee "$b"); while sleep 30; do git fetch -q || true; n=$(git rev-parse origin/main); [ "$n" != "$p" ] && { echo "MOVED $p..$n"; p=$n; echo "$p" > "$b"; }; done\`.
+    A watch whose command exits is not restarted, so keep failures inside the loop non-fatal.
   - \`${monitor}({ description, path, event?, persistent? })\` natively watches one regular file and
     fires once — prefer it over a shell poll loop. \`"create"\` (the default) fires only when the file
     appears after registration, so watch an already-existing file with \`"modify"\`; registration needs
