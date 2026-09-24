@@ -84,7 +84,10 @@ async function composeTurnSystemPrompt(sources: PromptCachePrefixSources): Promi
 }
 
 // Mirrors Agent.createLoopConfig(): the configuration-update baseline wins over the level.
-function loopReasoning(baseline: string | undefined, thinkingLevel: ThinkingLevel): ThinkingLevel | undefined {
+function loopReasoning(
+	baseline: string | undefined,
+	thinkingLevel: ThinkingLevel,
+): Exclude<ThinkingLevel, "off"> | undefined {
 	const level = baseline !== undefined && isValidThinkingLevel(baseline) ? baseline : thinkingLevel;
 	return level === "off" ? undefined : level;
 }
