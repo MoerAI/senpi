@@ -8,6 +8,7 @@
 
 ### Added
 
+- The first work request of a session (not a question) now opens with a phased `todo` init: a hidden reminder asks for it, and on providers that accept a named tool choice (OpenAI Responses, OpenAI Chat Completions, Anthropic models that allow forced tool use with thinking off) the first request also forces the `todo` call. Set `todo.firstTurnPlan` to `"remind"` for the reminder only or `"off"` to disable it. ([#2121](https://github.com/code-yeongyu/senpi/issues/2121))
 - Every `todo` tool result, including errors, opens with `Ask:` (the user request the list serves), `Now:` (the task in progress), and `Next:` (the next open task) lines; the tool result view and `/todo` show the Ask too. The first list anchors to the session's first user message and a later `init` to the newest one; the ask survives compaction. ([#2121](https://github.com/code-yeongyu/senpi/issues/2121))
 - `pi.on("before_agent_start", handler, { previewSafe: true })` declares a handler side-effect free in a preview. Only such handlers run in the session-start prompt-cache preview. ([#2115](https://github.com/code-yeongyu/senpi/issues/2115))
 

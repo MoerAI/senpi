@@ -15,6 +15,7 @@ oh-my-pi, plus the `/todo` command suite and the `todo-sidebar` widget. Fully di
   `state.ts` is the re-export barrel other builtins import.
 - **Format/prompt**: `todo-format.ts` (`formatSummary`, `describeAskNowNext`),
   `prompt.ts` (`TODO_TOOL_DESCRIPTION`, `TASK_MANAGEMENT_SECTION`), `markdown.ts`.
+- **First turn**: `first-turn.ts` (gate, named tool_choice wire shapes, `FIRST_TURN_REMINDER`).
 - **UI**: `todo-widget.ts` (10-line window model), `todo-widget-component.ts`
   (completion strike animation), `native-todo-mirror.ts`.
 
@@ -29,6 +30,18 @@ skipped. `start` / `done` / `drop` / `rm` / `append` keep the anchor. A compacti
 request (`compaction.todo-restore-request`) newer than the last list and the last user
 message re-emits its snapshot's ask. Now is `nextActionableTask`; Next is the first pending
 task in phase order that is not Now.
+
+## FIRST-TURN PLAN OPENER
+
+`first-turn.ts` arms on a session's first work request (not a preview, not a `?`/`!`
+question, no user message yet on the branch, no tasks, `todo` active, not `print`/`json`,
+`todo.firstTurnPlan` not `off`). `before_agent_start` then adds the hidden
+`senpi.todo-first-turn` reminder; under `force`, `before_provider_request` names `todo` in
+`tool_choice` on that run's requests until the first assistant `message_end` (or
+`agent_end` / abort / session change), only where the resolved compat allows a forced
+choice, the payload declares `todo` with no `tool_choice` of its own, and Anthropic thinking
+is off. The decomposition mandate's single home is `TASK_MANAGEMENT_SECTION`; do not restate
+it in `TODO_TOOL_DESCRIPTION`, the tool guidelines, or a preset.
 
 ## CONVENTIONS
 
@@ -45,6 +58,8 @@ task in phase order that is not Now.
 ## TESTS
 
 `test/suite/todo-*.test.ts` (faux harness from `test/suite/harness.ts` or a captured
-`registerTodoTool` / `registerTodoCommand` with a fake `pi`), `todo-ask-now-next.test.ts`
-for the Ask/Now/Next contract, `test/compaction/todo-*.test.ts` for the snapshot bridge,
-and the golden `test/suite/fixtures/task-management-section.txt`. No real providers.
+`registerTodoTool` / `registerTodoCommand` with a fake `pi`): `todo-ask-now-next.test.ts`
+covers the Ask/Now/Next contract and `todo-first-turn.test.ts` the first-turn gate and
+tool_choice injection (handlers driven through a faux `pi`). `test/compaction/todo-*.test.ts`
+covers the snapshot bridge, and `test/suite/fixtures/task-management-section.txt` is the
+golden copy of `TASK_MANAGEMENT_SECTION`. No real providers.

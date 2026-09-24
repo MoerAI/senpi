@@ -513,6 +513,12 @@ Disable for one run without changing settings with `--no-ask-user` (wins over `a
 
 While a question is pending, the terminal title shows `? <header>` unless an active tool title takes precedence. Settlement restores the previous title layer. Set `askUser.bell: false` to keep the title and question display without a bell.
 
+### Todo
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `todo.firstTurnPlan` | `"force"` \| `"remind"` \| `"off"` | `"force"` | First prompt of a session that is not a question (`?`/`!` ending): `"remind"` adds a hidden reminder to open the turn with a phased `todo` init; `"force"` also sends a named `tool_choice` for `todo` on that first request where the provider accepts one (Anthropic models whose compat allows forced tool choice with thinking off, OpenAI Responses, OpenAI Chat Completions), otherwise it falls back to the reminder; `"off"` disables both. Print and JSON modes never arm |
+
 ### Sessions
 
 | Setting | Type | Default | Description |
