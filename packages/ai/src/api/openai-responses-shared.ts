@@ -880,10 +880,11 @@ export async function processResponsesStream<TApi extends Api>(
 		}
 		if (response?.usage) {
 			const inputDetails = response.usage.input_tokens_details as
-				| { cached_tokens?: number; cache_write_tokens?: number }
+				| { cached_tokens?: number; cache_write_tokens?: number; cache_creation_tokens?: number }
 				| undefined;
 			const cachedTokens = inputDetails?.cached_tokens || 0;
-			const cacheWriteTokens = inputDetails?.cache_write_tokens || 0;
+			// OpenAI platform reports cache_write_tokens; some compatible gateways use cache_creation_tokens.
+			const cacheWriteTokens = inputDetails?.cache_write_tokens ?? inputDetails?.cache_creation_tokens ?? 0;
 			output.usage = {
 				// OpenAI includes cached and cache-write tokens in input_tokens, so subtract both.
 				input: Math.max(0, (response.usage.input_tokens || 0) - cachedTokens - cacheWriteTokens),

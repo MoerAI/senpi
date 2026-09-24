@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- OpenAI Completions and Responses usage parsers count gateway `cache_creation_tokens` as `cacheWrite` when `cache_write_tokens` is absent, so those writes are no longer billed as uncached input. ([#2091](https://github.com/code-yeongyu/senpi/issues/2091))
+
 ### Removed
 
 ## [2026.9.24] - 2026-09-24
