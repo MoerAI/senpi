@@ -42,6 +42,9 @@ const BUNDLED_WORKSPACE_NAMES = [
 	"@earendil-works/pi-tui",
 	"@code-yeongyu/senpi-codemode",
 ];
+// Staged beside the others although coding-agent does not declare them yet; staging adds their exact edges.
+const DESKTOP_WORKSPACES = ["desktop-protocol", "desktop-prelude", "desktop-service", "desktop-tool", "desktop-engine"];
+const DESKTOP_WORKSPACE_NAMES = DESKTOP_WORKSPACES.map((workspace) => `@code-yeongyu/senpi-${workspace}`);
 const VENDORED_WORKSPACE_NAMES = ["@earendil-works/pi-client", "@earendil-works/pi-protocol"];
 const ALL_WORKSPACE_NAMES = [...BUNDLED_WORKSPACE_NAMES, ...VENDORED_WORKSPACE_NAMES];
 
@@ -55,6 +58,7 @@ const BUNDLED_WORKSPACE_PACKAGE_NAMES = new Map([
 	["telemetry", "@earendil-works/pi-telemetry"],
 	["tui", "@earendil-works/pi-tui"],
 	["senpi-codemode", "@code-yeongyu/senpi-codemode"],
+	...DESKTOP_WORKSPACES.map((workspace) => [workspace, `@code-yeongyu/senpi-${workspace}`]),
 ]);
 
 function writeCodingAgentManifest(root) {
@@ -70,7 +74,15 @@ function writeCodingAgentManifest(root) {
 
 function bundledWorkspaceFiles(workspace) {
 	if (workspace === "pty") {
-		return ["package.json", "dist/index.js", "native/index.js", nativePrebuildFile(nativePrebuildTarget())];
+		return ["package.json", "dist/index.js", "native/index.js", nativePrebuildFile(nativePrebuildTarget(), "@earendil-works/pi-pty")];
+	}
+	if (workspace === "desktop-engine") {
+		return [
+			"package.json",
+			"dist/index.js",
+			"native/index.js",
+			nativePrebuildFile(nativePrebuildTarget(), "@code-yeongyu/senpi-desktop-engine"),
+		];
 	}
 	if (workspace === "senpi-codemode") {
 		return ["package.json", "src/index.ts", "src/kernels/py/prelude.py"];
@@ -136,7 +148,7 @@ describe("prepareSenpiBundledWorkspaces", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "senpi-bundle-workspaces-"));
 		writeShrinkwrap(tempDir, { "": { dependencies: {} } });
 		writeCodingAgentManifest(tempDir);
-		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "pty", "telemetry", "tui", "senpi-codemode"]) {
+		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "pty", "telemetry", "tui", "senpi-codemode", ...DESKTOP_WORKSPACES]) {
 			writeBundledWorkspace(tempDir, workspace);
 		}
 
@@ -153,7 +165,7 @@ describe("prepareSenpiBundledWorkspaces", () => {
 					"node_modules",
 					"@earendil-works",
 					"pi-pty",
-					nativePrebuildFile(nativePrebuildTarget()),
+					nativePrebuildFile(nativePrebuildTarget(), "@earendil-works/pi-pty"),
 				),
 				"utf8",
 			),
@@ -161,16 +173,35 @@ describe("prepareSenpiBundledWorkspaces", () => {
 		);
 	});
 
+	it("stages the desktop engine's host executable beside its bundled package", () => {
+		// Given
+		tempDir = mkdtempSync(join(tmpdir(), "senpi-bundle-desktop-engine-"));
+		writeShrinkwrap(tempDir, { "": { dependencies: {} } });
+		writeCodingAgentManifest(tempDir);
+		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "pty", "telemetry", "tui", "senpi-codemode", ...DESKTOP_WORKSPACES]) {
+			writeBundledWorkspace(tempDir, workspace);
+		}
+		const target = nativePrebuildTarget();
+		const executable = target.startsWith("win32-") ? "senpi-desktop-engine.exe" : "senpi-desktop-engine";
+
+		// When
+		prepareSenpiBundledWorkspaces(tempDir);
+
+		// Then
+		const stagedEngine = join(tempDir, "packages", "coding-agent", "node_modules", "@code-yeongyu", "senpi-desktop-engine");
+		assert.equal(existsSync(join(stagedEngine, "native", "prebuilds", target, executable)), true);
+	});
+
 	it("bundles pty with a pipe-fallback warning when the host prebuild is missing", () => {
 		// Given: every loader-visible file present, but the host native prebuild absent.
 		tempDir = mkdtempSync(join(tmpdir(), "senpi-bundle-missing-pty-prebuild-"));
 		writeShrinkwrap(tempDir, { "": { dependencies: {} } });
 		writeCodingAgentManifest(tempDir);
-		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "telemetry", "tui", "senpi-codemode"]) {
+		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "telemetry", "tui", "senpi-codemode", ...DESKTOP_WORKSPACES]) {
 			writeBundledWorkspace(tempDir, workspace);
 		}
 		writeBundledWorkspace(tempDir, "pty");
-		rmSync(join(tempDir, "packages", "pty", nativePrebuildFile(nativePrebuildTarget())));
+		rmSync(join(tempDir, "packages", "pty", nativePrebuildFile(nativePrebuildTarget(), "@earendil-works/pi-pty")));
 
 		const warnings = [];
 		const originalWarn = console.warn;
@@ -235,7 +266,7 @@ describe("prepareSenpiBundledWorkspaces", () => {
 				{ name: `@earendil-works/${packageName}`, version: "stale" },
 			);
 		}
-		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "pty", "telemetry", "tui", "senpi-codemode"]) {
+		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "pty", "telemetry", "tui", "senpi-codemode", ...DESKTOP_WORKSPACES]) {
 			writeBundledWorkspace(tempDir, workspace);
 		}
 		// Installed copies carry the manifest versions: staging refuses any other version.
@@ -293,12 +324,14 @@ describe("prepareSenpiBundledWorkspaces", () => {
 		// protocol are ordinary vendored files with relative declaration imports, so
 		// Bun never sees registry edges for their unpublished upstream package names.
 		const manifest = JSON.parse(readFileSync(join(tempDir, "packages", "coding-agent", "package.json"), "utf8"));
-		const expectedBundle = [...BUNDLED_WORKSPACE_NAMES, "cross-spawn", "which"].sort((a, b) => a.localeCompare(b));
+		const expectedBundle = [...BUNDLED_WORKSPACE_NAMES, ...DESKTOP_WORKSPACE_NAMES, "cross-spawn", "which"].sort((a, b) => a.localeCompare(b));
 		assert.deepEqual(manifest.bundleDependencies, expectedBundle);
 		assert.deepEqual(manifest.bundledDependencies, expectedBundle);
 		assert.deepEqual(manifest.files, ["dist", "README.md", "vendor"]);
 		assert.deepEqual(manifest.dependencies, {
 			"@code-yeongyu/senpi-codemode": "2026.7.22",
+			// Unaliased desktop packages keep their exact staged version.
+			...Object.fromEntries(DESKTOP_WORKSPACE_NAMES.map((name) => [name, "1.0.0"])),
 			// Chord keeps upstream's own release line, so its edge stays a plain range instead of a
 			// fork alias; the packed copy still ships (issue #1632).
 			"@earendil-works/chord": "^2026.7.22",
@@ -369,7 +402,7 @@ describe("prepareSenpiBundledWorkspaces", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "senpi-vendor-specifier-leak-"));
 		writeShrinkwrap(tempDir, { "": { dependencies: {} } });
 		writeCodingAgentManifest(tempDir);
-		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "pty", "telemetry", "tui", "senpi-codemode"]) {
+		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "pty", "telemetry", "tui", "senpi-codemode", ...DESKTOP_WORKSPACES]) {
 			writeBundledWorkspace(tempDir, workspace);
 		}
 		const leakedImport = join(tempDir, "packages", "coding-agent", "dist", "leak.js");
@@ -386,7 +419,7 @@ describe("prepareSenpiBundledWorkspaces", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "senpi-vendor-runtime-dependency-"));
 		writeShrinkwrap(tempDir, { "": { dependencies: {} } });
 		writeCodingAgentManifest(tempDir);
-		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "pty", "telemetry", "tui", "senpi-codemode"]) {
+		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "pty", "telemetry", "tui", "senpi-codemode", ...DESKTOP_WORKSPACES]) {
 			writeBundledWorkspace(tempDir, workspace);
 		}
 		writeJson(join(tempDir, "packages", "protocol", "package.json"), {
@@ -408,7 +441,7 @@ describe("prepareSenpiBundledWorkspaces", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "senpi-bundle-missing-pty-loader-"));
 		writeShrinkwrap(tempDir, { "": { dependencies: {} } });
 		writeCodingAgentManifest(tempDir);
-		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "telemetry", "tui"]) {
+		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "telemetry", "tui", ...DESKTOP_WORKSPACES]) {
 			writeBundledWorkspace(tempDir, workspace);
 		}
 		writeBundledWorkspace(tempDir, "pty");
