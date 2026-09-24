@@ -116,7 +116,11 @@ describe("Bedrock role alternation (#2114)", () => {
 				isError: false,
 				timestamp: Date.now(),
 			},
-			{ role: "user", content: "<environment_context>date: 2026-09-24</environment_context>", timestamp: Date.now() },
+			{
+				role: "user",
+				content: "<environment_context>date: 2026-09-24</environment_context>",
+				timestamp: Date.now(),
+			},
 			{ role: "user", content: "Now summarize them", timestamp: Date.now() },
 		]);
 
