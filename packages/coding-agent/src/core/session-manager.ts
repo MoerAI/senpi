@@ -20,7 +20,7 @@ import { join, resolve } from "path";
 import { StringDecoder } from "string_decoder";
 import { APP_NAME, getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
-import { listSessionInfos, listSessionsFromDir, type SessionListProgress } from "./session-discovery.ts";
+import { listSessionFilesInDir, listSessionsFromDir, type SessionListProgress } from "./session-discovery.ts";
 import { materializeSessionEntries } from "./session-entry-materializer.ts";
 import { type ResidentStoreStats, ResidentStringStore } from "./session-resident-store.ts";
 import {
@@ -2252,12 +2252,16 @@ export class SessionManager {
 				}
 			}
 
-			// Process all files with progress tracking
+			// Process each directory through its own summary index, with progress over all files
 			let loaded = 0;
-			const sessions = await listSessionInfos(dirFiles.flat(), () => {
+			const onLoaded = (): void => {
 				loaded++;
 				progress?.(loaded, totalFiles);
-			});
+			};
+			const sessions: SessionInfo[] = [];
+			for (const [index, dir] of dirs.entries()) {
+				sessions.push(...(await listSessionFilesInDir(dir, dirFiles[index] ?? [], onLoaded)));
+			}
 
 			sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 			return sessions;
