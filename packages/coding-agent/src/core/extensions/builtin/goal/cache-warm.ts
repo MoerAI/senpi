@@ -64,8 +64,7 @@ export function resolveGoalBackstopMaxSecondsForCache(
 ): number | undefined {
 	if (lifetime?.kind !== "best-effort") return goalBackstopMaxSeconds;
 	const isDefault =
-		goalBackstopMaxSeconds === undefined ||
-		goalBackstopMaxSeconds * 1000 === GOAL_MONITOR_BACKSTOP_DEFAULT_DELAY_MS;
+		goalBackstopMaxSeconds === undefined || goalBackstopMaxSeconds * 1000 === GOAL_MONITOR_BACKSTOP_DEFAULT_DELAY_MS;
 	return isDefault ? GOAL_MONITOR_BEST_EFFORT_BACKSTOP_SECONDS : goalBackstopMaxSeconds;
 }
 
