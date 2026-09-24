@@ -2693,6 +2693,14 @@ dependencies = [
 [[package]]
 name = "senpi-desktop-backend-fake"
 version = "0.0.0"
+dependencies = [
+ "image",
+ "parking_lot",
+ "senpi-desktop-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "senpi-desktop-backend-macos"
