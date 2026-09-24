@@ -1,6 +1,16 @@
 import OpenAI from "openai";
-import type { ResponseCreateParamsStreaming, ResponseStreamEvent } from "openai/resources/responses/responses.js";
-import { clampThinkingLevel, inferOpenAIThinkingLevelMap, supportsMax, supportsXhigh } from "../models.ts";
+import type {
+	ResponseCreateParamsNonStreaming,
+	ResponseCreateParamsStreaming,
+	ResponseStreamEvent,
+} from "openai/resources/responses/responses.js";
+import {
+	calculateCost,
+	clampThinkingLevel,
+	inferOpenAIThinkingLevelMap,
+	supportsMax,
+	supportsXhigh,
+} from "../models.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -27,6 +37,11 @@ import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { resolveOpenAIClientAuth } from "./openai-client-auth.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
+import {
+	findPromptCacheComparisonResponseId,
+	type OpenAIPromptCacheOptionsPayload,
+	withPromptCacheComparison,
+} from "./openai-responses-prompt-cache.ts";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
 import { buildBaseOptions, clampMaxForOpenAI, OPENAI_RESPONSES_RESERVED_BODY_KEYS } from "./simple-options.ts";
 import { startWebSocketLiveness } from "./websocket-liveness.ts";
@@ -38,6 +53,7 @@ const OPENAI_WEB_SEARCH_SOURCES_INCLUDE = "web_search_call.action.sources";
 const SESSION_WEBSOCKET_CACHE_TTL_MS = 5 * 60 * 1000;
 // OpenAI Responses rejects max_output_tokens below 16: https://github.com/earendil-works/pi/issues/6265
 const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
+const PROMPT_CACHE_PREWARM_TIMEOUT_MS = 30_000;
 
 type WebSocketEventType = "open" | "message" | "error" | "close" | "ping" | "pong";
 type WebSocketListener = (event: unknown) => void;
@@ -62,7 +78,7 @@ type WebSocketConstructor = new (
 ) => WebSocketLike;
 
 type MutableResponsesPayload = ResponseCreateParamsStreaming & {
-	prompt_cache_options?: { mode?: "explicit" | "implicit"; ttl?: "30m" };
+	prompt_cache_options?: OpenAIPromptCacheOptionsPayload;
 };
 
 const websocketSessionCache = new Map<string, CachedWebSocketConnection>();
@@ -351,7 +367,14 @@ export const streamSimple: StreamFunction<"openai-responses", SimpleStreamOption
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream => {
 	resolveOpenAIClientAuth(model.provider, options?.apiKey, options?.headers);
+	return stream(model, context, resolveSimpleOptions(model, context, options));
+};
 
+function resolveSimpleOptions(
+	model: Model<"openai-responses">,
+	context: Context,
+	options: SimpleStreamOptions | undefined,
+): OpenAIResponsesOptions {
 	const base = {
 		...buildBaseOptions(model, context, options, options?.apiKey),
 		toolChoice: options?.toolChoice,
@@ -365,11 +388,67 @@ export const streamSimple: StreamFunction<"openai-responses", SimpleStreamOption
 				? "max"
 				: clampMaxForOpenAI(clampedReasoning, supportsXhigh(model));
 
-	return stream(model, context, {
-		...base,
-		reasoningEffort,
-	} satisfies OpenAIResponsesOptions);
-};
+	return { ...base, reasoningEffort } satisfies OpenAIResponsesOptions;
+}
+
+/**
+ * Writes the stable prefix (system prompt + tools, no conversation input) into the
+ * OpenAI prompt cache with `prompt_cache_options.prewarm` (senpi#2096). Every other
+ * field is built exactly as the next `streamSimple` turn builds it, so the written
+ * prefix matches the reasoning effort, service tier, and cache options that turn sends.
+ */
+export async function warmOpenAIResponsesPromptCache(
+	model: Model<"openai-responses">,
+	context: Context,
+	options?: SimpleStreamOptions,
+): Promise<{ usage: Usage; usageRaw: unknown }> {
+	const prefix: Context = { ...context, messages: [] };
+	const resolved = resolveSimpleOptions(model, prefix, options);
+	const clientAuth = resolveOpenAIClientAuth(model.provider, resolved.apiKey, resolved.headers);
+	const cacheRetention = resolveCacheRetention(resolved.cacheRetention, resolved.env);
+	const compat = getCompat(model, resolved.env);
+	const grammarToolInputProperties = createGrammarToolInputProperties(prefix.tools, compat.supportsOpenAIGrammarTools);
+	const client = createClient(
+		model,
+		prefix,
+		clientAuth.apiKey,
+		clientAuth.headers,
+		resolved.fetch,
+		cacheRetention === "none" ? undefined : resolved.sessionId,
+		resolved.env,
+	);
+	let params = buildParams(model, prefix, resolved, compat, grammarToolInputProperties);
+	const nextParams = await resolved.onPayload?.(params, model);
+	if (nextParams !== undefined) params = nextParams as MutableResponsesPayload;
+	params = sanitizeUnsupportedNativeTools(params, compat);
+	const body = {
+		...params,
+		stream: false,
+		prompt_cache_options: { ...params.prompt_cache_options, prewarm: true },
+	} as ResponseCreateParamsNonStreaming;
+	const response = await client.responses.create(body, {
+		maxRetries: 0,
+		timeout: resolved.timeoutMs ?? PROMPT_CACHE_PREWARM_TIMEOUT_MS,
+		...(resolved.signal ? { signal: resolved.signal } : {}),
+	});
+	const usageRaw = response.usage;
+	const inputDetails = usageRaw?.input_tokens_details as
+		| { cached_tokens?: number; cache_write_tokens?: number; cache_creation_tokens?: number }
+		| undefined;
+	const cacheRead = inputDetails?.cached_tokens || 0;
+	const cacheWrite = inputDetails?.cache_write_tokens ?? inputDetails?.cache_creation_tokens ?? 0;
+	const usage: Usage = {
+		input: Math.max(0, (usageRaw?.input_tokens || 0) - cacheRead - cacheWrite),
+		output: usageRaw?.output_tokens || 0,
+		cacheRead,
+		cacheWrite,
+		totalTokens: usageRaw?.total_tokens || 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	calculateCost(model, usage);
+	applyServiceTierPricing(usage, response.service_tier ?? resolved.serviceTier, model);
+	return { usage, usageRaw };
+}
 
 function createClient(
 	model: Model<"openai-responses">,
@@ -451,18 +530,26 @@ function buildParams(
 	});
 
 	const cacheRetention = resolveCacheRetention(options?.cacheRetention ?? model.cacheRetention, options?.env);
+	const isNativeEndpoint = isOpenAIResponsesNativeEndpoint(model, options?.env);
+	// senpi#2096: ask the platform why this request missed the prefix of the previous same-model response.
+	const comparisonResponseId =
+		cacheRetention !== "none" && compat.supportsExplicitPromptCacheMode && isNativeEndpoint
+			? findPromptCacheComparisonResponseId(model, context.messages)
+			: undefined;
 	const params: MutableResponsesPayload = {
 		model: model.id,
 		input: messages,
 		stream: true,
 		prompt_cache_key:
 			cacheRetention === "none" ||
-			(isOpenAIResponsesNativeEndpoint(model, options?.env) &&
-				(compat.supportsExplicitPromptCacheMode || model.cost.cacheWrite > 0))
+			(isNativeEndpoint && (compat.supportsExplicitPromptCacheMode || model.cost.cacheWrite > 0))
 				? undefined
 				: clampOpenAIPromptCacheKey(options?.sessionId),
 		prompt_cache_retention: getPromptCacheRetention(compat, cacheRetention),
-		prompt_cache_options: getPromptCacheOptions(compat, cacheRetention),
+		prompt_cache_options: withPromptCacheComparison(
+			getPromptCacheOptions(compat, cacheRetention),
+			comparisonResponseId,
+		),
 		store: false,
 	};
 

@@ -1,3 +1,28 @@
+## 2026-09-24 - Prewarm the GPT-5.6+ prefix and record prompt_cache_diagnostics (senpi#2096)
+
+### What changed
+
+- `packages/ai/src/api/openai-responses.ts`: `buildParams` adds `prompt_cache_options.comparison_response_id` (the most recent completed same-model assistant `responseId` in `context.messages`) for native `api.openai.com` models with `compat.supportsExplicitPromptCacheMode`, unless `cacheRetention` is `none`. The existing `mode`/`ttl` fields are unchanged. `streamSimple`'s option mapping moved into `resolveSimpleOptions`, which the new `warmOpenAIResponsesPromptCache` also uses: it builds the next turn's payload with an empty conversation (system prompt + tools only), runs `onPayload` and native-tool sanitizing, sends it non-streaming with `prompt_cache_options.prewarm: true` and a 30 s default timeout, and returns priced usage.
+- `packages/ai/src/api/openai-responses-shared.ts`: `finalizeResponse` stores the terminal response's `prompt_cache_diagnostics` on `output.promptCacheDiagnostics`.
+- `packages/ai/src/types.ts`: new `PromptCacheDiagnostics` and the optional `AssistantMessage.promptCacheDiagnostics` field.
+- `packages/ai/src/index.ts`: exports `isOpenAIResponsesPromptCacheModel`.
+- Fork-owned: `packages/ai/src/api/openai-responses-prompt-cache.ts` (new, SDK-free eligibility, comparison-id lookup, diagnostics parser) and `packages/ai/src/api/warm-prompt-cache.ts` (`warmPromptCache` dispatches eligible OpenAI Responses models to the lazily loaded prewarm, returns `{ supported: false }` for `cacheRetention: "none"`, and accepts `reasoning`/`serviceTier` so the warm matches the next turn).
+
+### Why
+
+Live platform probes (gpt-6-luna, `store: false`) showed `prompt_cache_options.prewarm` writes the instructions + tools prefix with no output and the next request reads it, and `comparison_response_id` returns `cache_hit` / `cache_miss` with a reason (`reasoning_effort_changed`, `service_tier_changed`, ...). senpi had neither: the first turn always paid a cold prefix and misses were unexplained.
+
+### Why an extension could not handle it
+
+`prompt_cache_options` is written inside the Responses request builder and `prompt_cache_diagnostics` is only visible on the raw terminal event inside the stream parser, before any extension observes the payload or the assistant message.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/api/openai-responses.ts`: imports, the `MutableResponsesPayload` type, `streamSimple` (now delegating to `resolveSimpleOptions`), the new `warmOpenAIResponsesPromptCache` after it, and the `prompt_cache_key` / `prompt_cache_options` fields in `buildParams`.
+- `packages/ai/src/api/openai-responses-shared.ts`: the import block and the `responseId` assignment in `finalizeResponse`.
+- `packages/ai/src/types.ts`: the new interface before `StopReason` and the `AssistantMessage` field after `diagnostics`.
+- `packages/ai/src/index.ts`: the export line before `convertResponsesMessages`.
+
 ## 2026-09-24 - Parse gateway cache_creation_tokens as prompt-cache writes (senpi#2091)
 
 ### What changed

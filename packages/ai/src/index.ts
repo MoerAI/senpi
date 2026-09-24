@@ -42,6 +42,7 @@ export type {
 } from "./api/openai-codex-responses.ts";
 export type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
 export type { OpenAIResponsesOptions } from "./api/openai-responses.ts";
+export { isOpenAIResponsesPromptCacheModel } from "./api/openai-responses-prompt-cache.ts";
 export { convertResponsesMessages } from "./api/openai-responses-shared.ts";
 export type { PiMessagesEvent, PiMessagesOptions, PiMessagesRewriteImpact } from "./api/pi-messages.ts";
 export {

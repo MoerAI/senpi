@@ -1,5 +1,25 @@
 # Cache Keep-Alive Extension Changes
 
+## 2026-09-24 - Prewarm the OpenAI GPT-5.6+ prompt cache at session start (senpi#2096)
+
+### What changed
+
+- `session-prewarm.ts` (new): on every `session_start` for a native OpenAI Responses model with explicit prompt caching (and `cacheRetention` not `none`), one detached `warmPromptCache` request writes the stable prefix (system prompt + active tools, empty conversation) with the session's thinking level, effective service tier, auth headers, and `prepareProviderRequest` payload/header transforms. It never awaits in the turn path, is aborted on the next `session_start` and on `session_shutdown`, times out after 30 s, and records a `prompt-cache-prewarm` custom entry (`warmed` with priced usage, or `failed` with the error).
+- `prewarm-entry.ts` (new): the entry type and `getPromptCachePrewarmUsage`, which core session stats read.
+- `index.ts`: creates the prewarm, starts it from the `session_start` handler and cancels it on `session_shutdown`; `createCacheKeepAliveExtension` accepts an `isPromptCachePrewarmModel` override for tests. The opt-in Anthropic keep-alive loop is unchanged.
+
+### Why
+
+The first turn of every GPT-5.6+ session paid a cold prefix; the platform's `prompt_cache_options.prewarm` writes it ahead of the user's first message.
+
+### Why an extension could not handle it
+
+This is the extension; the change stays inside this builtin apart from the session-stats read documented in `core/changes.md`.
+
+### Expected merge conflict zones
+
+- `session_start` and `session_shutdown` handlers and the factory signature in `index.ts`.
+
 ## 2026-09-21 - Do not warm parked retained sessions (#1902)
 
 ### What changed

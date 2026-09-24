@@ -134,6 +134,7 @@ import { areExperimentalFeaturesEnabled } from "./experimental.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./extensions/builtin/anthropic-subscription/account-management.ts";
+import { getPromptCachePrewarmUsage } from "./extensions/builtin/cache-keepalive/prewarm-entry.ts";
 import {
 	type ModelUsabilityAdmission,
 	ModelUsabilityBudgetError,
@@ -9396,6 +9397,8 @@ export class AgentSession {
 			if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
 				addUsageToTotals(usageTotals, entry.usage);
 			}
+			const prewarmUsage = getPromptCachePrewarmUsage(entry);
+			if (prewarmUsage) addUsageToTotals(usageTotals, prewarmUsage);
 			if (entry.type !== "message") continue;
 			totalMessages++;
 			const message = entry.message;

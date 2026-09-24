@@ -1,0 +1,125 @@
+import {
+	type Context,
+	fauxAssistantMessage,
+	type WarmPromptCacheOptions,
+	type WarmPromptCacheResult,
+} from "@earendil-works/pi-ai";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createCacheKeepAliveExtension } from "../../../src/core/extensions/builtin/cache-keepalive/index.ts";
+import { PROMPT_CACHE_PREWARM_ENTRY_TYPE } from "../../../src/core/extensions/builtin/cache-keepalive/prewarm-entry.ts";
+import { createHarness, getAssistantTexts, type Harness } from "../harness.ts";
+
+const SIGNAL_TIMEOUT_MS = 2_000;
+const harnesses: Harness[] = [];
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (error: Error) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
+async function within<T>(promise: Promise<T>, label: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise<T>((_resolve, reject) => {
+				timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), SIGNAL_TIMEOUT_MS);
+			}),
+		]);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+	}
+}
+
+interface WarmCall {
+	readonly context: Context;
+	readonly options: WarmPromptCacheOptions | undefined;
+}
+
+async function createPrewarmHarness(warm: (call: WarmCall) => Promise<WarmPromptCacheResult>) {
+	const warmCalled = deferred<WarmCall>();
+	const harness = await createHarness({
+		extensionFactories: [
+			createCacheKeepAliveExtension({
+				warmPromptCache: async (_model, context, options) => {
+					const call = { context, options };
+					warmCalled.resolve(call);
+					return warm(call);
+				},
+				isPromptCachePrewarmModel: () => true,
+			}),
+		],
+	});
+	harnesses.push(harness);
+	const entryAppended = deferred<{ customType: string; data: unknown }>();
+	const appendCustomEntry = harness.sessionManager.appendCustomEntry.bind(harness.sessionManager);
+	vi.spyOn(harness.sessionManager, "appendCustomEntry").mockImplementation((customType, data) => {
+		const id = appendCustomEntry(customType, data);
+		if (customType === PROMPT_CACHE_PREWARM_ENTRY_TYPE) entryAppended.resolve({ customType, data });
+		return id;
+	});
+	return { harness, warmCalled: warmCalled.promise, entryAppended: entryAppended.promise };
+}
+
+// senpi#2096: the session-start prompt-cache prewarm is fire-and-forget.
+describe("session-start OpenAI prompt-cache prewarm (#2096)", () => {
+	afterEach(() => {
+		for (const harness of harnesses.splice(0)) harness.cleanup();
+		vi.restoreAllMocks();
+	});
+
+	it("runs the first turn while the prewarm is still in flight and records its cost afterwards", async () => {
+		const pendingWarm = deferred<WarmPromptCacheResult>();
+		const { harness, warmCalled, entryAppended } = await createPrewarmHarness(() => pendingWarm.promise);
+		harness.setResponses([fauxAssistantMessage("first answer")]);
+
+		await harness.session.bindExtensions({});
+		const call = await within(warmCalled, "the prewarm request");
+		expect(call.context.messages).toEqual([]);
+		expect(call.context.systemPrompt).toBe(harness.session.systemPrompt);
+		expect(call.options?.sessionId).toBe(harness.sessionManager.getSessionId());
+		expect(call.options?.signal).toBeInstanceOf(AbortSignal);
+
+		await within(harness.session.prompt("hello"), "the first turn");
+		expect(getAssistantTexts(harness)).toEqual(["first answer"]);
+		const statsBeforeWarm = harness.session.getSessionStats();
+
+		pendingWarm.resolve({
+			supported: true,
+			usage: {
+				input: 1,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 5169,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0.25, total: 0.25 },
+			},
+			usageRaw: {},
+		});
+		const entry = await within(entryAppended, "the prewarm entry");
+		expect(entry.data).toMatchObject({ phase: "warmed", usage: { cacheWrite: 5169, cost: { total: 0.25 } } });
+		const stats = harness.session.getSessionStats();
+		expect(stats.tokens.cacheWrite - statsBeforeWarm.tokens.cacheWrite).toBe(5169);
+		expect(stats.cost - statsBeforeWarm.cost).toBeCloseTo(0.25, 12);
+	});
+
+	it("keeps the first turn working when the prewarm request fails", async () => {
+		const { harness, warmCalled, entryAppended } = await createPrewarmHarness(async () => {
+			throw new Error("prewarm rejected");
+		});
+		harness.setResponses([fauxAssistantMessage("still answered")]);
+
+		await harness.session.bindExtensions({});
+		await within(warmCalled, "the prewarm request");
+		const entry = await within(entryAppended, "the failed prewarm entry");
+		expect(entry.data).toMatchObject({ phase: "failed", error: "prewarm rejected" });
+
+		await within(harness.session.prompt("hello"), "the first turn");
+		expect(getAssistantTexts(harness)).toEqual(["still answered"]);
+		expect(harness.session.getSessionStats().tokens.cacheWrite).toBe(0);
+	});
+});

@@ -6,6 +6,8 @@
 
 ### Added
 
+- `warmPromptCache` prewarms native OpenAI Responses GPT-5.6+ models with `prompt_cache_options.prewarm` (system prompt + tools, no conversation), and those requests now send `prompt_cache_options.comparison_response_id` for the previous same-model response and record the returned `prompt_cache_diagnostics` on `AssistantMessage.promptCacheDiagnostics`. ([#2096](https://github.com/code-yeongyu/senpi/issues/2096))
+
 ### Changed
 
 ### Fixed

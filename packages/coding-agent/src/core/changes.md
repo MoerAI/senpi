@@ -1,3 +1,22 @@
+## 2026-09-24 - Count session-start prompt-cache prewarm usage (senpi#2096)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: `getSessionStats` adds the usage of `prompt-cache-prewarm` custom entries in phase `warmed` (read through `getPromptCachePrewarmUsage` from `extensions/builtin/cache-keepalive/prewarm-entry.ts`) to the token and cost totals.
+- `packages/coding-agent/src/core/usage-totals.ts`: `getUsageCostBreakdown` counts the same entries in the `Tools/summaries` bucket, so the breakdown and the totals agree.
+
+### Why
+
+The `cache-keepalive` builtin now issues one OpenAI GPT-5.6+ prompt-cache prewarm per session start. The request is billed at the cache-write rate but produces no assistant message, so without this the session totals under-report what was billed.
+
+### Why an extension could not handle it
+
+Session stats and the cost breakdown are computed in core from session entries; there is no hook to contribute usage from a custom entry.
+
+### Expected merge conflict zones
+
+- LOW: the builtin import block and the entry loop at the top of `getSessionStats` in `agent-session.ts`; the import block and the `branch_summary`/`compaction` branch of `getUsageCostBreakdown` in `usage-totals.ts`.
+
 ## 2026-09-24 - Fast /resume listing: chunked summary reader and persistent summary index (senpi#2087)
 
 ### What changed

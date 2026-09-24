@@ -38,6 +38,7 @@ import type {
 } from "../types.ts";
 import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
+import { parsePromptCacheDiagnostics } from "./openai-responses-prompt-cache.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import {
@@ -878,6 +879,10 @@ export async function processResponsesStream<TApi extends Api>(
 		if (response?.id) {
 			output.responseId = response.id;
 		}
+		const promptCacheDiagnostics = parsePromptCacheDiagnostics(
+			(response as { prompt_cache_diagnostics?: unknown } | undefined)?.prompt_cache_diagnostics,
+		);
+		if (promptCacheDiagnostics) output.promptCacheDiagnostics = promptCacheDiagnostics;
 		if (response?.usage) {
 			const inputDetails = response.usage.input_tokens_details as
 				| { cached_tokens?: number; cache_write_tokens?: number; cache_creation_tokens?: number }

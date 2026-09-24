@@ -1,13 +1,16 @@
-import type { Context, Model, ProviderHeaders, StreamOptions } from "../types.ts";
+import type { Context, Model, ProviderHeaders, SimpleStreamOptions, Usage } from "../types.ts";
 import { providerHeadersToRecord } from "../utils/headers.ts";
 import { isAnthropicApiBaseUrl } from "../utils/prompt-cache-ttl.ts";
 import type { AnthropicOptions } from "./anthropic-messages.ts";
+import { isOpenAIResponsesPromptCacheModel } from "./openai-responses-prompt-cache.ts";
 
 export interface WarmPromptCacheUsage {
 	readonly input: number;
 	readonly output: number;
 	readonly cacheRead: number;
 	readonly cacheWrite: number;
+	/** Priced cost of the warm request, when the provider path computes it. */
+	readonly cost?: Usage["cost"];
 }
 
 export type WarmPromptCacheResult =
@@ -15,8 +18,18 @@ export type WarmPromptCacheResult =
 	| { readonly supported: true; readonly usage: WarmPromptCacheUsage; readonly usageRaw: unknown };
 
 export type WarmPromptCacheOptions = Pick<
-	StreamOptions,
-	"apiKey" | "cacheRetention" | "env" | "fetch" | "headers" | "onPayload" | "sessionId" | "signal" | "timeoutMs"
+	SimpleStreamOptions,
+	| "apiKey"
+	| "cacheRetention"
+	| "env"
+	| "fetch"
+	| "headers"
+	| "onPayload"
+	| "reasoning"
+	| "serviceTier"
+	| "sessionId"
+	| "signal"
+	| "timeoutMs"
 >;
 
 export async function warmPromptCache(
@@ -24,6 +37,27 @@ export async function warmPromptCache(
 	context: Context,
 	options: WarmPromptCacheOptions = {},
 ): Promise<WarmPromptCacheResult> {
+	if (isOpenAIResponsesPromptCacheModel(model)) {
+		if ((options.cacheRetention ?? model.cacheRetention) === "none") return { supported: false };
+		// Loaded lazily for the same lazy provider-loading contract as the Anthropic SDK below.
+		const { warmOpenAIResponsesPromptCache } = await import("./openai-responses.ts");
+		const { usage, usageRaw } = await warmOpenAIResponsesPromptCache(
+			model as Model<"openai-responses">,
+			context,
+			options,
+		);
+		return {
+			supported: true,
+			usage: {
+				input: usage.input,
+				output: usage.output,
+				cacheRead: usage.cacheRead,
+				cacheWrite: usage.cacheWrite,
+				cost: usage.cost,
+			},
+			usageRaw,
+		};
+	}
 	if (model.api !== "anthropic-messages" || !isAnthropicApiBaseUrl(model.baseUrl)) {
 		return { supported: false };
 	}
