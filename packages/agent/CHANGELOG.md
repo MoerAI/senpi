@@ -6,6 +6,18 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.24-2] - 2026-09-24
+
+### Breaking Changes
+
+### Added
+
 - `AgentState.declaredTools` / `AgentContext.declaredTools`: a superset of the active tools to declare to models that accept an allowed-tools restriction. The provider receives the declared tools plus `activeToolNames`; calls still resolve against the active tools only. ([#2095](https://github.com/code-yeongyu/senpi/issues/2095))
 
 ### Changed

@@ -8,6 +8,18 @@
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+## [2026.9.24-2] - 2026-09-24
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
 - Dense JavaScript eval cells are previewed with Bun's built-in printer when the TUI runs on Bun: one statement per line with normal spacing, while every string, number, template, name, and comment keeps its exact text. On Node, JavaScript cells are shown as sent. Dense Python cells are formatted by your own Python (ruff or black when installed, otherwise the standard library for comment-free cells), appearing formatted a moment after the cell is shown. Anything that cannot be shown faithfully is shown as sent, and the code that runs is unchanged. ([#2076](https://github.com/code-yeongyu/senpi/issues/2076))
 
 ### Fixed
