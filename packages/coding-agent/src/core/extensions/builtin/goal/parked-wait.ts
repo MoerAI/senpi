@@ -46,8 +46,10 @@ function parseCache(value: unknown): GoalCacheWarmMetrics | undefined {
 	if (typeof cachedTokens !== "number" || !Number.isFinite(cachedTokens)) return undefined;
 	const ttlSeconds = Reflect.get(value, "ttlSeconds");
 	const estimatedSavedUsd = Reflect.get(value, "estimatedSavedUsd");
+	const cacheLifetime = Reflect.get(value, "cacheLifetime");
 	return {
 		cachedTokens,
+		...(cacheLifetime === "best-effort" ? { cacheLifetime } : {}),
 		...(typeof ttlSeconds === "number" && Number.isFinite(ttlSeconds) ? { ttlSeconds } : {}),
 		...(typeof estimatedSavedUsd === "number" && Number.isFinite(estimatedSavedUsd) ? { estimatedSavedUsd } : {}),
 	};
