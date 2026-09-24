@@ -407,7 +407,43 @@ describe("terminal restore digest — lease, manifest restore, one resume digest
 		extraChildren.push(child);
 		expect(child.pid).toBeDefined();
 		mkdirSync(stateDir, { recursive: true });
-		writeFileSync(leasePath(), JSON.stringify({ pid: child.pid, startedAtMs: Date.now() }), "utf8");
+		// The holder's start instant is what a live-pid confirm compares against: record the
+		// moment the child was spawned, to the second, as the lease v2 record does.
+		writeFileSync(
+			leasePath(),
+			JSON.stringify({ pid: child.pid, startedAtMs: Math.round(Date.now() / 1000) * 1000 }),
+			"utf8",
+		);
+		// Persistence is lazy: with no manifest there is nothing to restore and no lease is
+		// contested at start. Seed one durable entry so the holder check actually runs.
+		writeFileSync(
+			manifestPath(),
+			JSON.stringify({
+				version: 1,
+				sessionId,
+				monitors: [
+					{
+						monitorId: "mon_HELDELSEWHERE0001",
+						sessionId,
+						description: "held watch",
+						runtimeKind: "command",
+						durabilityClass: "restartable-command",
+						command: "cat",
+						cwd,
+						createdAt: Date.now() - 60_000,
+						expiresAt: Date.now() + DURABLE_MONITOR_EXPIRY_MS,
+						persistent: true,
+						suspended: false,
+						lastCheckpoint: null,
+						deliveryPaused: false,
+						fireWindow: { startMs: Date.now() - 60_000, count: 0 },
+					},
+				],
+				backgroundSessions: [],
+				updatedAt: Date.now() - 30_000,
+			}),
+			"utf8",
+		);
 
 		const generation = await start("resume");
 

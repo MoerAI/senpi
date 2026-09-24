@@ -332,4 +332,27 @@ describe("durable monitor admission control", () => {
 		expect(digest.muted).toBe(1);
 		expect(digest.restored).toBe(0);
 	});
+
+	it("caps persistent creates before a writer is bound and records the queued specs once it binds", async () => {
+		const harness = await makeHarness();
+		unbindTerminalManifestWriter(harness.sessionId);
+		const admitted: string[] = [];
+		for (let index = 0; index < MAX_DURABLE_MONITORS; index += 1) {
+			const result = await createPersistent(harness, `queued-${index}`);
+			expect(result.isError).not.toBe(true);
+			admitted.push(firstText(result));
+		}
+		const refused = await createPersistent(harness, "one-too-many");
+		expect(refused.isError).toBe(true);
+		expect(firstText(refused)).toContain(`${MAX_DURABLE_MONITORS} durable monitors`);
+		expect(harness.createSpy).toHaveBeenCalledTimes(MAX_DURABLE_MONITORS);
+
+		bindTerminalManifestWriter(harness.sessionId, harness.writer);
+		await harness.writer.flush();
+		const persisted = await harness.writer.store.read();
+		expect(persisted?.monitors.map((entry) => entry.description)).toEqual(
+			Array.from({ length: MAX_DURABLE_MONITORS }, (_, index) => `queued-${index}`),
+		);
+		expect(harness.writer.durableCount()).toBe(MAX_DURABLE_MONITORS);
+	});
 });

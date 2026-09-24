@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { getShellEnv } from "../../../../utils/shell.ts";
 import { encodedSessionId } from "../../../session-sidecar-store.ts";
@@ -36,7 +37,7 @@ import {
 } from "./session-bundle.ts";
 import { loadTerminalSettings, type ResolvedTerminalSettings, TERMINAL_SETTINGS_DEFAULTS } from "./settings.ts";
 import { TERMINAL_BASH_TOOL, TERMINAL_COMPANION_TOOLS } from "./shared.ts";
-import { type ManifestMonitor, TerminalManifestWriter } from "./terminal-manifest.ts";
+import { createTerminalManifestStore, type ManifestMonitor, TerminalManifestWriter } from "./terminal-manifest.ts";
 import { createPtyBashTool } from "./tools/bash.ts";
 import { createBashInputTool } from "./tools/bash-input.ts";
 import { createBashOutputTool } from "./tools/bash-output.ts";
@@ -59,6 +60,12 @@ interface TerminalExtensionState {
 	lease: { path: string; pid: number; token: string } | null;
 	/** Manifest recorder; present only while this process owns the session's lease. */
 	manifestWriter: TerminalManifestWriter | null;
+	/**
+	 * Lazy persistence: a session that has never registered a monitor or background session
+	 * owns no lease and no manifest. The first registration calls this once; afterwards it is
+	 * null. Set only when session_start found no manifest to restore from.
+	 */
+	ensurePersistence: (() => Promise<void>) | null;
 	recordedBackgroundIds: Set<string>;
 	parked: boolean;
 }
@@ -132,13 +139,20 @@ function bundleSinks(pi: ExtensionAPI, state: TerminalExtensionState): TerminalE
 				activeCount: snapshot.length,
 				items: snapshot,
 			});
-			const writer = state.manifestWriter;
-			if (!writer) return;
-			for (const entry of snapshot) {
-				if (state.recordedBackgroundIds.has(entry.id)) continue;
-				state.recordedBackgroundIds.add(entry.id);
-				void writer.recordBackgroundStart(entry.id, entry.description ?? entry.id, entry.startedAtMs);
+			const record = (): void => {
+				const writer = state.manifestWriter;
+				if (!writer) return;
+				for (const entry of snapshot) {
+					if (state.recordedBackgroundIds.has(entry.id)) continue;
+					state.recordedBackgroundIds.add(entry.id);
+					void writer.recordBackgroundStart(entry.id, entry.description ?? entry.id, entry.startedAtMs);
+				}
+			};
+			if (state.manifestWriter === null && state.ensurePersistence !== null && snapshot.length > 0) {
+				void state.ensurePersistence().then(record);
+				return;
 			}
+			record();
 		},
 		onBackgroundExit: (id, runtime) => {
 			state.recordedBackgroundIds.delete(id);
@@ -194,6 +208,7 @@ function buildToolContext(pi: ExtensionAPI, state: TerminalExtensionState): Term
 		},
 		onMonitorRearmed: (id: string) => state.monitorNotifier?.rearm(id),
 		onMonitorsResumed: (ids: readonly string[]) => state.monitorNotifier?.resume(ids),
+		ensurePersistence: () => state.ensurePersistence?.() ?? Promise.resolve(),
 	};
 }
 
@@ -264,6 +279,34 @@ function restoreDigestSentence(
  * attached-elsewhere reminder; an unreadable manifest fails closed with one notice and no
  * restore attempt. Only the lease owner records manifest state afterwards.
  */
+/**
+ * Acquire the lease and bind the recorder for this generation. Returns false when a live
+ * foreign holder owns the session (one reminder is sent; nothing is bound here).
+ */
+async function bindPersistence(
+	pi: ExtensionAPI,
+	state: TerminalExtensionState,
+	sessionKey: string,
+	dir: string,
+	sessionManager: NonNullable<ExtensionContext["sessionManager"]>,
+): Promise<TerminalManifestWriter | null> {
+	const lease = await acquireTerminalLease({ dir, encodedSessionId: sessionKey });
+	if (!lease.acquired) {
+		sendTerminalReminder(
+			pi,
+			state,
+			`Terminal monitors for this session are attached in another live process (pid ${lease.holder.pid}); nothing was restored here.`,
+		);
+		return null;
+	}
+	state.lease = { path: lease.path, pid: lease.pid, token: lease.token };
+	const writer = new TerminalManifestWriter({ session: sessionManager });
+	state.manifestWriter = writer;
+	state.recordedBackgroundIds.clear();
+	bindTerminalManifestWriter(sessionKey, writer);
+	return writer;
+}
+
 async function adoptPersistedTerminalState(
 	pi: ExtensionAPI,
 	state: TerminalExtensionState,
@@ -274,20 +317,20 @@ async function adoptPersistedTerminalState(
 	const ctx = state.ctx;
 	const dir = terminalStateDir(ctx);
 	if (dir === undefined || !ctx?.sessionManager) return;
-	const lease = await acquireTerminalLease({ dir, encodedSessionId: sessionKey });
-	if (!lease.acquired) {
-		sendTerminalReminder(
-			pi,
-			state,
-			`Terminal monitors for this session are attached in another live process (pid ${lease.holder.pid}); nothing was restored here.`,
-		);
+	const sessionManager = ctx.sessionManager;
+	if (!existsSync(createTerminalManifestStore(sessionManager).filePath)) {
+		// Nothing to restore: defer the lease and the recorder to the first real registration.
+		let binding: Promise<void> | null = null;
+		state.ensurePersistence = () => {
+			binding ??= bindPersistence(pi, state, sessionKey, dir, sessionManager).then(() => {
+				state.ensurePersistence = null;
+			});
+			return binding;
+		};
 		return;
 	}
-	state.lease = { path: lease.path, pid: lease.pid, token: lease.token };
-	const writer = new TerminalManifestWriter({ session: ctx.sessionManager });
-	state.manifestWriter = writer;
-	state.recordedBackgroundIds.clear();
-	bindTerminalManifestWriter(sessionKey, writer);
+	const writer = await bindPersistence(pi, state, sessionKey, dir, sessionManager);
+	if (writer === null) return;
 
 	// The real durability handlers, built from what this restore site already owns: the live
 	// registry/manager of the bundle created for this generation, plus the manifest writer.
@@ -373,6 +416,7 @@ async function adoptPersistedTerminalState(
 /** Detach the manifest recorder without writing (a reload keeps live state instead). */
 function detachManifestWriter(state: TerminalExtensionState, sessionKey: string | undefined): void {
 	state.manifestWriter = null;
+	state.ensurePersistence = null;
 	state.recordedBackgroundIds.clear();
 	if (sessionKey !== undefined) unbindTerminalManifestWriter(sessionKey);
 }
@@ -413,6 +457,7 @@ export function registerTerminalExtension(pi: ExtensionAPI): void {
 		noticeShown: false,
 		lease: null,
 		manifestWriter: null,
+		ensurePersistence: null,
 		recordedBackgroundIds: new Set(),
 		parked: false,
 	};
@@ -462,6 +507,8 @@ export function registerTerminalExtension(pi: ExtensionAPI): void {
 			// reload generation only rebinds the recorder so manifest coverage continues.
 			if (sessionKey !== undefined && terminalStateDir(ctx) !== undefined) {
 				const writer = new TerminalManifestWriter({ session: ctx.sessionManager });
+				// SF-2: seed from disk so the first post-reload write keeps the pre-reload entries.
+				await writer.seedFromDisk();
 				state.manifestWriter = writer;
 				state.recordedBackgroundIds.clear();
 				bindTerminalManifestWriter(sessionKey, writer);

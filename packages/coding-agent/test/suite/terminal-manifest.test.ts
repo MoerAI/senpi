@@ -151,7 +151,7 @@ describe("terminal manifest writer", () => {
 		}
 	});
 
-	it("settles a monitor with exactly one write and removes its manifest entry", async () => {
+	it("settles the last monitor with no further write: the now-empty manifest is removed", async () => {
 		const { writer } = await makeFixture();
 		const writeSpy = vi.spyOn(writer.store, "write");
 		await writer.recordRegister({
@@ -161,8 +161,8 @@ describe("terminal manifest writer", () => {
 		expect(writeSpy).toHaveBeenCalledTimes(1);
 		expect((await writer.store.read())?.monitors).toHaveLength(1);
 		await writer.observeMonitorState([]);
-		expect(writeSpy).toHaveBeenCalledTimes(2);
-		expect((await writer.store.read())?.monitors).toHaveLength(0);
+		expect(writeSpy).toHaveBeenCalledTimes(1);
+		expect(await writer.store.read()).toBeNull();
 	});
 
 	it("fails closed on a corrupt manifest: typed read error and storeError digest without handler calls", async () => {
@@ -264,7 +264,7 @@ describe("terminal manifest writer", () => {
 		expect(seen).toEqual([]);
 	});
 
-	it("records background start and exit as one write each", async () => {
+	it("records a background start with one write and removes the manifest when the last one exits", async () => {
 		const { writer } = await makeFixture();
 		const writeSpy = vi.spyOn(writer.store, "write");
 		await writer.recordBackgroundStart("bg-1", "echo done", 123);
@@ -273,8 +273,8 @@ describe("terminal manifest writer", () => {
 			{ id: "bg-1", command: "echo done", startedAtMs: 123 },
 		]);
 		await writer.recordBackgroundExit("bg-1");
-		expect(writeSpy).toHaveBeenCalledTimes(2);
-		expect((await writer.store.read())?.backgroundSessions).toEqual([]);
+		expect(writeSpy).toHaveBeenCalledTimes(1);
+		expect(await writer.store.read()).toBeNull();
 	});
 
 	it("re-adopts a restored entry without a write, keeps every persisted field, clears suspended, and counts it as durable", async () => {

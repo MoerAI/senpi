@@ -4,6 +4,7 @@
  * `terminal-manifest-model.ts` — never per-line output and never a runtime handle.
  */
 
+import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { createSidecarStore, type SidecarStore } from "../../../session-sidecar-store.ts";
 import type { MonitorSnapshotEntry } from "./monitor-registry.ts";
@@ -94,6 +95,24 @@ export class TerminalManifestWriter {
 	 */
 	adoptRestored(entry: ManifestMonitor): void {
 		this.#entries.set(entry.monitorId, { ...entry, suspended: false });
+	}
+
+	/**
+	 * Reload seam (SF-2): a reload generation starts with an empty writer, and its first
+	 * transition would rewrite the manifest without the entries the previous generation
+	 * recorded. Seed the live (non-suspended) entries and background sessions from disk
+	 * without writing; a corrupt or absent manifest seeds nothing.
+	 */
+	async seedFromDisk(): Promise<void> {
+		let state: TerminalManifest | null;
+		try {
+			state = await this.store.read();
+		} catch {
+			return;
+		}
+		if (state === null) return;
+		for (const entry of state.monitors) if (!entry.suspended) this.#entries.set(entry.monitorId, entry);
+		for (const background of state.backgroundSessions) this.#backgrounds.set(background.id, background);
 	}
 
 	/**
@@ -227,15 +246,27 @@ export class TerminalManifestWriter {
 		};
 	}
 
+	/** An empty manifest carries no state worth a file: unlink instead of writing `{[],[]}`. */
+	async #removeFile(): Promise<void> {
+		try {
+			await unlink(this.store.filePath);
+		} catch (error) {
+			if (!(typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT")) throw error;
+		}
+		this.store.clear();
+	}
+
 	#persist(): Promise<void> {
 		const run = this.#tail.then(() =>
-			this.store.write({
-				version: TERMINAL_MANIFEST_VERSION,
-				sessionId: this.#sessionId,
-				monitors: [...this.#entries.values()],
-				backgroundSessions: [...this.#backgrounds.values()],
-				updatedAt: this.#now(),
-			}),
+			this.#entries.size === 0 && this.#backgrounds.size === 0
+				? this.#removeFile()
+				: this.store.write({
+						version: TERMINAL_MANIFEST_VERSION,
+						sessionId: this.#sessionId,
+						monitors: [...this.#entries.values()],
+						backgroundSessions: [...this.#backgrounds.values()],
+						updatedAt: this.#now(),
+					}),
 		);
 		this.#tail = run.then(
 			() => undefined,
