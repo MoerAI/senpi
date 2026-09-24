@@ -1,3 +1,25 @@
+## 2026-09-24 - Keep /resume search and tree rebuilds off the per-keystroke path (senpi#2087)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/session-selector-search.ts`: each `SessionInfo`'s search text (`id name allMessagesText cwd`) is built once and kept in a module `WeakMap` keyed by the row object, together with its lower-cased form and, on the first phrase token, its whitespace-normalized form. Query tokens are lower-cased or normalized once per `filterAndSortSessions` call, and fuzzy tokens go through pi-tui `fuzzyMatchLower` against the cached lower-cased text. Regex, fuzzy and phrase results, scores and ordering are unchanged; `matchSession` keeps its signature.
+- `packages/coding-agent/src/modes/interactive/components/session-selector-tree.ts` (new): `buildSessionTree` / `flattenSessionTree` and their node types moved out of `session-selector.ts`. `buildSessionTree` takes a `CanonicalPathResolver`; `createCanonicalPathResolver()` memoizes `canonicalizePath` per path.
+- `packages/coding-agent/src/modes/interactive/components/session-selector.ts`: `SessionList` creates one resolver in its constructor and a fresh one in `setSessions`, and uses it for tree rebuilds and `isCurrentSessionPath`, which runs for every rendered row on every frame.
+- Tests: `test/session-selector-search.test.ts` (mixed-case fuzzy tokens; a new row object for the same session is searched by its own text), `test/session-selector-tree.test.ts` (new; the resolver answers exactly what `canonicalizePath` answers), `test/session-selector-path-delete.test.ts` (a replaced session list re-resolves a retargeted symlink alias).
+
+### Why
+
+- With about 1,100 sessions whose transcript text totals tens of MB, every keystroke rebuilt and lower-cased the whole search text once per token: 75-150 ms per fuzzy query, 240-350 ms per quoted phrase, all synchronous inside `handleInput`. Every threaded rebuild also ran `realpathSync.native` twice per session (about 20 ms).
+
+### Why an extension could not handle it
+
+- The `/resume` picker's filtering and tree construction are private to the built-in session selector component. No extension hook reaches them.
+
+### Expected merge conflict zones
+
+- `session-selector-search.ts`: `getSessionSearchText`, `matchSession` and the two scoring loops in `filterAndSortSessions`.
+- `session-selector.ts`: the imports, the removed tree block ahead of `class SessionList`, the `SessionList` constructor, `setSessions`, `filterSessions` and `isCurrentSessionPath`. Upstream edits to `buildSessionTree` / `flattenSessionTree` now land in `session-selector-tree.ts`.
+
 ## 2026-09-24 - Label skill-directory reads by skill in the exploration group (senpi#2082)
 
 ### What changed
