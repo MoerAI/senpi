@@ -25,7 +25,7 @@ if ($FormHost) {
 	$form.Add_Shown({
 		$form.Activate()
 		$center = $button.PointToScreen((New-Object System.Drawing.Point -ArgumentList ([int]($button.Width / 2)), ([int]($button.Height / 2))))
-		[Console]::Out.WriteLine("ready $($form.Handle.ToInt64()) $($center.X) $($center.Y)")
+		[Console]::Out.WriteLine("ready $($form.Handle.ToInt64()) $($center.X) $($center.Y) $($label.Handle.ToInt64())")
 		[Console]::Out.Flush()
 	})
 	[System.Windows.Forms.Application]::Run($form)
@@ -61,12 +61,8 @@ function Read-ChildLine([System.Diagnostics.Process]$child, [string]$waitingFor)
 	return $line.Result
 }
 
-function Read-LabelText([IntPtr]$hwnd) {
-	$root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
-	$byId = New-Object System.Windows.Automation.PropertyCondition -ArgumentList ([System.Windows.Automation.AutomationElement]::AutomationIdProperty), 'smokeLabel'
-	$labelElement = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $byId)
-	if ($null -eq $labelElement) { throw 'interactive-desktop: UIA found no element with AutomationId smokeLabel' }
-	return $labelElement.Current.Name
+function Read-LabelText([IntPtr]$labelHwnd) {
+	return [System.Windows.Automation.AutomationElement]::FromHandle($labelHwnd).Current.Name
 }
 
 $startInfo = New-Object System.Diagnostics.ProcessStartInfo -Property @{
@@ -82,8 +78,9 @@ try {
 	$hwnd = [IntPtr][long]$ready[1]
 	$x = [int]$ready[2]
 	$y = [int]$ready[3]
+	$labelHwnd = [IntPtr][long]$ready[4]
 
-	$before = Read-LabelText $hwnd
+	$before = Read-LabelText $labelHwnd
 	if ($before -ne 'waiting') { throw "interactive-desktop: label before click is '$before', expected 'waiting'" }
 
 	$raised = [SmokeInput]::SetForegroundWindow($hwnd)
@@ -95,7 +92,7 @@ try {
 
 	$clicked = Read-ChildLine $child 'clicked'
 	if ($clicked -ne 'clicked') { throw "interactive-desktop: unexpected form host line '$clicked'" }
-	$after = Read-LabelText $hwnd
+	$after = Read-LabelText $labelHwnd
 	if ($after -ne 'clicked') { throw "interactive-desktop: label after click is '$after', expected 'clicked'" }
 	Write-Host "interactive-desktop: uia label '$before' -> '$after'"
 	Write-Host 'interactive-desktop: ok'
