@@ -40,6 +40,33 @@ The key is written inside the provider request builders (`packages/ai/src/api/op
 - `packages/ai/src/api/openai-responses.ts`: the `prompt_cache_key` field in `buildParams`.
 - `packages/ai/src/api/openai-completions.ts`: the `prompt_cache_key` ternary in `buildParams`.
 
+## 2026-09-24 - configuration_update follows a catalog capability flag (senpi#2094)
+
+### What changed
+
+- `packages/ai/src/openai-responses-compat.ts`: `OpenAIResponsesCompat.supportsConfigurationUpdate` (boolean, default false) marks models that accept Responses `configuration_update` input items.
+- `packages/ai/src/models.ts`: new `supportsConfigurationUpdate(model)`, true only for a Responses-family api (`openai-responses`, `openai-codex-responses`, `azure-openai-responses`) whose `compat.supportsConfigurationUpdate` is true.
+- `packages/ai/src/api/openai-responses-shared.ts`: the `configurationUpdate` branch of `convertResponsesMessages` gates on `supportsConfigurationUpdate(model)` instead of `model.id === "gpt-6-astra"` on `openai` / `chatgpt-subscription`; adjacent updates still coalesce into one item.
+- `packages/ai/src/api/openai-responses.ts`: `getCompat` resolves `supportsConfigurationUpdate` (default false) with the other `Required<OpenAIResponsesCompat>` fields.
+- `packages/ai/src/providers/data/openai.json`, `packages/ai/src/providers/data/chatgpt-subscription.json`, `packages/ai/src/providers/data/.manifest.json`: the flag lands on the 12 `openai` GPT-5.6/GPT-6 rows (base and `-fast`) and on `chatgpt-subscription` `gpt-6-astra` / `gpt-6-astra-fast`; no other field changed.
+- `packages/ai/test/openai-config-update.test.ts`: flagged and unflagged catalog rows, the api guard, and the exact flagged set per provider.
+
+### Why
+
+A top-level `reasoning.effort` change rewrites the hidden instructions and discards the cached prefix (live probe 2026-09-24: cached 0, diagnostics `reasoning_effort_changed` on gpt-6-luna and gpt-5.6-luna), while an appended `configuration_update` keeps it (4882 / 4879 cached tokens) and still changes effort. The literal `gpt-6-astra` gate threw that cache away on every other model that accepts the item.
+
+### Why an extension could not handle it
+
+The Responses input list is built inside `convertResponsesMessages` before the request leaves the package; an extension sees neither the item list nor the model's wire capabilities.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/api/openai-responses-shared.ts`: the `configurationUpdate` branch at the top of the message loop and the `../models.ts` import.
+- `packages/ai/src/models.ts`: the block after `supportsMax` and the `./types.ts` type import.
+- `packages/ai/src/openai-responses-compat.ts`: the field after `supportsExplicitPromptCacheMode`.
+- `packages/ai/src/api/openai-responses.ts`: the `getCompat` return object.
+- `packages/ai/src/providers/data/*.json` + `.manifest.json`: regenerate rather than merge.
+
 ## 2026-09-23 - Cursor variant grouping derived from the live catalog (senpi#2038)
 
 ### What changed

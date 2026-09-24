@@ -1,3 +1,21 @@
+## 2026-09-24 - configuration_update follows a catalog capability flag (senpi#2094)
+
+### What changed
+
+- `packages/ai/scripts/generate-models.ts`: `applyOpenAIConfigurationUpdateMetadata` runs in the final metadata pass after `applyOpenAIExplicitPromptCacheMetadata` and sets `compat.supportsConfigurationUpdate` on `openai` / `openai-responses` rows with `cost.cacheWrite > 0` (the GPT-5.6+ family) and on `chatgpt-subscription` / `openai-codex-responses` `gpt-6-astra` (`CHATGPT_SUBSCRIPTION_CONFIGURATION_UPDATE_MODEL_IDS`). Priority `-fast` variants are cloned after the pass and inherit the flag.
+
+### Why
+
+Live OpenAI probes on 2026-09-24 showed the direct API accepts `configuration_update` on gpt-6-luna and gpt-5.6-luna (cache kept, effort applied), so the capability belongs to the cache-write-priced family, not one id. The Codex backend was only ever verified on gpt-6-astra and stays limited to it until it can be probed.
+
+### Why an extension could not handle it
+
+The catalog shards ship inside this package; nothing loaded at runtime can change what the generator writes.
+
+### Expected merge conflict zones
+
+- `packages/ai/scripts/generate-models.ts`: the block after `applyOpenAIExplicitPromptCacheMetadata` and the final metadata pass loop.
+
 ## 2026-09-23 - GPT-6 Sol and GPT-6 Luna catalog rows
 
 ### What changed
