@@ -98,11 +98,12 @@ export class TerminalManifestWriter {
 	}
 
 	/**
-	 * A restore that re-spawned watches changed their runtime identity: write once so the NEXT
-	 * crash-restart finds (and stops) these processes rather than starting second copies.
+	 * Write the post-restore truth once: re-spawned watches carry their new runtime identity (so
+	 * the NEXT crash stops them instead of starting copies), and entries that did not come back
+	 * are gone (so they are never re-run). With nothing left, the manifest file is removed.
 	 */
 	persistRestored(): Promise<void> {
-		return this.#entries.size > 0 ? this.#persist() : Promise.resolve();
+		return this.#persist();
 	}
 
 	/**

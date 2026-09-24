@@ -32,6 +32,7 @@ terminal/
 ├── session-activity.ts  # Last transcript entry before this process started (downtime bound input)
 ├── manifest-lease.ts    # Per-session lease v2: token + pid + boot + start instant; self/dead/reused/live-foreign
 ├── lease-keeper.ts      # Waits on a live foreign holder (10s stat + kill 0), takes over exactly once
+├── lease-file.ts        # Lease file primitives: link/rename publish (never half-written), locked reclaim of the inspected record
 ├── process-identity.ts  # Boot instant, own start (floored like ps), tolerances
 ├── process-start-probe.ts # Cold read of a foreign pid's start instant (procfs / ps / PowerShell)
 ├── orphan-reaper.ts     # Confirm a crash-orphaned watcher (boot + start + marker) and kill its group

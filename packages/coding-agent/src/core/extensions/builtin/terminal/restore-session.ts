@@ -156,6 +156,7 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 		state.manifestWriter = writer;
 		state.recordedBackgroundIds.clear();
 		const bundle = state.bundle;
+		let restoredFromReadableManifest = false;
 		if (bundle !== null && existsSync(writer.store.filePath)) {
 			let digest: RestoreDigest;
 			try {
@@ -184,6 +185,7 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 					.map((result) => removeMonitorStateDir(dir, result.monitorId)),
 			);
 			if (generation !== state.generation) return;
+			restoredFromReadableManifest = !digest.storeError;
 			if (digest.storeError || digest.results.length > 0 || digest.backgroundSessions.length > 0) {
 				state.digestSlot.set(buildRestoreDigest(digest, { generation, outcome: "decided" }));
 			}
@@ -191,9 +193,8 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 
 		// Bound AFTER the restore read the file: draining queued specs writes the manifest.
 		bindTerminalManifestWriter(sessionKey, writer);
-		// Persist the re-adopted entries now: their fresh runtime identity is what lets the NEXT
-		// crash-restart find and stop these watchers instead of starting a second copy.
-		await writer.persistRestored();
+		// A corrupt manifest is left as it was (fail closed); a readable one is rewritten to the truth.
+		if (restoredFromReadableManifest) await writer.persistRestored();
 		state.ensurePersistence = null;
 		const self = { pid: process.pid, bootAtMs: processBootAtMs(), processStartedAtMs: ownProcessStartedAtMs() };
 		// Housekeeping only: a failed sweep leaves the files for the next start to reclaim.

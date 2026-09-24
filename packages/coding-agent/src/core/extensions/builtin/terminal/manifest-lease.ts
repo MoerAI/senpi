@@ -1,11 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import {
+	errorCode,
+	publishExclusive,
+	publishReplace,
+	readLeaseText,
+	reclaimInspected,
+	unlinkIfPresent,
+} from "./lease-file.ts";
 import {
 	ownProcessStartedAtMs,
 	PROCESS_START_TOLERANCE_MS,
 	processBootAtMs,
-	sameBoot,
 	sameProcessStart,
 } from "./process-identity.ts";
 import { readProcessStartMs as defaultReadProcessStartMs } from "./process-start-probe.ts";
@@ -67,21 +74,9 @@ export function currentLeaseToken(encodedSessionId: string): string | undefined 
 	return generationTokens.get(encodedSessionId);
 }
 
-export function forgetLeaseToken(encodedSessionId: string, token: string): void {
-	liveTokens.delete(token);
-	if (generationTokens.get(encodedSessionId) === token) generationTokens.delete(encodedSessionId);
-}
-
 /** Mark a generation's token dead the moment its shutdown starts, before any slow flush. */
 export function retireLeaseToken(token: string): void {
 	liveTokens.delete(token);
-}
-
-function errorCode(error: unknown): string | undefined {
-	if (typeof error === "object" && error !== null && "code" in error && typeof error.code === "string") {
-		return error.code;
-	}
-	return undefined;
 }
 
 function probeAlive(pid: number, probe?: (pid: number) => boolean): boolean {
@@ -122,15 +117,6 @@ export function readLeaseRecord(raw: string): LeaseRecord | "unparseable" {
 async function readLeaseFile(path: string): Promise<LeaseRecord | "missing" | "unparseable"> {
 	const raw = await readLeaseText(path);
 	return raw === undefined ? "missing" : readLeaseRecord(raw);
-}
-
-async function readLeaseText(path: string): Promise<string | undefined> {
-	try {
-		return await readFile(path, "utf8");
-	} catch (error) {
-		if (errorCode(error) === "ENOENT") return undefined;
-		throw error;
-	}
 }
 
 /**
@@ -178,65 +164,6 @@ function holderOf(record: LeaseRecord): LeaseHolder {
 	};
 }
 
-async function writeRecord(path: string, record: LeaseRecord, exclusive: boolean): Promise<void> {
-	if (exclusive) {
-		const file = await open(path, "wx");
-		try {
-			await file.writeFile(JSON.stringify(record), "utf8");
-		} finally {
-			await file.close();
-		}
-		return;
-	}
-	const temp = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-	const file = await open(temp, "wx");
-	try {
-		await file.writeFile(JSON.stringify(record), "utf8");
-	} finally {
-		await file.close();
-	}
-	await rename(temp, path);
-}
-
-/**
- * Reclaim only the lease that was inspected. Two waiters can judge the same stale file dead; a
- * plain unlink by path lets the slower one delete the lease the faster one just created. Moving
- * the file aside is atomic, so exactly one waiter gets it; that waiter then checks it moved the
- * record it inspected, and restores a fresh lease it grabbed by mistake instead of deleting it.
- */
-async function reclaimInspected(path: string, inspected: string): Promise<void> {
-	const aside = `${path}.${process.pid}.${randomUUID().slice(0, 8)}.reclaim`;
-	try {
-		await rename(path, aside);
-	} catch (error) {
-		if (errorCode(error) === "ENOENT") return;
-		throw error;
-	}
-	const moved = await readFile(aside, "utf8");
-	if (moved !== inspected) {
-		// Someone else's fresh lease: put it back unless a third writer already replaced it.
-		try {
-			const back = await open(path, "wx");
-			try {
-				await back.writeFile(moved, "utf8");
-			} finally {
-				await back.close();
-			}
-		} catch (error) {
-			if (errorCode(error) !== "EEXIST") throw error;
-		}
-	}
-	await unlinkIfPresent(aside);
-}
-
-async function unlinkIfPresent(path: string): Promise<void> {
-	try {
-		await unlink(path);
-	} catch (error) {
-		if (errorCode(error) !== "ENOENT") throw error;
-	}
-}
-
 export async function acquireTerminalLease(options: AcquireTerminalLeaseOptions): Promise<AcquireTerminalLeaseResult> {
 	const now = (options.now ?? Date.now)();
 	const self: LeaseSelfIdentity = options.self ?? {
@@ -266,9 +193,10 @@ export async function acquireTerminalLease(options: AcquireTerminalLeaseOptions)
 		isProcessAlive: options.isProcessAlive,
 		readProcessStartMs: options.readProcessStartMs ?? defaultReadProcessStartMs,
 	};
-	for (let attempt = 0; attempt < 2; attempt += 1) {
+	const content = JSON.stringify(record);
+	for (let attempt = 0; attempt < 3; attempt += 1) {
 		try {
-			await writeRecord(path, record, true);
+			await publishExclusive(path, content);
 			return acquired();
 		} catch (error) {
 			if (errorCode(error) !== "EEXIST") throw error;
@@ -276,31 +204,19 @@ export async function acquireTerminalLease(options: AcquireTerminalLeaseOptions)
 		const raw = await readLeaseText(path);
 		if (raw === undefined) continue;
 		const existing = readLeaseRecord(raw);
-		if (existing === "unparseable") {
-			await reclaimInspected(path, raw);
-			continue;
-		}
-		const verdict = await classifyLease({ ...existing, pid: existing.pid }, { ...self, pid }, probes);
+		const verdict = existing === "unparseable" ? "dead" : await classifyLease(existing, { ...self, pid }, probes);
 		if (verdict === "self") {
-			await writeRecord(path, record, false);
+			await publishReplace(path, content);
 			return acquired();
 		}
-		if (verdict === "live-foreign") return { acquired: false, holder: holderOf(existing) };
-		await reclaimInspected(path, raw);
+		if (verdict === "live-foreign" && existing !== "unparseable")
+			return { acquired: false, holder: holderOf(existing) };
+		// Only the record judged stale is removed; a racer's fresh lease makes the next try lose cleanly.
+		await reclaimInspected(path, raw, now);
 	}
-	const existing = await readLeaseFile(path);
-	if (existing === "missing" || existing === "unparseable") {
-		try {
-			await writeRecord(path, record, true);
-			return acquired();
-		} catch (error) {
-			if (errorCode(error) !== "EEXIST") throw error;
-		}
-		const winner = await readLeaseFile(path);
-		if (winner !== "missing" && winner !== "unparseable") return { acquired: false, holder: holderOf(winner) };
-		throw new Error(`terminal lease ${path} kept changing while it was being acquired`);
-	}
-	return { acquired: false, holder: holderOf(existing) };
+	const holder = await readLeaseFile(path);
+	if (holder !== "missing" && holder !== "unparseable") return { acquired: false, holder: holderOf(holder) };
+	throw new Error(`terminal lease ${path} kept changing while it was being acquired`);
 }
 
 /** Release only the generation that acquired: a stale release from an earlier generation is a no-op. */
@@ -316,5 +232,3 @@ export async function releaseTerminalLease(handle: { path: string; pid: number; 
 			if (token === existing.token) generationTokens.delete(sessionId);
 	}
 }
-
-export { sameBoot };

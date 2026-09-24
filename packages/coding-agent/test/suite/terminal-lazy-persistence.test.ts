@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { TERMINAL_MONITOR_ENDED_EVENT } from "../../src/core/extensions/builtin/monitor-state-event.ts";
 import { registerTerminalExtension } from "../../src/core/extensions/builtin/terminal/extension.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../src/core/extensions/types.ts";
 import { initTheme, theme } from "../../src/modes/interactive/theme/theme.ts";
@@ -22,15 +23,23 @@ interface ToolLike {
 interface Generation {
 	readonly tools: Map<string, ToolLike>;
 	readonly emit: (eventType: string, payload: Record<string, unknown>) => Promise<void>;
+	readonly onMonitorEnded: (listener: (event: { id: string; reason: string }) => void) => () => void;
 }
 
 function createGeneration(cwd: string, sessionId: string, sessionDir: string): Generation {
 	const handlers = new Map<string, Handler[]>();
 	const tools = new Map<string, ToolLike>();
+	const endedListeners = new Set<(event: { id: string; reason: string }) => void>();
 	let activeTools: string[] = [];
 	const pi = {
 		registerTool: (tool: ToolLike) => tools.set(tool.name, tool),
 		registerMessageRenderer: () => {},
+		events: {
+			emit: (type: string, event: { id: string; reason: string }) => {
+				if (type !== TERMINAL_MONITOR_ENDED_EVENT) return;
+				for (const listener of endedListeners) listener(event);
+			},
+		},
 		on: (eventType: string, handler: Handler) => {
 			handlers.set(eventType, [...(handlers.get(eventType) ?? []), handler]);
 		},
@@ -56,6 +65,10 @@ function createGeneration(cwd: string, sessionId: string, sessionDir: string): G
 		tools,
 		async emit(eventType, payload) {
 			for (const handler of handlers.get(eventType) ?? []) await handler(payload, ctx);
+		},
+		onMonitorEnded(listener) {
+			endedListeners.add(listener);
+			return () => endedListeners.delete(listener);
 		},
 	};
 }
@@ -163,16 +176,24 @@ describe("terminal persistence is lazy and survives a reload", () => {
 		const monitorId = String(created.details?.monitor_id);
 		const dir = join(stateDir, "state", monitorId);
 		expect(existsSync(dir)).toBe(true);
-		const gone = new Promise<void>((resolve, reject) => {
-			const watcher = watch(join(stateDir, "state"), () => {
+		const stateRoot = join(stateDir, "state");
+		const removed = new Promise<boolean>((resolve) => {
+			const done = () => resolve(true);
+			const watcher = watch(stateRoot, () => {
 				if (existsSync(dir)) return;
 				watcher.close();
-				resolve();
+				done();
 			});
-			watcher.on("error", reject);
+			generation.onMonitorEnded(() => {
+				queueMicrotask(() => {
+					if (existsSync(dir)) return;
+					watcher.close();
+					done();
+				});
+			});
 		});
 		writeFileSync(trigger, "");
-		await gone;
+		expect(await removed).toBe(true);
 		expect(existsSync(dir)).toBe(false);
 	});
 

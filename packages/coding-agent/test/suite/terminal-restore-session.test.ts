@@ -71,7 +71,9 @@ describe.runIf(process.platform !== "win32")("terminal restore session: lease, k
 		live = [];
 		children = [];
 		restoreSessionTestHooks.keeperIntervalMs = 50;
-		restoreSessionTestHooks.graceMs = 300;
+		// The production grace: a shorter one lets a loaded host's shell start-up outlast the window,
+		// so a script that exits 127 would read as still running.
+		restoreSessionTestHooks.graceMs = 2_000;
 	});
 
 	afterEach(async () => {
@@ -227,6 +229,22 @@ describe.runIf(process.platform !== "win32")("terminal restore session: lease, k
 			expect.objectContaining({ monitorId, outcome: "restored", orphan: { pid: respawnedPid, action: "killed" } }),
 		]);
 		expect(isAlive(respawnedPid)).toBe(false);
+	});
+
+	it("(a3) a watch that did not come back is gone from the manifest: a second restart never re-runs it", async () => {
+		const runs = join(tmp, "runs.log");
+		writeManifest([persistedWatch("mon_COMPLETEDONCE01", `echo run >> '${runs}'`)]);
+		const first = await start("resume");
+		await whenRestoreDecided(sessionId);
+		expect(detailsOf(digests(first)[0]).monitors.map((entry) => entry.outcome)).toEqual(["completed"]);
+		expect(existsSync(manifestPath())).toBe(false);
+		await first.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+		live = live.filter((generation) => generation !== first);
+
+		const second = await start("resume");
+		await whenRestoreDecided(sessionId);
+		expect(digests(second)).toEqual([]);
+		expect(readFileSync(runs, "utf8").trim().split("\n")).toEqual(["run"]);
 	});
 
 	it("(b) a live foreign holder defers the restore; its exit hands the session over with exactly one digest", async () => {

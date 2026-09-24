@@ -2,7 +2,7 @@
  * Bounded GC of stale leases and empty manifests in the shared per-cwd terminal state dir.
  */
 
-import { readdir as defaultReaddir, readFile, unlink } from "node:fs/promises";
+import { readdir as defaultReaddir, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { classifyLease, type LeaseSelfIdentity, readLeaseRecord } from "./manifest-lease.ts";
 import { readProcessStartMs as defaultReadProcessStartMs } from "./process-start-probe.ts";
@@ -42,6 +42,12 @@ export async function sweepTerminalStateDir(
 		if (options.keep.has(name)) continue;
 		const path = join(dir, name);
 		try {
+			// Reclaim lock and temp files left by a crash are stale once a few seconds old.
+			if (name.endsWith(".lock") || name.endsWith(".tmp") || name.endsWith(".reclaim")) {
+				const info = await stat(path).catch(() => undefined);
+				if (info !== undefined && Date.now() - info.mtimeMs > 30_000) await unlinkIfPresent(path);
+				continue;
+			}
 			if (name.endsWith(".lease")) {
 				const record = readLeaseRecord(await readFile(path, "utf8"));
 				if (record === "unparseable") {
