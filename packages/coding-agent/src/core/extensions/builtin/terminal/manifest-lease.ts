@@ -54,6 +54,10 @@ export function currentLeaseToken(encodedSessionId: string): string | undefined 
 	return generationTokens.get(encodedSessionId);
 }
 
+export function forgetLeaseToken(encodedSessionId: string, token: string): void {
+	if (generationTokens.get(encodedSessionId) === token) generationTokens.delete(encodedSessionId);
+}
+
 function errorCode(error: unknown): string | undefined {
 	if (typeof error === "object" && error !== null && "code" in error && typeof error.code === "string") {
 		return error.code;
@@ -108,7 +112,10 @@ async function readLeaseFile(path: string): Promise<LeaseRecord | "missing" | "u
 /**
  * Decide what an existing lease is. A pid alone is never trusted: the holder is alive only when
  * its pid answers AND its recorded start instant matches the process now wearing that pid
- * (probed on this cold path only). A boot mismatch alone never reclaims an alive pid.
+ * (probed on this cold path only). A boot mismatch alone never reclaims an alive pid. Our own
+ * pid is "self" only when the file carries the token this process minted for the session (or a
+ * legacy record without one): a multi-session host holds many sessions under one pid, and a
+ * lease another live generation in this process owns is a live holder, not a re-entry.
  */
 export async function classifyLease(
 	existing: LeaseRecord,
@@ -116,9 +123,13 @@ export async function classifyLease(
 	probes: {
 		readonly isProcessAlive?: (pid: number) => boolean;
 		readonly readProcessStartMs: (pid: number) => Promise<number | undefined>;
+		readonly ownToken?: string;
 	},
 ): Promise<LeaseClassification> {
-	if (existing.pid === self.pid) return "self";
+	if (existing.pid === self.pid) {
+		if (existing.token === undefined || existing.token === probes.ownToken) return "self";
+		return "live-foreign";
+	}
 	if (!probeAlive(existing.pid, probes.isProcessAlive)) return "dead";
 	const recordedStart = existing.processStartedAtMs ?? existing.startedAtMs;
 	let observedStart: number | undefined;
@@ -194,6 +205,7 @@ export async function acquireTerminalLease(options: AcquireTerminalLeaseOptions)
 	const probes = {
 		isProcessAlive: options.isProcessAlive,
 		readProcessStartMs: options.readProcessStartMs ?? defaultReadProcessStartMs,
+		ownToken: generationTokens.get(options.encodedSessionId),
 	};
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
@@ -230,6 +242,10 @@ export async function releaseTerminalLease(handle: { path: string; pid: number; 
 	if (existing.pid !== handle.pid) return;
 	if (handle.token !== undefined && existing.token !== undefined && existing.token !== handle.token) return;
 	await unlinkIfPresent(handle.path);
+	if (existing.token !== undefined) {
+		for (const [sessionId, token] of generationTokens)
+			if (token === existing.token) generationTokens.delete(sessionId);
+	}
 }
 
 export { sameBoot };

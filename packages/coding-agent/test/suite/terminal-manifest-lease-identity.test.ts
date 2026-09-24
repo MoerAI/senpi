@@ -130,7 +130,15 @@ describe("terminal lease identity (v2)", () => {
 	it("re-enters its own lease with a fresh token and ignores a stale release", async () => {
 		const dir = await tempDir();
 		const path = join(dir, "s.lease");
-		await writeFile(path, JSON.stringify(v2Record({ pid: process.pid, token: "old-generation" })), "utf8");
+		const previous = await acquireTerminalLease({
+			dir,
+			encodedSessionId: "s",
+			now: () => NOW - 60_000,
+			self: selfIdentity(),
+		});
+		expect(previous.acquired).toBe(true);
+		if (!previous.acquired) return;
+		const staleToken = previous.token;
 		const result = await acquireTerminalLease({
 			dir,
 			encodedSessionId: "s",
@@ -143,14 +151,33 @@ describe("terminal lease identity (v2)", () => {
 		});
 		expect(result.acquired).toBe(true);
 		const record = readLeaseRecord(await readFile(path, "utf8"));
-		expect(record).not.toBe("missing");
 		expect(record).not.toBe("unparseable");
-		if (record === "missing" || record === "unparseable") return;
-		expect(record.token).not.toBe("old-generation");
-		await releaseTerminalLease({ path, pid: process.pid, token: "old-generation" });
+		if (record === "unparseable") return;
+		expect(record.token).not.toBe(staleToken);
+		await releaseTerminalLease({ path, pid: process.pid, token: staleToken });
 		expect(existsSync(path)).toBe(true);
 		await releaseTerminalLease({ path, pid: process.pid, token: record.token });
 		expect(existsSync(path)).toBe(false);
+	});
+
+	it("treats another generation of this very process as a live holder, not a re-entry", async () => {
+		const dir = await tempDir();
+		await writeFile(
+			join(dir, "s.lease"),
+			JSON.stringify(v2Record({ pid: process.pid, token: "sibling-session-generation" })),
+			"utf8",
+		);
+		const result = await acquireTerminalLease({
+			dir,
+			encodedSessionId: "s",
+			now: () => NOW,
+			self: selfIdentity(),
+			isProcessAlive: alive,
+			readProcessStartMs: async () => {
+				throw new Error("same-pid classification must not probe");
+			},
+		});
+		expect(result).toMatchObject({ acquired: false, holder: { pid: process.pid } });
 	});
 
 	it("reports a confirmed live foreign holder as attached elsewhere", async () => {
