@@ -17,7 +17,8 @@ import type { ToolDefinition, ToolRenderResultOptions } from "../../extensions/t
 import { resolveToCwd } from "../path-utils.ts";
 import type { ReadToolDetails } from "../read.ts";
 import { type CompactReadClassification, classifyRead } from "../read-classifiers.ts";
-import { getTextOutput, renderToolPath, replaceTabs, str } from "../render-utils.ts";
+import { getTextOutput, linkPath, renderToolPath, replaceTabs, str } from "../render-utils.ts";
+import { getSkillReadPath } from "./skill-read-path.ts";
 
 /**
  * Classifications are memoized per tool call (unclaimed paths included) so a redraw or an
@@ -35,7 +36,12 @@ function formatReadLineRange(args: ReadRenderArgs | undefined, theme: Theme): st
 	return theme.fg("warning", `:${startLine}${endLine ? `-${endLine}` : ""}`);
 }
 function formatReadCall(args: ReadRenderArgs | undefined, theme: Theme, cwd: string): string {
-	const pathDisplay = renderToolPath(str(args?.file_path ?? args?.path), theme, cwd);
+	const rawPath = str(args?.file_path ?? args?.path);
+	const skillPath = rawPath ? getSkillReadPath(resolveToCwd(rawPath, cwd), cwd) : undefined;
+	const pathDisplay =
+		rawPath && skillPath
+			? linkPath(theme.fg("accent", skillPath), rawPath, cwd)
+			: renderToolPath(rawPath, theme, cwd);
 	return `${theme.fg("toolTitle", theme.bold("read"))} ${pathDisplay}${formatReadLineRange(args, theme)}`;
 }
 function trimTrailingEmptyLines(lines: string[]): string[] {

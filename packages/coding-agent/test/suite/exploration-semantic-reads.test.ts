@@ -1,4 +1,6 @@
-import { sep } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, sep } from "node:path";
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
@@ -12,7 +14,56 @@ const recallClassifier: InlineExtension = (pi) => {
 	);
 };
 
+function writeSkill(skillDir: string): void {
+	mkdirSync(join(skillDir, "references"), { recursive: true });
+	writeFileSync(join(skillDir, "SKILL.md"), "---\nname: demo\n---\n");
+	writeFileSync(join(skillDir, "references", "guide.md"), "guide\n");
+}
+
 describe("semantic reads and the exploration group", () => {
+	// senpi#2082: a file beside a SKILL.md is named by its skill, not by its install path.
+	it("labels a file inside a skill directory as <skill>/<path inside the skill>", async () => {
+		const root = mkdtempSync(join(tmpdir(), "senpi-skill-ref-"));
+		writeSkill(join(root, "demo"));
+		writeFileSync(join(root, "loose.md"), "loose\n");
+		const surface = await explorationSurface();
+		try {
+			await runTool(surface, { id: "a", toolName: "read", args: { path: "src/a.ts" } });
+			await runTool(surface, {
+				id: "ref",
+				toolName: "read",
+				args: { path: join(root, "demo", "references", "guide.md") },
+			});
+			await runTool(surface, { id: "loose", toolName: "read", args: { path: join(root, "loose.md") } });
+			const text = surface.text();
+			expect(text.match(/Explored/g)).toHaveLength(1);
+			expect(text).toContain("Read a.ts, demo/references/guide.md, loose.md");
+			invoke(surface.mode, "setToolsExpanded", true);
+			const expanded = surface.text();
+			expect(expanded).toContain("read demo/references/guide.md");
+			expect(expanded).not.toContain(join(root, "demo"));
+			expect(expanded).toContain(join(root, "loose.md"));
+		} finally {
+			surface.cleanup();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps the cwd-relative label when the session runs inside the skill directory", async () => {
+		const surface = await explorationSurface();
+		try {
+			writeSkill(surface.harness.tempDir);
+			await runTool(surface, { id: "ref", toolName: "read", args: { path: "references/guide.md" } });
+			expect(surface.text()).toContain("Read guide.md");
+			invoke(surface.mode, "setToolsExpanded", true);
+			const expanded = surface.text();
+			expect(expanded).toContain("read references/guide.md");
+			expect(expanded).not.toContain("pi-suite-");
+		} finally {
+			surface.cleanup();
+		}
+	});
+
 	it("keeps a skill load as its own [skill] card and splits the group around it", async () => {
 		const surface = await explorationSurface();
 		try {

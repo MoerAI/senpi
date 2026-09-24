@@ -1,3 +1,22 @@
+## 2026-09-24 - Label skill-directory reads by skill in the exploration group (senpi#2082)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/exploration-call.ts`: a grouped `read` of a file inside a skill directory is labeled `<skill>/<path inside the skill>` via `getSkillReadPath` (`core/tools/renderers/skill-read-path.ts`) instead of its basename; other reads keep the basename.
+- `packages/coding-agent/test/suite/exploration-semantic-reads.test.ts`: a skill reference outside the cwd shows `Read a.ts, demo/references/guide.md, loose.md` in one group and `read demo/references/guide.md` when expanded; a session running inside the skill directory keeps `Read guide.md` / `read references/guide.md`.
+
+### Why
+
+- A skill reference collapsed to its bare file name in the `Explored` cell, so the user could not tell which skill it came from.
+
+### Why an extension could not handle it
+
+- Exploration labels are computed by the interactive projection from the built-in read renderer's args; an extension has no hook into the group's label.
+
+### Expected merge conflict zones
+
+- The `read` branch of `explorationCall` in `exploration-call.ts`.
+
 ## 2026-09-23 - Render a resolved tool-call name as the resolved tool (senpi#2064)
 
 ### What changed
