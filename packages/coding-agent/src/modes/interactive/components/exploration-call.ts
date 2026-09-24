@@ -2,13 +2,14 @@ import { basename } from "node:path";
 import { resolveToCwd } from "../../../core/tools/path-utils.ts";
 import { findRenderers, grepRenderers, lsRenderers, readRenderers } from "../../../core/tools/renderers/index.ts";
 import { getCompactReadClassification, type ReadRenderArgs } from "../../../core/tools/renderers/read.ts";
+import { getSkillReadPath } from "../../../core/tools/renderers/skill-read-path.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../../utils/paths.ts";
 import type { ToolExecutionComponent } from "./tool-execution.ts";
 
 /** One exploration call as the collapsed group shows it: an action plus a label, never output. */
 export type ExplorationCall = {
 	readonly action: "Read" | "Search" | "List";
-	/** Read: file basename. Search: the pattern plus ` in <dir>` for an explicit path. List: directory basename. */
+	/** Read: file basename, or `<skill>/<path inside the skill>` for a file in a skill directory. Search: the pattern plus ` in <dir>` for an explicit path. List: directory basename. */
 	readonly label: string;
 	readonly pending: boolean;
 	readonly failed: boolean;
@@ -54,7 +55,8 @@ export function explorationCall(component: ToolExecutionComponent): ExplorationC
 	const path = stringArg(state.args, "file_path", "path");
 	if (toolName === "read") {
 		if (isSemanticRead(state.args, identity.cwd)) return undefined;
-		return { action: "Read", label: path ? basename(path) : "", pending, failed };
+		const label = path ? (getSkillReadPath(resolveToCwd(path, identity.cwd), identity.cwd) ?? basename(path)) : "";
+		return { action: "Read", label, pending, failed };
 	}
 	if (toolName === "grep") {
 		const pattern = stringArg(state.args, "pattern") ?? "";

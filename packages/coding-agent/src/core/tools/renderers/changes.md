@@ -1,5 +1,24 @@
 # core/tools/renderers changes
 
+## Name a file inside a skill directory by its skill, senpi#2082 (2026-09-24)
+
+### What changed
+
+- `skill-read-path.ts` (new): `getSkillReadPath(absolutePath, cwd)` returns `<skill>/<path inside the skill>` for a file whose nearest ancestor holding `SKILL.md` is below the cwd's ancestors, the home directory, and the filesystem root; undefined otherwise. Lookups are memoized per cwd and directory.
+- `read.ts`: `formatReadCall` shows that label (hyperlinked to the real file) instead of the home-shortened absolute path when the read file is inside a skill directory.
+
+### Why
+
+- A skill reference such as `ulw-plan/references/stance-calibration.md` rendered as its full install path under the runtime directory, hiding which skill the file belongs to; only `SKILL.md` itself was recognized.
+
+### Why an extension could not handle it
+
+- The read card's path text is produced inside this renderer; a read classifier replaces the whole headline with a compact card and cannot keep the ordinary `read <path>` shape.
+
+### Expected merge conflict zones
+
+- The `formatReadCall` body and the render-utils import line in `read.ts`.
+
 ## Export the compact read classification for the exploration group, senpi#2060 (2026-09-23)
 
 ### What changed
