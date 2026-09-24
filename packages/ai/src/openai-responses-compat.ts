@@ -23,6 +23,12 @@ export interface OpenAIResponsesCompat {
 	supportsToolSearch?: boolean;
 	/** Whether the model accepts `prompt_cache_options`. */
 	supportsExplicitPromptCacheMode?: boolean;
+	/**
+	 * Whether the model accepts `configuration_update` input items, which change reasoning effort
+	 * mid-session while keeping the cached prompt prefix. Unflagged models change the top-level
+	 * `reasoning.effort` instead. Default: false.
+	 */
+	supportsConfigurationUpdate?: boolean;
 	/** Whether the provider accepts the `max_output_tokens` parameter. Some Codex-protocol gateways reject it. Default: true. */
 	supportsMaxOutputTokens?: boolean;
 }

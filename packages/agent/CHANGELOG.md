@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- A tool call whose `mcp__<id>__` gateway namespace prefix is capitalized, such as `Mcp__686f__Eval` or `MCP__686f__Eval`, now resolves to the unique registered tool the same way `mcp__686f__Eval` does, instead of failing with `Tool <name> not found`. Replayed native tool-search references with a capitalized prefix fold onto the request's tools the same way. ([#2104](https://github.com/code-yeongyu/senpi/issues/2104))
+
 ### Removed
 
 ## [2026.9.24] - 2026-09-24

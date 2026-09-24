@@ -100,6 +100,7 @@ function getCompat(model: Model<"openai-responses">, env?: ProviderEnv): Require
 		supportsAdditionalTools: model.compat?.supportsAdditionalTools ?? false,
 		supportsToolSearch: model.compat?.supportsToolSearch ?? false,
 		supportsExplicitPromptCacheMode: model.compat?.supportsExplicitPromptCacheMode ?? false,
+		supportsConfigurationUpdate: model.compat?.supportsConfigurationUpdate ?? false,
 		supportsMaxOutputTokens: model.compat?.supportsMaxOutputTokens ?? true,
 	};
 }
@@ -455,7 +456,12 @@ function buildParams(
 		model: model.id,
 		input: messages,
 		stream: true,
-		prompt_cache_key: cacheRetention === "none" ? undefined : clampOpenAIPromptCacheKey(options?.sessionId),
+		prompt_cache_key:
+			cacheRetention === "none" ||
+			(isOpenAIResponsesNativeEndpoint(model, options?.env) &&
+				(compat.supportsExplicitPromptCacheMode || model.cost.cacheWrite > 0))
+				? undefined
+				: clampOpenAIPromptCacheKey(options?.sessionId),
 		prompt_cache_retention: getPromptCacheRetention(compat, cacheRetention),
 		prompt_cache_options: getPromptCacheOptions(compat, cacheRetention),
 		store: false,

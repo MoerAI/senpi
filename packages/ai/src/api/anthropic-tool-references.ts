@@ -36,9 +36,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * the suffix alone no longer matches the request's tool name byte for byte.
  * Names are therefore compared with case and `_`/`-` separators folded away,
  * and a folded key resolves only when exactly one request tool owns it: the
- * fold never guesses between two candidates.
+ * fold never guesses between two candidates. The prefix itself matches in any
+ * case (`Mcp__<id>__`), like the inbound tool-call resolver.
  */
-const GATEWAY_TOOL_NAMESPACE = /^mcp__[^_]+__(.+)$/;
+const GATEWAY_TOOL_NAMESPACE = /^mcp__[^_]+__(.+)$/i;
 
 interface AvailableToolNames {
 	readonly defined: ReadonlySet<string>;

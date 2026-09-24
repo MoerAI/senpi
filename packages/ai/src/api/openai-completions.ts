@@ -1061,9 +1061,11 @@ function buildParams(
 		messages,
 		stream: true,
 		prompt_cache_key:
-			(model.baseUrl.includes("api.openai.com") && cacheRetention !== "none") ||
-			(cacheRetention === "long" && compat.supportsLongCacheRetention) ||
-			(compat.supportsPromptCacheKey && cacheRetention !== "none")
+			cacheRetention !== "none" &&
+			!(model.baseUrl.includes("api.openai.com") && model.cost.cacheWrite > 0) &&
+			(model.baseUrl.includes("api.openai.com") ||
+				(cacheRetention === "long" && compat.supportsLongCacheRetention) ||
+				compat.supportsPromptCacheKey)
 				? clampOpenAIPromptCacheKey(options?.sessionId)
 				: undefined,
 		prompt_cache_retention: cacheRetention === "long" && compat.supportsLongCacheRetention ? "24h" : undefined,
@@ -1840,7 +1842,11 @@ function parseChunkUsage(
 		completion_tokens?: number;
 		cached_tokens?: number;
 		prompt_cache_hit_tokens?: number;
-		prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+		prompt_tokens_details?: {
+			cached_tokens?: number;
+			cache_write_tokens?: number;
+			cache_creation_tokens?: number;
+		};
 		completion_tokens_details?: { reasoning_tokens?: number };
 	},
 	model: Model<"openai-completions">,
@@ -1848,14 +1854,17 @@ function parseChunkUsage(
 	const promptTokens = rawUsage.prompt_tokens || 0;
 	const cacheReadTokens =
 		rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? rawUsage.cached_tokens ?? 0;
-	const cacheWriteTokens = rawUsage.prompt_tokens_details?.cache_write_tokens || 0;
+	const cacheWriteTokens =
+		rawUsage.prompt_tokens_details?.cache_write_tokens ?? rawUsage.prompt_tokens_details?.cache_creation_tokens ?? 0;
 
 	// Follow documented OpenAI/OpenRouter semantics: cached_tokens is cache-read
 	// tokens (hits). Providers disagree on placement: OpenAI/OpenRouter use
 	// prompt_tokens_details.cached_tokens, DeepSeek uses prompt_cache_hit_tokens,
 	// and Kimi documents top-level usage.cached_tokens on the final usage chunk.
-	// OpenAI does not document or emit cache_write_tokens, but
-	// OpenRouter-compatible providers can include it as a separate write count.
+	// OpenAI platform reports cache_write_tokens; some compatible gateways report
+	// the same write count as cache_creation_tokens. Prefer cache_write_tokens
+	// when present. OpenRouter-compatible providers can include cache_write_tokens
+	// as a separate write count.
 	// OpenRouter's own provider/tests affirm the separate mapping:
 	// https://github.com/OpenRouterTeam/ai-sdk-provider/pull/409
 	// Do not subtract writes from cached_tokens, otherwise spec-compliant
