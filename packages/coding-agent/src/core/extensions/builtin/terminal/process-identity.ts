@@ -16,8 +16,9 @@ export function processBootAtMs(now: () => number = Date.now): number {
 	return wholeSeconds(now() - osUptimeSeconds() * 1000);
 }
 
+/** Floored like `ps -o lstart`, which truncates to the second: rounding up could land after now. */
 export function ownProcessStartedAtMs(now: () => number = Date.now): number {
-	return wholeSeconds(now() - process.uptime() * 1000);
+	return Math.floor((now() - process.uptime() * 1000) / 1000) * 1000;
 }
 
 export function sameBoot(bootAtMs: number, otherBootAtMs: number | undefined): boolean {

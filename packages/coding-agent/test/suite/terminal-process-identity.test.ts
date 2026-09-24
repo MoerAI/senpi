@@ -30,6 +30,12 @@ describe("terminal process identity", () => {
 		expect(Date.now() - started).toBeLessThan(15 * 60_000);
 	});
 
+	it("floors the own start to the second like ps does, so it never lands after now", () => {
+		const uptimeMs = process.uptime() * 1000;
+		const now = 1_790_000_000_600 + uptimeMs;
+		expect(ownProcessStartedAtMs(() => now)).toBe(1_790_000_000_000);
+	});
+
 	it("treats two boot instants as the same boot only inside the tolerance", () => {
 		const boot = 1_700_000_000_000;
 		expect(sameBoot(boot, boot + BOOT_INSTANT_TOLERANCE_MS)).toBe(true);
