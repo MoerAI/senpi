@@ -2,6 +2,10 @@
 
 Vendored from [`code-yeongyu/pi-nested-agents-md`](https://github.com/code-yeongyu/pi-nested-agents-md) (see `external-versions.json`).
 
+## 2026-09-24 - Pin pi-nested-agents-md 0.1.1, no port needed (senpi#2079)
+
+Compared against tag `v0.1.1`: after the import rewrite, every upstream source file matches senpi except senpi's own adaptations (explicit `InjectionFileReadError.path` field, `event.input.path`, `audience: "model"`, and the `session_compact` `event.accepted` guard, which senpi already carries). Only `external-versions.json` changes.
+
 ## Senpi adaptations vs upstream
 
 - Imports rewritten by `scripts/vendor-transform.mjs`: `@earendil-works/pi-coding-agent` symbols -> `../../types.ts`; relative `.js` import suffixes -> `.ts`. (This package already used `@earendil-works/pi-*` upstream, so only the coding-agent symbols and suffixes moved.)

@@ -1,5 +1,25 @@
 # goal Extension Changes
 
+## 2026-09-24 - Sync with pi-goal 0.3.1 (senpi#2079)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/goal/prompt.ts`: the continuation prompt calls the objective "untrusted goal data" instead of "user-provided data" (pi-goal#4). The rest of senpi's continuation guidance is unchanged.
+- Not ported: pi-goal 0.3.1 removes the blocked -> active auto-resume on every user prompt. senpi never had that path: `direct-input-lifecycle.ts` reactivates a goal on accepted direct input only for mechanical continuation blocks (`isMechanicalContinuationBlock`), so user-interrupt and model-declared blocks already stay blocked until `/goal resume`.
+- The sync report's remaining hunks are whole-file differences between upstream's smaller module set and senpi's extended one; applying them would revert senpi-only behavior, so they were not applied.
+
+### Why
+
+`create_goal` can store an objective the model inferred, so calling it user-provided overstated its authority in every hidden continuation turn.
+
+### Why an extension could not handle it
+
+The continuation prompt is built inside this builtin.
+
+### Expected merge conflict zones
+
+- LOW in `prompt.ts` first objective sentence.
+
 ## 2026-09-23 - One cache-warm card per wait; reloads keep the parked wait (senpi#2051)
 
 ### What changed

@@ -6,11 +6,20 @@
 
 ### Added
 
+- The `websearch` builtin supports Kagi (`"provider": "kagi"`) and SERPdive (`"provider": "serpdive"`) search providers; both need an `apiKey`. Ported from pi-websearch 0.4.0. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+- The `rules` builtin discovers rule files in `.pi/rules/` (project) and `~/.pi/rules/` (home), ahead of `.omo/rules/`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+
 ### Changed
+
+- Dynamic project rules reach the enclosing git repository root: reading a file inside a workspace member (a nested `package.json` or `Cargo.toml`) now also applies repository-level `.github/instructions` rules. Ported from pi-rules 0.2.0. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+- Goal continuation prompts describe the objective as untrusted goal data instead of user-provided data, since the model may have written it with `create_goal`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+- The vendored builtin manifest pins the 2026-09-24 pi-* extension releases and now also records `anthropic-web-search`, `openai-web-search` and `anthropic-bash`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
 
 ### Fixed
 
 - A read of a file inside a skill directory other than its `SKILL.md` - a `references/` document, a script, a template - is labeled by its skill as `<skill>/<path inside the skill>` (for example `read ulw-plan/references/stance-calibration.md`) on the read card and in the `Explored` group, instead of the full install path on the card and the bare file name in the group. A session running inside the skill directory keeps its cwd-relative paths. ([#2082](https://github.com/code-yeongyu/senpi/issues/2082))
+- The `rules` builtin no longer re-injects an `AGENTS.md` / `CLAUDE.md` that pi already loaded into the system prompt when a file read reaches it, uses only the higher-priority root `AGENTS.md` / `CLAUDE.md` for a nested file, keeps only the first home-level single-file rule, resolves symlinked project paths, and `/rules show` without an id reports that an id is required. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+- Todo type guards no longer accept the legacy `cancelled` status without migrating it to `abandoned`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
 
 ### Removed
 
