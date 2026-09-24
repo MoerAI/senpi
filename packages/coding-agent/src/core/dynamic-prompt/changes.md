@@ -1,5 +1,37 @@
 # changes.md — dynamic-prompt
 
+## Handoff contract replaces the announcement ban; completion bullet (2026-09-24)
+
+### What changed
+
+- `handoff.ts` (new): `buildHandoffSection()` renders `## Handoff` - when a handoff happens (turn start, todo phase change, blocker or plan change, final message) and the one block it carries (Ask / For you / Now / Next, with Now and Next as todo labels verbatim and the Next executed in the same response). `build.ts` places it between policies and style; `index.ts` re-exports it.
+- `style.ts`: `Announcement language ("Next, I will...") and permission-begging ("Shall I?") are prohibited.` -> `Permission-begging ("Shall I?") is prohibited.`; `Be concise and concrete: no filler openers, no self-praise, no "it depends" hedging when you have context to judge; plain, literal language;` -> `Plain, literal language; no "it depends" hedging when you have context to judge;`. The `check your last paragraph` sentence and the final-summary sentence stay verbatim.
+- `policies.ts` Hard Blocks: `- Never present partial work as complete or deliver a stub, placeholder, or no-op as the feature; say what is done, what is not, and why you stopped.` (short form: `intent-gate.ts` already bans quietly narrowing, widening, or swapping the scope).
+- `test/dynamic-prompt/build.test.ts`: `occurrences(prompt, "## Handoff") === 1` on the default render (RED under a duplicated `buildHandoffSection()`).
+
+Rendered default prompt (`buildDynamicSystemPrompt`, empty tool list), `wc -w`: 1174 -> 1309 (+135).
+
+| Delta | Words | Category |
+|-------|-------|----------|
+| `## Handoff` section (new) | +122 | B+C (the announcement ban framed every progress line as noise; what a handoff carries was missing) |
+| Completion bullet in Hard Blocks | +28 | C (nothing said partial or stub work must be named as such) |
+| Announcement ban -> permission-begging only | -6 | B (contradicted the handoff) |
+| `Be concise and concrete: no filler openers, no self-praise` dropped | -9 | A (generic traits the model already has; a brevity adjective) |
+
+Source files, `wc -w`: `style.ts` 327 -> 312, `policies.ts` 68 -> 96, `handoff.ts` 0 -> 129.
+
+### Why
+
+senpi#2121, the user directive of 2026-09-24: the user must be able to see, at each phase change and at the end, what they asked for, what they need to know, what is running now, and what runs next. The announcement ban plus the absence of any update shape produced silent runs that ended on a plan. Anthropic's guide (`claude.md` "User-facing progress updates") says to describe the shape of updates rather than a cadence counter, so the section names the moments and the block, not a frequency.
+
+### Why an extension could not handle it
+
+The announcement ban lives in the shared core every fallback and thin preset renders; an extension could only append a contradicting rule after it.
+
+### Expected merge conflict zones
+
+- `build.ts` sections array and imports; `style.ts` two sentences; `policies.ts` Hard Blocks tail.
+
 ## Date and cwd footer removed from the dynamic prompt (2026-09-24, senpi#2093)
 
 ### What changed

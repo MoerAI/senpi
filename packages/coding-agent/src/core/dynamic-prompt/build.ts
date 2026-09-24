@@ -1,5 +1,6 @@
 import type { Skill } from "../skills.ts";
 import { formatSkillsForPrompt } from "../skills.ts";
+import { buildHandoffSection } from "./handoff.ts";
 import { buildIdentitySection } from "./identity.ts";
 import { buildIntentGate } from "./intent-gate.ts";
 import { buildPoliciesSection } from "./policies.ts";
@@ -85,6 +86,8 @@ export function buildDynamicSystemPrompt(options: BuildDynamicSystemPromptOption
 				toolSection,
 				"",
 				buildPoliciesSection(),
+				"",
+				buildHandoffSection(),
 				"",
 				buildStyleSection(),
 			];
