@@ -12,7 +12,7 @@ import {
 } from "../monitor-state-event.ts";
 import { createRestartableCommandHandler } from "./durable-command.ts";
 import { createCheckpointedFileRestoreHandler } from "./durable-file.ts";
-import { acquireTerminalLease, releaseTerminalLease } from "./manifest-lease.ts";
+import { acquireTerminalLease, currentLeaseToken, releaseTerminalLease } from "./manifest-lease.ts";
 import { MonitorNotifier } from "./monitor-notify.ts";
 import { MONITOR_STATUS_KEY } from "./monitor-status.ts";
 import { MonitorStatusTicker } from "./monitor-status-ticker.ts";
@@ -56,7 +56,7 @@ interface TerminalExtensionState {
 	steppedAside: boolean;
 	noticeShown: boolean;
 	/** Set only when this generation acquired the persistence lease (non-reload starts). */
-	lease: { path: string; pid: number } | null;
+	lease: { path: string; pid: number; token: string } | null;
 	/** Manifest recorder; present only while this process owns the session's lease. */
 	manifestWriter: TerminalManifestWriter | null;
 	recordedBackgroundIds: Set<string>;
@@ -281,7 +281,7 @@ async function adoptPersistedTerminalState(
 		);
 		return;
 	}
-	state.lease = { path: lease.path, pid: lease.pid };
+	state.lease = { path: lease.path, pid: lease.pid, token: lease.token };
 	const writer = new TerminalManifestWriter({ session: ctx.sessionManager });
 	state.manifestWriter = writer;
 	state.recordedBackgroundIds.clear();
@@ -534,9 +534,11 @@ export function registerTerminalExtension(pi: ExtensionAPI): void {
 			// A reload generation inherits the pre-reload lease without re-acquiring it;
 			// releasing by (path, own pid) removes exactly that file and no foreign holder's.
 			if (dir !== undefined) {
+				const token = currentLeaseToken(encodedSessionId(sessionKey));
 				await releaseTerminalLease({
 					path: join(dir, `${encodedSessionId(sessionKey)}.lease`),
 					pid: process.pid,
+					...(token === undefined ? {} : { token }),
 				});
 			}
 		}
