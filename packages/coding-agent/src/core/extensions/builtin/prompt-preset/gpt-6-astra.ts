@@ -115,6 +115,12 @@
 // prose rather than persona. Directives a maintainer might mistake for
 // redundant live in `GPT6_ASTRA_RULES` as typed rule data, rendered exactly
 // once at their point of use and pinned by placement in the preset test.
+//
+// 2026-09-24 (senpi#2121): `handoff-report` replaces the "speak only when
+// something changes the plan" sentence in `## Reporting` with the outcome-first
+// handoff block, per the user directive that progress be legible at every phase
+// change; it keeps that sentence's closing clause, which the 09-11 survey above
+// motivated. The GPT-5.5 guide asks for sparse outcome-based updates at phase changes.
 
 import { APP_NAME } from "../../../../config.ts";
 import type { DynamicPromptCoreContext } from "../../../dynamic-prompt/build.ts";
@@ -153,6 +159,7 @@ export type Gpt6AstraRuleId =
 	| "plain-prose"
 	| "slop-ban"
 	| "direct-statements"
+	| "handoff-report"
 	| "final-message-shape";
 
 export type Gpt6AstraConcern =
@@ -258,6 +265,9 @@ const SLOP_BAN =
 const DIRECT_STATEMENTS =
 	"State the action or finding directly and connect it to its purpose or consequence. Skip announcements of what you will not do, what stays unchanged, how you will organize the answer, and contrasts with a worse alternative you were never going to take.";
 
+const HANDOFF_REPORT =
+	"At a handoff - turn start, a todo phase change, a blocker or plan change, the final message - first work out what the user asked for and what they need to know now, then open with one block:\n\n> [Outcome so far] toward [the user's original ask and the result they wanted]. You need: [ledger N/M done, findings, blockers]. Now: [todo task in progress]. Next: [next open task].\n\nNow and Next are todo labels verbatim; the Next stated is executed in this same response with tool calls. Between handoffs, no narration. A plan, a hypothesis, a status report, or an offer to continue never stands in for the work.";
+
 const FINAL_MESSAGE_SHAPE =
 	"The final message stands alone: the outcome first, then the evidence a reader needs to trust it - what you verified and how, what you could not verify and why, and any pre-existing problem you left in place - ordered so the conclusion is easiest to check rather than in the order you worked. Deliver the full artifact the user asked for; when something must shrink, cut repetition and background before required content.";
 
@@ -290,6 +300,7 @@ export const GPT6_ASTRA_RULES = [
 	{ id: "plain-prose", concern: "writing-style", directive: PLAIN_PROSE },
 	{ id: "slop-ban", concern: "writing-style", directive: SLOP_BAN },
 	{ id: "direct-statements", concern: "writing-style", directive: DIRECT_STATEMENTS },
+	{ id: "handoff-report", concern: "reporting", directive: HANDOFF_REPORT },
 	{ id: "final-message-shape", concern: "reporting", directive: FINAL_MESSAGE_SHAPE },
 ] as const satisfies readonly Gpt6AstraRule[];
 
@@ -353,6 +364,7 @@ ${context.toolSection}
 - Never suppress type errors, lint warnings, or test failures, and never delete, skip, or weaken a failing test to go green.
 - Never present unread code, unrun commands, or a pending result as fact, and never invent tool output.
 - ${NO_EXTERNAL_MESSAGING}
+- Never present partial work as complete or deliver a stub, placeholder, or no-op as the feature; say what is done, what is not, and why you stopped.
 
 ## Writing
 
@@ -364,7 +376,7 @@ Be direct and tactful: disagree when you have a reason and say the reason; no fl
 
 ## Reporting
 
-While working, speak only when something changes the plan - a finding, a tradeoff decision, a blocker - in one or two sentences naming the concrete outcome and the next step, then take that step in the same turn: a plan, a hypothesis, a status report, or an offer to continue never stands in for the work. Routine reads and passing checks go unnarrated. ${FINAL_MESSAGE_SHAPE}
+${HANDOFF_REPORT} ${FINAL_MESSAGE_SHAPE}
 
 Code reviews: findings first, ordered by severity with file references, then open questions and assumptions, then the change summary; with no findings, say so and name the residual risks. Reference code as \`src/auth.ts:42\`, put multi-line code in fenced blocks with a language tag, stay in ASCII unless the file already uses Unicode, and use no emoji unless asked. Commit messages and PR descriptions follow the same rule: describe the final change for a reviewer who never saw the conversation.
 

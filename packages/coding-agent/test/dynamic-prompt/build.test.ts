@@ -1,6 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
 import { buildDynamicSystemPrompt } from "../../src/core/dynamic-prompt/build.ts";
 
+function occurrences(haystack: string, needle: string): number {
+	return haystack.split(needle).length - 1;
+}
+
 describe("buildDynamicSystemPrompt", () => {
 	const baseOptions = {
 		cwd: "/test/project",
@@ -73,6 +77,14 @@ describe("buildDynamicSystemPrompt", () => {
 
 		expect(prompt).toContain("## Style");
 		expect(prompt).toContain("Smallest correct change");
+	});
+
+	test("renders the handoff section exactly once", () => {
+		// when
+		const prompt = buildDynamicSystemPrompt(baseOptions);
+
+		// then
+		expect(occurrences(prompt, "## Handoff")).toBe(1);
 	});
 
 	test("does not include tuning section by default", () => {
