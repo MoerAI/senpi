@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- `resolvePromptCacheTtlSeconds()` returns 1800 s for GPT-5.6 and later (GPT-6 Sol/Luna/Astra included) on the OpenAI, Azure OpenAI and ChatGPT-subscription Responses lanes, matching OpenAI's documented minimum 30-minute cache lifetime; earlier OpenAI models and gateways that proxy the same ids keep 300 s. Direct DeepSeek no longer reports a fixed 5-minute TTL: the new `resolvePromptCacheLifetime()` classifies its automatic cache as `best-effort`, next to `ttl` and `none`, and the numeric resolver returns `undefined` for it. ([#2090](https://github.com/code-yeongyu/senpi/issues/2090), [#831](https://github.com/code-yeongyu/senpi/issues/831))
+
 ### Removed
 
 ## [2026.9.24] - 2026-09-24
