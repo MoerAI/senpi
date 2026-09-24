@@ -83,6 +83,7 @@ async function createMonitor(
 	ctx.manager.bindMonitorId(monitorId, id);
 	// The tool call site is the only place the branch inputs (command, persistent, filter)
 	// live; hand the captured spec to the session's manifest writer for durable recording.
+	const identity = runtime.identity();
 	await handMonitorSpec(manifestSessionKey(ctx), {
 		monitorId,
 		spec: {
@@ -93,6 +94,8 @@ async function createMonitor(
 			cwd,
 			persistent: input.persistent === true,
 		},
+		...(identity === undefined ? {} : { runtime: identity }),
+		...(deadlineMs === null ? {} : { deadlineMs }),
 	});
 	return textResult(`Monitor started with ID: ${monitorId}`, {
 		details: { monitor_id: monitorId, bash_id: id, monitor: true },
@@ -158,10 +161,11 @@ export function createMonitorTool(ctx: TerminalToolContext) {
 			const fileInput = isFileCreateInput(input);
 			const commandInput = isCreateInput(input);
 			if (fileInput && commandInput) return errorResult("monitor accepts either command or path, not both.");
-			// A durable create binds persistence first (lazy lease + recorder), then admission runs
-			// before either create branch touches a PTY or the registry.
+			// Every create binds persistence first (lazy lease + recorder: an ephemeral watch with time
+			// left is restorable too), then durable admission runs before either create branch touches
+			// a PTY or the registry.
+			if (fileInput || commandInput) await ctx.ensurePersistence?.();
 			if (input.persistent === true && (fileInput || commandInput)) {
-				await ctx.ensurePersistence?.();
 				const refused = durableAdmissionError(ctx);
 				if (refused) return refused;
 			}

@@ -145,7 +145,8 @@ function bundleSinks(pi: ExtensionAPI, state: TerminalExtensionState): TerminalE
 				for (const entry of snapshot) {
 					if (state.recordedBackgroundIds.has(entry.id)) continue;
 					state.recordedBackgroundIds.add(entry.id);
-					void writer.recordBackgroundStart(entry.id, entry.description ?? entry.id, entry.startedAtMs);
+					const identity = state.bundle?.manager.get(entry.id)?.identity();
+					void writer.recordBackgroundStart(entry.id, entry.description ?? entry.id, entry.startedAtMs, identity);
 				}
 			};
 			if (state.manifestWriter === null && state.ensurePersistence !== null && snapshot.length > 0) {

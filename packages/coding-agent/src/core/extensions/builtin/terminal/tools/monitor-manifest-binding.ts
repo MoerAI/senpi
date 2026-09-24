@@ -37,8 +37,8 @@ export function manifestSessionKey(ctx: TerminalToolContext): string | undefined
 
 /**
  * Hand a spec captured at the monitor tool call site to the session's writer, or queue it until
- * one binds. A durable spec's write is awaited: the tool result must not claim a persistent
- * watch before its manifest entry exists on disk.
+ * one binds. The write is awaited: the tool result must not claim a watch before its manifest
+ * entry exists on disk.
  */
 export async function handMonitorSpec(
 	sessionKey: string | undefined,
@@ -47,8 +47,7 @@ export async function handMonitorSpec(
 	if (sessionKey === undefined) return;
 	const writer = manifestWriters.get(sessionKey);
 	if (writer) {
-		const write = writer.recordRegister(registration);
-		if (registration.spec.persistent) await write;
+		await writer.recordRegister(registration);
 		return;
 	}
 	const queue = pendingSpecs.get(sessionKey) ?? [];
