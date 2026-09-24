@@ -4,7 +4,7 @@
 
 import { readdir as defaultReaddir, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { reclaimInspected, reclaimLockHeld } from "./lease-file.ts";
+import { breakStaleLock, reclaimInspected, reclaimLockState } from "./lease-file.ts";
 import { classifyLease, type LeaseSelfIdentity, readLeaseRecord } from "./manifest-lease.ts";
 import { readProcessStartMs as defaultReadProcessStartMs } from "./process-start-probe.ts";
 
@@ -48,10 +48,11 @@ export async function sweepTerminalStateDir(
 			// A reclaim lock goes only once its holder is gone; a temp file is published within
 			// milliseconds of being written, so one this old was abandoned by a crash.
 			if (name.endsWith(".lock")) {
-				if (!(await reclaimLockHeld(path, probes.isProcessAlive))) await unlinkIfPresent(path);
+				const seen = await reclaimLockState(path, probes);
+				if (seen.state === "stale") await breakStaleLock(path, seen.raw);
 				continue;
 			}
-			if (name.endsWith(".tmp") || name.endsWith(".reclaim")) {
+			if (name.endsWith(".tmp") || name.endsWith(".reclaim") || name.endsWith(".broken")) {
 				const info = await stat(path).catch(() => undefined);
 				if (info !== undefined && Date.now() - info.mtimeMs > ABANDONED_TEMP_MS) await unlinkIfPresent(path);
 				continue;
@@ -63,7 +64,7 @@ export async function sweepTerminalStateDir(
 				// Removal goes through the same inspected-record reclaim as an acquire, so a lease
 				// another process published while this sweep was probing is never deleted.
 				const stale = verdict === "dead" || verdict === "reused";
-				if (stale && (await reclaimInspected(path, raw, Date.now(), probes.isProcessAlive)) === "removed") {
+				if (stale && (await reclaimInspected(path, raw, probes)).outcome === "removed") {
 					removedLeases += 1;
 				}
 			} else if (name.endsWith(".json")) {

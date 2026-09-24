@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LEASE_RECORD_VERSION } from "../../src/core/extensions/builtin/terminal/manifest-lease.ts";
+import { processBootAtMs } from "../../src/core/extensions/builtin/terminal/process-identity.ts";
 import { sweepTerminalStateDir } from "../../src/core/extensions/builtin/terminal/terminal-state-gc.ts";
 
 const createdDirs: string[] = [];
@@ -24,6 +25,7 @@ const LIVE_START = NOW - 120_000;
 const DEAD_BOOT_PID = 111_111;
 const DEAD_V1_PID = 222_222;
 const LIVE_PID = 333_333;
+const REUSED_PID = 444_000;
 const self = { pid: process.pid, bootAtMs: BOOT, processStartedAtMs: NOW - 5_000 };
 
 const FILES = {
@@ -74,18 +76,22 @@ describe("terminal state gc", () => {
 		expect(swept.removedLeases).toBe(0);
 	});
 
-	it("keeps a reclaim lock whose holder is alive and removes one whose holder is gone", async () => {
+	it("keeps a reclaim lock whose holder is alive and removes one whose holder is gone or reused", async () => {
 		const dir = await tempDir();
-		await write(dir, "held.lease.lock", JSON.stringify({ pid: LIVE_PID, atMs: 1 }));
-		await write(dir, "orphaned.lease.lock", JSON.stringify({ pid: DEAD_V1_PID, atMs: 1 }));
+		const lock = (pid: number, processStartedAtMs: number) =>
+			JSON.stringify({ pid, bootAtMs: processBootAtMs(), processStartedAtMs });
+		await write(dir, "held.lease.lock", lock(LIVE_PID, LIVE_START));
+		await write(dir, "orphaned.lease.lock", lock(DEAD_V1_PID, LIVE_START));
+		await write(dir, "reused.lease.lock", lock(REUSED_PID, LIVE_START));
 		await sweepTerminalStateDir(dir, {
 			self,
 			keep: new Set(),
-			isProcessAlive: (pid) => pid === LIVE_PID,
-			readProcessStartMs: async () => LIVE_START,
+			isProcessAlive: (pid) => pid === LIVE_PID || pid === REUSED_PID,
+			readProcessStartMs: async (pid) => (pid === REUSED_PID ? LIVE_START + 3_600_000 : LIVE_START),
 		});
 		expect(existsSync(join(dir, "held.lease.lock"))).toBe(true);
 		expect(existsSync(join(dir, "orphaned.lease.lock"))).toBe(false);
+		expect(existsSync(join(dir, "reused.lease.lock"))).toBe(false);
 	});
 
 	it("removes a temp file abandoned by a crash and keeps one that is being published", async () => {

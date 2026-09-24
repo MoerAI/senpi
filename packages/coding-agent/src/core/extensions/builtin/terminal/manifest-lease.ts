@@ -212,10 +212,18 @@ export async function acquireTerminalLease(options: AcquireTerminalLeaseOptions)
 		if (verdict === "live-foreign" && existing !== "unparseable")
 			return { acquired: false, holder: holderOf(existing) };
 		// Only the record judged stale is removed; a racer's fresh lease makes the next try lose cleanly.
-		await reclaimInspected(path, raw, now);
+		const reclaim = await reclaimInspected(path, raw, probes);
+		// Someone is reclaiming right now: wait on that live process, never on the stale record.
+		if (reclaim.outcome === "busy" && reclaim.holder !== undefined) {
+			const { pid: holderPid, processStartedAtMs, bootAtMs } = reclaim.holder;
+			return { acquired: false, holder: { pid: holderPid, startedAtMs: processStartedAtMs, bootAtMs } };
+		}
 	}
-	const holder = await readLeaseFile(path);
-	if (holder !== "missing" && holder !== "unparseable") return { acquired: false, holder: holderOf(holder) };
+	const raw = await readLeaseText(path);
+	const last = raw === undefined ? "unparseable" : readLeaseRecord(raw);
+	if (last !== "unparseable" && (await classifyLease(last, { ...self, pid }, probes)) === "live-foreign") {
+		return { acquired: false, holder: holderOf(last) };
+	}
 	throw new Error(`terminal lease ${path} kept changing while it was being acquired`);
 }
 

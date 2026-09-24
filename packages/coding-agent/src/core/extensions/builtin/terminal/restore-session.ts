@@ -221,6 +221,12 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 				state.restoreInFlight = own(lease);
 				return state.restoreInFlight;
 			},
+			onError: (error) => {
+				ctx?.ui?.notify?.(
+					`Terminal lease check failed, still waiting: ${error instanceof Error ? error.message : String(error)}`,
+					"warning",
+				);
+			},
 		});
 		state.keeper.start(holder);
 	};

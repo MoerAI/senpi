@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +11,10 @@ import {
 	releaseTerminalLease,
 	retireLeaseToken,
 } from "../../src/core/extensions/builtin/terminal/manifest-lease.ts";
-import { BOOT_INSTANT_TOLERANCE_MS } from "../../src/core/extensions/builtin/terminal/process-identity.ts";
+import {
+	BOOT_INSTANT_TOLERANCE_MS,
+	processBootAtMs,
+} from "../../src/core/extensions/builtin/terminal/process-identity.ts";
 
 const createdDirs: string[] = [];
 
@@ -48,28 +51,60 @@ function selfIdentity(pid = process.pid) {
 }
 
 describe("terminal lease identity (v2)", () => {
-	it("breaks a reclaim lock only when the process holding it is gone", async () => {
+	it("waits on a live reclaimer and breaks a lock whose holder is gone or whose pid was reused", async () => {
 		const dir = await tempDir();
 		const path = join(dir, "s.lease");
 		const stale = JSON.stringify(v2Record({ pid: 2_147_000_002, token: "dead-holder" }));
+		const reclaimer = { pid: 3_100_001, bootAtMs: processBootAtMs(), processStartedAtMs: NOW - 60_000 };
+		let reclaimerStart = reclaimer.processStartedAtMs;
+		let reclaimerAlive = true;
 		const acquire = () =>
 			acquireTerminalLease({
 				dir,
 				encodedSessionId: "s",
 				now: () => NOW,
 				self: selfIdentity(),
-				isProcessAlive: (pid: number) => pid !== 2_147_000_002,
-				readProcessStartMs: async () => NOW - 5_000,
+				isProcessAlive: (pid: number) => (pid === reclaimer.pid ? reclaimerAlive : pid !== 2_147_000_002),
+				readProcessStartMs: async (pid: number) => (pid === reclaimer.pid ? reclaimerStart : NOW - 5_000),
 			});
-		// A live reclaimer (this very process) holds the lock: the stale lease must not be taken.
 		await writeFile(path, stale, "utf8");
-		await writeFile(`${path}.lock`, JSON.stringify({ pid: process.pid, atMs: NOW }), "utf8");
-		await expect(acquire()).resolves.toMatchObject({ acquired: false });
+		await writeFile(`${path}.lock`, JSON.stringify(reclaimer), "utf8");
+		// A live reclaimer holds the lock: the acquire waits on THAT process, never on the stale record.
+		await expect(acquire()).resolves.toMatchObject({ acquired: false, holder: { pid: reclaimer.pid } });
 		expect(await readFile(path, "utf8")).toBe(stale);
-		// The reclaimer died mid-reclaim: its lock is broken and the stale lease is reclaimed.
-		await writeFile(`${path}.lock`, JSON.stringify({ pid: 2_147_000_003, atMs: NOW }), "utf8");
+		// The reclaimer crashed and its pid now belongs to a process that started later: the lock is broken.
+		reclaimerStart = NOW - 1_000;
 		await expect(acquire()).resolves.toMatchObject({ acquired: true });
 		expect(existsSync(`${path}.lock`)).toBe(false);
+		// Same for a reclaimer that is simply gone.
+		await releaseTerminalLease({ path, pid: process.pid });
+		await writeFile(path, stale, "utf8");
+		await writeFile(`${path}.lock`, JSON.stringify(reclaimer), "utf8");
+		reclaimerStart = reclaimer.processStartedAtMs;
+		reclaimerAlive = false;
+		await expect(acquire()).resolves.toMatchObject({ acquired: true });
+	});
+
+	it("treats an unreadable lock as held until it is old enough to have been abandoned", async () => {
+		const dir = await tempDir();
+		const path = join(dir, "s.lease");
+		const stale = JSON.stringify(v2Record({ pid: 2_147_000_004, token: "dead-holder" }));
+		const acquire = () =>
+			acquireTerminalLease({
+				dir,
+				encodedSessionId: "s",
+				now: () => NOW,
+				self: selfIdentity(),
+				isProcessAlive: (pid: number) => pid !== 2_147_000_004,
+				readProcessStartMs: async () => NOW - 5_000,
+			});
+		await writeFile(path, stale, "utf8");
+		await writeFile(`${path}.lock`, "", "utf8");
+		await expect(acquire()).rejects.toThrow(/kept changing/);
+		expect(await readFile(path, "utf8")).toBe(stale);
+		const old = new Date(Date.now() - 60_000);
+		await utimes(`${path}.lock`, old, old);
+		await expect(acquire()).resolves.toMatchObject({ acquired: true });
 	});
 
 	it("a slow reclaimer never deletes the fresh lease a faster one took from the same stale file", async () => {

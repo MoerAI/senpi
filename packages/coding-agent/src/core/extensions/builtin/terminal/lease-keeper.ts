@@ -16,6 +16,8 @@ export interface LeaseKeeperOptions {
 	readonly dir: string;
 	readonly encodedSessionId: string;
 	readonly onTakeover: (lease: AcquireTerminalLeaseResult & { acquired: true }) => void | Promise<void>;
+	/** A tick that failed (e.g. the state dir became unwritable); the keeper keeps waiting. */
+	readonly onError?: (error: unknown) => void;
 	readonly intervalMs?: number;
 	readonly now?: () => number;
 	readonly self?: LeaseSelfIdentity;
@@ -67,7 +69,10 @@ export function createLeaseKeeper(options: LeaseKeeperOptions): LeaseKeeper {
 	const arm = (): void => {
 		timer = setTimeout(() => {
 			timer = undefined;
-			inFlight = tick();
+			inFlight = tick().catch((error: unknown) => {
+				if (state === "waiting") arm();
+				options.onError?.(error);
+			});
 		}, intervalMs);
 		timer.unref();
 	};
