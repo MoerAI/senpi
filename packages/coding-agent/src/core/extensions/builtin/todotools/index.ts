@@ -4,30 +4,34 @@ import { phasesFromCursorTodos } from "./native-todo-mirror.ts";
 import { TASK_MANAGEMENT_SECTION } from "./prompt.ts";
 import {
 	clonePhases,
-	getLatestPhasesFromBranchEntries,
+	getLatestTodoStateFromBranchEntries,
+	type TodoAsk,
 	type TodoCompletionTransition,
 	type TodoPhase,
+	type TodoState,
 } from "./state.ts";
 import { TODO_STATE_ENTRY_TYPE } from "./todo-types.ts";
 import { getTodoWidgetModel } from "./todo-widget.ts";
 import { TodoWidgetComponent } from "./todo-widget-component.ts";
 import { registerTodoTool } from "./tools/todo.ts";
 
-function getLatestPhases(ctx: ExtensionContext): TodoPhase[] {
-	return getLatestPhasesFromBranchEntries(ctx.sessionManager.getBranch());
-}
-
 export default function todotoolsExtension(pi: ExtensionAPI): void {
-	let currentPhases: TodoPhase[] = [];
+	let currentState: TodoState = { phases: [], ask: undefined };
 
-	const getCurrentPhases = (): TodoPhase[] => clonePhases(currentPhases);
+	const getCurrentPhases = (): TodoPhase[] => clonePhases(currentState.phases);
 
 	const setCurrentPhases = (phases: TodoPhase[]): void => {
-		currentPhases = clonePhases(phases);
+		currentState = { ...currentState, phases: clonePhases(phases) };
+	};
+
+	const getCurrentAsk = (): TodoAsk | undefined => currentState.ask;
+
+	const setCurrentAsk = (ask: TodoAsk | undefined): void => {
+		currentState = { ...currentState, ask };
 	};
 
 	const syncWidget = (ctx: ExtensionContext, completedTasks: readonly TodoCompletionTransition[] = []): void => {
-		const model = getTodoWidgetModel(currentPhases);
+		const model = getTodoWidgetModel(currentState.phases);
 		ctx.ui.setWidget(
 			"todo-sidebar",
 			model ? (tui, theme) => new TodoWidgetComponent(tui, theme, model, completedTasks) : undefined,
@@ -35,7 +39,7 @@ export default function todotoolsExtension(pi: ExtensionAPI): void {
 	};
 
 	const syncFromSession = (ctx: ExtensionContext): void => {
-		currentPhases = getLatestPhases(ctx);
+		currentState = getLatestTodoStateFromBranchEntries(ctx.sessionManager.getBranch());
 		syncWidget(ctx);
 	};
 
@@ -61,7 +65,8 @@ export default function todotoolsExtension(pi: ExtensionAPI): void {
 				continue;
 			}
 			setCurrentPhases(phases);
-			pi.appendEntry(TODO_STATE_ENTRY_TYPE, { schema: "v2", phases });
+			const ask = getCurrentAsk();
+			pi.appendEntry(TODO_STATE_ENTRY_TYPE, { schema: "v2", phases, ...(ask ? { ask } : {}) });
 			syncWidget(ctx);
 		}
 	});
@@ -76,8 +81,9 @@ export default function todotoolsExtension(pi: ExtensionAPI): void {
 		{ previewSafe: true },
 	);
 
-	registerTodoTool(pi, { getCurrentPhases, setCurrentPhases, syncWidget });
-	registerTodoCommand(pi, { getCurrentPhases, setCurrentPhases, syncWidget });
+	const accessors = { getCurrentPhases, setCurrentPhases, getCurrentAsk, setCurrentAsk, syncWidget };
+	registerTodoTool(pi, accessors);
+	registerTodoCommand(pi, accessors);
 }
 
 export { findPhaseFuzzy, findTaskFuzzy, registerTodoCommand, tokenizeTodoArgs } from "./commands.ts";
@@ -91,11 +97,13 @@ export {
 	clonePhases,
 	cloneTask,
 	DEFAULT_INIT_PHASE,
+	describeAskNowNext,
 	findPhaseByName,
 	findTaskByContent,
 	formatSummary,
 	getCompletionTransitions,
 	getLatestPhasesFromBranchEntries,
+	getLatestTodoStateFromBranchEntries,
 	getLatestTodosFromBranchEntries,
 	getTaskTargets,
 	getTodoMarker,
@@ -115,11 +123,13 @@ export {
 	resolveTaskOrError,
 	sanitizeTodoText,
 	TODO_STATE_ENTRY_TYPE,
+	type TodoAsk,
 	type TodoCompletionTransition,
 	type TodoItem,
 	type TodoOpEntry,
 	type TodoOperation,
 	type TodoPhase,
+	type TodoState,
 	type TodoStateEntry,
 	type TodoStatus,
 	type TodoToolDetails,

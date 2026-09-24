@@ -7,8 +7,10 @@ import type { SessionEntry } from "../../../session-manager.ts";
 import {
 	DEFAULT_INIT_PHASE,
 	TODO_STATE_ENTRY_TYPE,
+	type TodoAsk,
 	type TodoItem,
 	type TodoPhase,
+	type TodoState,
 	type TodoStatus,
 } from "./todo-types.ts";
 
@@ -69,12 +71,25 @@ function parseLegacyTodos(value: unknown): TodoPhase[] | undefined {
 	return [{ name: DEFAULT_INIT_PHASE, tasks }];
 }
 
-function readTodoPayload(value: unknown): TodoPhase[] | undefined {
+export function isTodoAsk(value: unknown): value is TodoAsk {
+	return (
+		isRecord(value) &&
+		typeof value.entryId === "string" &&
+		typeof value.text === "string" &&
+		typeof value.capturedAt === "number"
+	);
+}
+
+function readTodoPayload(value: unknown): TodoState | undefined {
 	if (!isRecord(value)) return undefined;
-	if (value.schema === "v2") return parsePhases(value.phases);
-	if (Array.isArray(value.phases)) return parsePhases(value.phases);
-	if (Array.isArray(value.todos)) return parseLegacyTodos(value.todos);
-	return undefined;
+	const phases =
+		value.schema === "v2" || Array.isArray(value.phases)
+			? parsePhases(value.phases)
+			: Array.isArray(value.todos)
+				? parseLegacyTodos(value.todos)
+				: undefined;
+	if (!phases) return undefined;
+	return { phases, ask: isTodoAsk(value.ask) ? { ...value.ask } : undefined };
 }
 
 export function cloneTask(task: TodoItem): TodoItem {
@@ -107,13 +122,14 @@ export function isTodoPhaseArray(value: unknown): value is TodoPhase[] {
 	return Array.isArray(value) && value.every(isTodoPhase);
 }
 
-export function getLatestPhasesFromBranchEntries(entries: BranchEntry[]): TodoPhase[] {
-	let phases: TodoPhase[] = [];
+/** Latest todo list and its captured ask on the branch; the ask travels with the entry that wrote the list. */
+export function getLatestTodoStateFromBranchEntries(entries: readonly BranchEntry[]): TodoState {
+	let state: TodoState = { phases: [], ask: undefined };
 
 	for (const entry of entries) {
 		if (entry.type === "custom" && entry.customType === TODO_STATE_ENTRY_TYPE) {
 			const parsed = readTodoPayload(entry.data);
-			if (parsed) phases = clonePhases(parsed);
+			if (parsed) state = { phases: clonePhases(parsed.phases), ask: parsed.ask };
 			continue;
 		}
 
@@ -122,10 +138,14 @@ export function getLatestPhasesFromBranchEntries(entries: BranchEntry[]): TodoPh
 		if (entry.message.toolName !== "todo" && entry.message.toolName !== "todowrite") continue;
 
 		const parsed = readTodoPayload(entry.message.details);
-		if (parsed) phases = clonePhases(parsed);
+		if (parsed) state = { phases: clonePhases(parsed.phases), ask: parsed.ask };
 	}
 
-	return phases;
+	return state;
+}
+
+export function getLatestPhasesFromBranchEntries(entries: readonly BranchEntry[]): TodoPhase[] {
+	return getLatestTodoStateFromBranchEntries(entries).phases;
 }
 
 /** Compatibility reader for callers that still expect the old flat array. */

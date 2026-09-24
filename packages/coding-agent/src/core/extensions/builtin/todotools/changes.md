@@ -1,5 +1,33 @@
 # todotools Fork Tracker
 
+## 2026-09-25 - Ask/Now/Next header on every todo result (senpi#2121)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/todotools/todo-ask.ts` (new): `captureListAsk` anchors a list-creating call (`init`, or `append` into an empty list) to the branch's first user message when no `senpi.todo-state` entry exists yet, else to the newest user message; ask-user answer frames are skipped, and a newer `compaction.todo-restore-request` re-emits its snapshot's ask. Text is `sanitizeTodoText` of the first text block, cut at 200 code points with `… (+N chars)`.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/todo-types.ts`: `TodoAsk`, `TodoState`, optional `ask` on `TodoStateEntry` (schema stays `v2`) and `TodoToolDetails`, `TODO_RESTORE_REQUEST_TYPE`.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/todo-storage.ts`: `getLatestTodoStateFromBranchEntries` returns `{ phases, ask }`; `getLatestPhasesFromBranchEntries` delegates to it; `isTodoAsk` guard.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/todo-format.ts`: `describeAskNowNext` and `formatAskNowNextHeader`; `formatSummary` prepends `Ask:` / `Now:` / `Next:` and a blank line to every summary, thrown errors included.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/tools/todo.ts`: `execute` captures or carries the ask into the state entry and `details.ask`; `renderResult` draws a dim `Ask:` line above the phases when an ask exists.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/index.ts`: in-memory `currentState = { phases, ask }` resynced on `session_start` / `session_tree`; the native mirror carries the ask.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/commands.ts`: `/todo` prints the same header; user edits carry the ask.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/state.ts`: re-exports the new helpers.
+- `packages/coding-agent/src/core/extensions/builtin/todotools/AGENTS.md` (new): directory guide.
+- Tests: `test/suite/todo-ask-now-next.test.ts`; accessor fakes in the existing todo tests gain `getCurrentAsk` / `setCurrentAsk`.
+
+### Why
+
+A todo result named the list but not what it was for, so a model reporting progress had to reconstruct the original request from memory. The header gives every result, and the later turn-end backstop, one mechanical source for the user's ask and the current and next task labels.
+
+### Why an extension could not handle it
+
+The state entry, the tool result text, and the renderer are owned by this builtin; an outside extension cannot add fields to its persisted state or its results.
+
+### Expected merge conflict zones
+
+- MEDIUM: `tools/todo.ts` `execute` and `renderResult`; `todo-format.ts` `formatSummary`.
+- LOW: `todo-storage.ts` branch reader, `index.ts` state holder, `commands.ts` `commit` / `showCurrent`.
+
 ## 2026-09-24 - Sound todo type guards from pi-todotools 0.2.1 (senpi#2079)
 
 ### What changed

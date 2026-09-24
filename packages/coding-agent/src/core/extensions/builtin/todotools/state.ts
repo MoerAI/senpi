@@ -3,7 +3,11 @@
 // Copyright (c) 2025-2026 Can Bölük
 // https://github.com/can1357/oh-my-pi
 
+export { ASK_TEXT_LIMIT, captureListAsk, truncateAskText } from "./todo-ask.ts";
 export {
+	type AskNowNext,
+	describeAskNowNext,
+	formatAskNowNextHeader,
 	formatSummary,
 	getTodoMarker,
 	getTodoResultLines,
@@ -31,7 +35,9 @@ export {
 	clonePhases,
 	cloneTask,
 	getLatestPhasesFromBranchEntries,
+	getLatestTodoStateFromBranchEntries,
 	getLatestTodosFromBranchEntries,
+	isTodoAsk,
 	isTodoItem,
 	isTodoItemArray,
 	isTodoPhase,
@@ -39,12 +45,15 @@ export {
 } from "./todo-storage.ts";
 export {
 	DEFAULT_INIT_PHASE,
+	TODO_RESTORE_REQUEST_TYPE,
 	TODO_STATE_ENTRY_TYPE,
+	type TodoAsk,
 	type TodoCompletionTransition,
 	type TodoItem,
 	type TodoOpEntry,
 	type TodoOperation,
 	type TodoPhase,
+	type TodoState,
 	type TodoStateEntry,
 	type TodoStatus,
 	type TodoToolDetails,

@@ -91,6 +91,8 @@ function captureTodoTool(): ToolDefinition<typeof TODO_PARAMS_SCHEMA> {
 	registerTodoTool(pi as unknown as ExtensionAPI, {
 		getCurrentPhases: () => [],
 		setCurrentPhases: () => {},
+		getCurrentAsk: () => undefined,
+		setCurrentAsk: () => {},
 		syncWidget: () => {},
 	});
 	if (!capturedTool) throw new Error("Expected todo tool registration");

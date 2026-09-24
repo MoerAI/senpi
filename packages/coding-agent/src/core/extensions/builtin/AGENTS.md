@@ -74,7 +74,7 @@ Plus bundled extension **codemode** (`@code-yeongyu/senpi-codemode`, resolved by
 ## NOTES
 
 - MCP search exposure tool is `tool_search`, owned by the registered `tool-search` builtin (`builtin/tool-search/tool.ts`). Do not reintroduce `mcp_search` references anywhere.
-- Sub-directory detail lives in per-extension `AGENTS.md` files (compaction, mcp, goal, loop, terminal, permission-system, prompt-preset, gpt-apply-patch, anthropic-subscription, cursor-cli-oauth).
+- Sub-directory detail lives in per-extension `AGENTS.md` files (compaction, mcp, goal, loop, terminal, permission-system, prompt-preset, todotools, gpt-apply-patch, anthropic-subscription, cursor-cli-oauth).
 
 ---
 Generated: 2026-08-22 | Commit: `a5eed4453`

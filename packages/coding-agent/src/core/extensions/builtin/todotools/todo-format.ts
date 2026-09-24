@@ -4,9 +4,46 @@
 // https://github.com/can1357/oh-my-pi
 
 import { stripAnsi } from "../../../../utils/ansi.ts";
-import type { TodoItem, TodoPhase } from "./todo-types.ts";
+import { nextActionableTask } from "./todo-query.ts";
+import type { TodoAsk, TodoItem, TodoPhase } from "./todo-types.ts";
 
-export function formatSummary(phases: readonly TodoPhase[], errors: readonly string[], readOnly = false): string {
+export type AskNowNext = { ask: string; now: string; next: string };
+
+/**
+ * The three handoff anchors of a todo state: the captured user request, the task in
+ * progress, and the first pending task after it in phase order (it may sit in an earlier
+ * phase after an out-of-order start). Task labels are verbatim.
+ */
+export function describeAskNowNext(state: { phases: readonly TodoPhase[]; ask?: TodoAsk }): AskNowNext {
+	const ask = state.ask?.text ?? "(no user request captured)";
+	const located = state.phases.flatMap((phase) => phase.tasks.map((task) => ({ task, phase: phase.name })));
+	if (located.length === 0) return { ask, now: "none - no todo list", next: "none" };
+	const nowTask = nextActionableTask(state.phases);
+	const now = located.find((hit) => hit.task === nowTask);
+	const next = located.find((hit) => hit.task.status === "pending" && hit.task !== nowTask);
+	return {
+		ask,
+		now: now ? `${now.task.content} (${now.phase})` : "none - all tasks closed",
+		next: next ? `${next.task.content} (${next.phase})` : "none",
+	};
+}
+
+/** `Ask:` / `Now:` / `Next:` lines plus a blank separator line. */
+export function formatAskNowNextHeader(phases: readonly TodoPhase[], ask: TodoAsk | undefined): string {
+	const anchors = describeAskNowNext({ phases, ask });
+	return `Ask: ${anchors.ask}\nNow: ${anchors.now}\nNext: ${anchors.next}\n\n`;
+}
+
+export function formatSummary(
+	phases: readonly TodoPhase[],
+	errors: readonly string[],
+	readOnly = false,
+	ask?: TodoAsk,
+): string {
+	return `${formatAskNowNextHeader(phases, ask)}${formatListSummary(phases, errors, readOnly)}`;
+}
+
+function formatListSummary(phases: readonly TodoPhase[], errors: readonly string[], readOnly: boolean): string {
 	const tasks = phases.flatMap((phase) => phase.tasks);
 	if (tasks.length === 0) {
 		if (errors.length > 0) return `Errors: ${errors.join("; ")}`;
