@@ -1,3 +1,25 @@
+## 2026-09-24 - Parse gateway cache_creation_tokens as prompt-cache writes (senpi#2091)
+
+### What changed
+
+- `packages/ai/src/api/openai-responses-shared.ts`: terminal Responses usage mapping reads `input_tokens_details.cache_write_tokens` when present and otherwise `cache_creation_tokens` as `usage.cacheWrite`, still subtracting both cache read and cache write from `input_tokens`.
+- `packages/ai/src/api/openai-completions.ts`: `parseChunkUsage` does the same for `prompt_tokens_details` (`cache_write_tokens` wins, else `cache_creation_tokens`). DeepSeek `prompt_cache_hit_tokens`, Kimi top-level `cached_tokens`, and OpenRouter `cache_write_tokens` mapping are unchanged.
+- `packages/ai/src/api/openrouter-images.ts`: `parseUsage` uses the same write-field preference; OpenRouter's existing subtract-writes-from-`cached_tokens` behavior is unchanged.
+
+### Why
+
+OpenAI-compatible gateways report prompt-cache writes as `cache_creation_tokens` while the OpenAI platform uses `cache_write_tokens`. Ignoring the gateway field billed those writes as uncached input (`cacheWrite` stayed 0).
+
+### Why an extension could not handle it
+
+Usage is parsed inside the OpenAI Completions, Responses, and OpenRouter images adapters before any extension observes the assistant message.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/api/openai-responses-shared.ts`: the `response.usage` mapping in `finalizeResponse`.
+- `packages/ai/src/api/openai-completions.ts`: `parseChunkUsage` and its `prompt_tokens_details` type.
+- `packages/ai/src/api/openrouter-images.ts`: `parseUsage` and its `prompt_tokens_details` type.
+
 ## 2026-09-24 - Omit session prompt_cache_key on GPT-5.6+ OpenAI API (senpi#2097)
 
 ### What changed

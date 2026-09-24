@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- OpenAI Completions and Responses usage parsers count gateway `cache_creation_tokens` as `cacheWrite` when `cache_write_tokens` is absent, so those writes are no longer billed as uncached input. ([#2091](https://github.com/code-yeongyu/senpi/issues/2091))
+
 - OpenAI GPT-5.6+ Responses and Completions requests to `api.openai.com` no longer send a per-session `prompt_cache_key`, so sessions, forks, and task children can reuse the same cached prefix. Pre-5.6 models still send the session key. ([#2097](https://github.com/code-yeongyu/senpi/issues/2097))
 
 ### Removed
