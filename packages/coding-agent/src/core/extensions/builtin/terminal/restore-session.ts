@@ -20,7 +20,7 @@ import {
 	releaseTerminalLease,
 	retireLeaseToken,
 } from "./manifest-lease.ts";
-import { terminalStateDir } from "./monitor-state-dir.ts";
+import { removeMonitorStateDir, terminalStateDir } from "./monitor-state-dir.ts";
 import { ownProcessStartedAtMs, processBootAtMs } from "./process-identity.ts";
 import { type RestoreDigest, type RestoreHandler, reapplyPersistedMute, restoreTerminalState } from "./restore.ts";
 import { buildRestoreDigest, createDigestSlot, type DigestSlot, deliverRestoreDigest } from "./restore-digest.ts";
@@ -163,6 +163,15 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 				sessionFile: sessionManager.getSessionFile?.(),
 				processStartedAtMs: ownProcessStartedAtMs(),
 			});
+			// A watch that did not come back never runs again: its baseline dir goes with it.
+			await Promise.all(
+				digest.results
+					.filter(
+						(result) =>
+							result.outcome === "lost" || result.outcome === "expired" || result.outcome === "completed",
+					)
+					.map((result) => removeMonitorStateDir(dir, result.monitorId)),
+			);
 			if (generation !== state.generation) return;
 			if (digest.storeError || digest.results.length > 0 || digest.backgroundSessions.length > 0) {
 				state.digestSlot.set(buildRestoreDigest(digest, { generation, outcome: "decided" }));

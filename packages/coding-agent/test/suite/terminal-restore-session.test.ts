@@ -215,14 +215,25 @@ describe.runIf(process.platform !== "win32")("terminal restore session: lease, k
 		expect(detailsOf(digests(generation)[0]).monitors[0]).toMatchObject({ outcome: "restored" });
 	});
 
-	it("(d) a watch whose script is gone is reported lost with its exit code", async () => {
-		writeManifest([persistedWatch("mon_MISSINGSCRIPT01", `sh ${join(tmp, "missing.sh")}`)]);
+	it("(d) a watch whose script is gone is lost with its exit code; lost and expired state dirs are removed", async () => {
+		const expired = { ...persistedWatch("mon_EXPIREDWATCH001", "cat"), expiresAt: Date.now() - 1_000 };
+		writeManifest([persistedWatch("mon_MISSINGSCRIPT01", `sh ${join(tmp, "missing.sh")}`), expired]);
+		const stateDirOf = (monitorId: string) => join(stateDir, "state", monitorId);
+		for (const monitorId of ["mon_MISSINGSCRIPT01", "mon_EXPIREDWATCH001"]) {
+			mkdirSync(stateDirOf(monitorId), { recursive: true });
+			writeFileSync(join(stateDirOf(monitorId), "base"), "baseline");
+		}
 		const generation = await start("resume");
 		await whenRestoreDecided(sessionId);
+		expect(detailsOf(digests(generation)[0]).monitors.map((entry) => [entry.monitorId, entry.outcome])).toEqual([
+			["mon_MISSINGSCRIPT01", "lost"],
+			["mon_EXPIREDWATCH001", "expired"],
+		]);
 		expect(detailsOf(digests(generation)[0]).monitors[0]).toMatchObject({
-			outcome: "lost",
 			reason: expect.stringMatching(/^exited 127/),
 		});
+		expect(existsSync(stateDirOf("mon_MISSINGSCRIPT01"))).toBe(false);
+		expect(existsSync(stateDirOf("mon_EXPIREDWATCH001"))).toBe(false);
 		expect(digests(generation)[0]?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
 	});
 
