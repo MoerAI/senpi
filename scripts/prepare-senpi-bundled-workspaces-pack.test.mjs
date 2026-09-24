@@ -8,6 +8,21 @@ import {
 	nativePrebuildTarget,
 } from "./prepare-senpi-bundled-workspaces.mjs";
 
+const PTY_PACKAGE = "@earendil-works/pi-pty";
+const DESKTOP_ENGINE_PACKAGE = "@code-yeongyu/senpi-desktop-engine";
+
+function desktopFiles(prefix = "package/", engineTarget = nativePrebuildTarget()) {
+	const root = `${prefix}node_modules/@code-yeongyu`;
+	return [
+		...["protocol", "prelude", "service", "tool", "engine"].flatMap((name) => [
+			{ path: `${root}/senpi-desktop-${name}/package.json` },
+			{ path: `${root}/senpi-desktop-${name}/dist/index.js` },
+		]),
+		{ path: `${root}/senpi-desktop-engine/native/index.js` },
+		{ path: `${root}/senpi-desktop-engine/${nativePrebuildFile(engineTarget, DESKTOP_ENGINE_PACKAGE)}` },
+	];
+}
+
 function clientProtocolFiles(prefix = "package/") {
 	return [
 		{ path: `${prefix}vendor/pi-client/index.js` },
@@ -75,11 +90,12 @@ describe("assertSenpiPackedWorkspaceFiles", () => {
 
 	it("rejects a packed tarball that omits a declared runtime dependency", () => {
 		// Given: workspace bundles are present, but the cross-spawn registry dep is not vendored.
-		const hostPrebuild = nativePrebuildFile(nativePrebuildTarget());
+		const hostPrebuild = nativePrebuildFile(nativePrebuildTarget(), PTY_PACKAGE);
 		const packed = {
 			files: [
 				{ path: "package/dist/cli.js" },
 				...clientProtocolFiles(),
+				...desktopFiles(),
 				...telemetryFiles(),
 				...chordFiles(),
 				...agentCoreFiles(),
@@ -108,11 +124,12 @@ describe("assertSenpiPackedWorkspaceFiles", () => {
 
 	it("accepts a packed tarball whose declared runtime dependencies are all vendored", () => {
 		// Given
-		const hostPrebuild = nativePrebuildFile(nativePrebuildTarget());
+		const hostPrebuild = nativePrebuildFile(nativePrebuildTarget(), PTY_PACKAGE);
 		const packed = {
 			files: [
 				{ path: "package/dist/cli.js" },
 				...clientProtocolFiles(),
+				...desktopFiles(),
 				...telemetryFiles(),
 				...chordFiles(),
 				...agentCoreFiles(),
@@ -144,11 +161,12 @@ describe("assertSenpiPackedWorkspaceFiles", () => {
 		// Given: a shipped npm-shrinkwrap.json is fatal — npm treats it as the complete
 		// locked tree and never installs the non-bundled direct deps (cross-spawn, the
 		// MCP sdk, ...), so the installed CLI dies with ERR_MODULE_NOT_FOUND.
-		const hostPrebuild = nativePrebuildFile(nativePrebuildTarget());
+		const hostPrebuild = nativePrebuildFile(nativePrebuildTarget(), PTY_PACKAGE);
 		const packed = {
 			files: [
 				{ path: "package/dist/cli.js" },
 				...clientProtocolFiles(),
+				...desktopFiles(),
 				...telemetryFiles(),
 				{ path: "package/npm-shrinkwrap.json" },
 				...chordFiles(),
@@ -177,11 +195,12 @@ describe("assertSenpiPackedWorkspaceFiles", () => {
 
 	it("rejects senpi package metadata that omits the codemode Babel parser", () => {
 		// Given
-		const hostPrebuild = nativePrebuildFile(nativePrebuildTarget());
+		const hostPrebuild = nativePrebuildFile(nativePrebuildTarget(), PTY_PACKAGE);
 		const packed = {
 			files: [
 				{ path: "package/dist/cli.js" },
 				...clientProtocolFiles(),
+				...desktopFiles(),
 				...telemetryFiles(),
 				...chordFiles(),
 				...agentCoreFiles(),
@@ -208,11 +227,12 @@ describe("assertSenpiPackedWorkspaceFiles", () => {
 
 	it("accepts npm dry-run package metadata with unprefixed paths", () => {
 		// Given
-		const hostPrebuild = nativePrebuildFile(nativePrebuildTarget());
+		const hostPrebuild = nativePrebuildFile(nativePrebuildTarget(), PTY_PACKAGE);
 		const packed = {
 			files: [
 				{ path: "dist/cli.js" },
 				...clientProtocolFiles(""),
+				...desktopFiles(""),
 				...telemetryFiles(""),
 				...chordFiles(""),
 				...agentCoreFiles(""),
@@ -241,6 +261,7 @@ describe("assertSenpiPackedWorkspaceFiles", () => {
 			files: [
 				{ path: "package/dist/cli.js" },
 				...clientProtocolFiles(),
+				...desktopFiles(),
 				...telemetryFiles(),
 				...chordFiles(),
 				...agentCoreFiles(),
@@ -266,6 +287,7 @@ describe("assertSenpiPackedWorkspaceFiles", () => {
 			files: [
 				{ path: "package/dist/cli.js" },
 				...clientProtocolFiles(),
+				...desktopFiles(),
 				...telemetryFiles(),
 				...chordFiles(),
 				...agentCoreFiles(),
@@ -300,6 +322,7 @@ describe("assertSenpiPackedWorkspaceFiles", () => {
 			files: [
 				{ path: "package/dist/cli.js" },
 				...clientProtocolFiles(),
+				...desktopFiles("package/", "darwin-arm64"),
 				...chordFiles(),
 				...agentCoreFiles(),
 				{ path: "package/node_modules/@earendil-works/pi-ai/package.json" },
@@ -308,7 +331,7 @@ describe("assertSenpiPackedWorkspaceFiles", () => {
 				{ path: "package/node_modules/@earendil-works/pi-pty/package.json" },
 				{ path: "package/node_modules/@earendil-works/pi-pty/dist/index.js" },
 				{ path: "package/node_modules/@earendil-works/pi-pty/native/index.js" },
-				{ path: `package/node_modules/@earendil-works/pi-pty/${nativePrebuildFile("darwin-arm64")}` },
+				{ path: `package/node_modules/@earendil-works/pi-pty/${nativePrebuildFile("darwin-arm64", PTY_PACKAGE)}` },
 				{ path: "package/node_modules/@earendil-works/pi-tui/package.json" },
 				{ path: "package/node_modules/@earendil-works/pi-tui/dist/index.js" },
 				{ path: "package/node_modules/@code-yeongyu/senpi-codemode/package.json" },
@@ -340,7 +363,65 @@ describe("assertSenpiPackedWorkspaceFiles", () => {
 		assert.ok(ptyCheck);
 		assert.deepEqual(
 			ptyCheck.requiredFiles.filter((file) => file.startsWith("native/prebuilds/")),
-			SUPPORTED_NATIVE_PREBUILD_TARGETS.map(nativePrebuildFile),
+			SUPPORTED_NATIVE_PREBUILD_TARGETS.map((target) => `native/prebuilds/${target}/senpi_pty.${target}.node`),
 		);
+	});
+
+	it("names the desktop engine prebuild per target as the executable its locator expects", () => {
+		// When
+		const checks = bundledWorkspacePackageChecks(SUPPORTED_NATIVE_PREBUILD_TARGETS);
+		const engineCheck = checks.find((check) => check.packageName === DESKTOP_ENGINE_PACKAGE);
+
+		// Then
+		assert.ok(engineCheck);
+		assert.deepEqual(engineCheck.requiredFiles, [
+			"package.json",
+			"dist/index.js",
+			"native/index.js",
+			"native/prebuilds/darwin-arm64/senpi-desktop-engine",
+			"native/prebuilds/darwin-x64/senpi-desktop-engine",
+			"native/prebuilds/linux-arm64/senpi-desktop-engine",
+			"native/prebuilds/linux-x64/senpi-desktop-engine",
+			"native/prebuilds/win32-arm64/senpi-desktop-engine.exe",
+			"native/prebuilds/win32-x64/senpi-desktop-engine.exe",
+		]);
+	});
+
+	it("rejects senpi package metadata that omits the bundled desktop engine loader", () => {
+		// Given: every bundled file except the engine package's native loader.
+		const engineLoader = "package/node_modules/@code-yeongyu/senpi-desktop-engine/native/index.js";
+		const packed = {
+			files: [
+				{ path: "package/dist/cli.js" },
+				...clientProtocolFiles(),
+				...desktopFiles().filter(({ path }) => path !== engineLoader),
+				...telemetryFiles(),
+				...chordFiles(),
+				...agentCoreFiles(),
+				{ path: "package/node_modules/@earendil-works/pi-ai/package.json" },
+				{ path: "package/node_modules/@earendil-works/pi-ai/dist/index.js" },
+				{ path: "package/node_modules/@earendil-works/pi-pty/package.json" },
+				{ path: "package/node_modules/@earendil-works/pi-pty/dist/index.js" },
+				{ path: "package/node_modules/@earendil-works/pi-pty/native/index.js" },
+				{ path: "package/node_modules/@earendil-works/pi-tui/package.json" },
+				{ path: "package/node_modules/@earendil-works/pi-tui/dist/index.js" },
+				{ path: "package/node_modules/@code-yeongyu/senpi-codemode/package.json" },
+				{ path: "package/node_modules/@code-yeongyu/senpi-codemode/src/index.ts" },
+				{ path: "package/node_modules/@code-yeongyu/senpi-codemode/src/kernels/py/prelude.py" },
+				{ path: "package/node_modules/@code-yeongyu/senpi-codemode/node_modules/@babel/parser/package.json" },
+			],
+		};
+
+		// When / Then
+		const originalWarn = console.warn;
+		console.warn = () => {};
+		try {
+			assert.throws(
+				() => assertSenpiPackedWorkspaceFiles(packed),
+				/missing bundled workspace files: package\/node_modules\/@code-yeongyu\/senpi-desktop-engine\/native\/index\.js or/,
+			);
+		} finally {
+			console.warn = originalWarn;
+		}
 	});
 });

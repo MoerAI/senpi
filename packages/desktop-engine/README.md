@@ -16,3 +16,16 @@ Finds the `senpi-desktop-engine` binary (`crates/senpi-desktop-engine`) for this
 ## Prebuilds
 
 Only the host prebuild is committed, as `packages/pty` does. `bun run check:prebuild` rebuilds it with `cargo build --release -p senpi-desktop-engine --locked` and `--remap-path-prefix`, then byte-compares the rebuilt binary against the committed one. Pass `-- --update` to re-vendor it. `node scripts/build-desktop-engine-local.mjs` builds the dev candidate into `target/release/`.
+
+## Import direction
+
+`scripts/desktop-package-boundaries.test.mjs` enforces these edges, in both `package.json` and `src/`:
+
+- `@code-yeongyu/senpi-desktop-protocol` and `@code-yeongyu/senpi-desktop-prelude` import no workspace package.
+- `@code-yeongyu/senpi-desktop-engine` may import `-protocol`.
+- `@code-yeongyu/senpi-desktop-service` may import `-protocol`, `-engine`, and `-prelude`.
+- `@code-yeongyu/senpi-desktop-tool` may import `-protocol`, `-engine`, `-prelude`, and `-service`.
+- `@code-yeongyu/senpi` (coding-agent) may import only `-tool` and `-service`. `@code-yeongyu/senpi-codemode` imports none of them.
+- No desktop package imports `pi-agent-core`, `pi-ai`, or `pi-tui`. There is no shared utils package: the five desktop packages are the whole set.
+
+The Rust side runs the other way: `senpi-desktop-core` <- `-safety` <- `-session` <- backends <- `senpi-desktop-engine` (the binary). The TS packages reach it only through the engine's stdio JSON-RPC.

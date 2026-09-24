@@ -1,5 +1,23 @@
 # changes — senpi-monorepo root
 
+## Resolve the desktop packages from source in the root type check (2026-09-24)
+
+### What changed
+
+- `tsconfig.json` `paths` maps `@code-yeongyu/senpi-desktop-{engine,prelude,protocol,service,tool}` to each package's `src/index.ts`, beside the existing workspace entries.
+
+### Why
+
+- The root `tsc --noEmit` in `bun run check` has to resolve the desktop packages (senpi#2128) from source, like every other workspace package. Without the mapping it reads `dist/*.d.ts`, which is missing in a fresh checkout and stale after a source edit.
+
+### Why an extension could not handle it
+
+- The root type check runs on the repository before any senpi extension loads.
+
+### Expected merge conflict zones
+
+- LOW: the `paths` block of `tsconfig.json`, where upstream adds its own workspace entries.
+
 ## Add senpi-desktop crate workspace skeletons (2026-09-25)
 
 ### What changed
