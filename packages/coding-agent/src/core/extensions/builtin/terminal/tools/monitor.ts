@@ -198,7 +198,8 @@ export function createMonitorTool(ctx: TerminalToolContext) {
 						description: input.description,
 						path: input.path,
 						event: input.event ?? "create",
-						timeoutMs: resolveTimeoutMs(input.timeout_ms),
+						// A persistent watch has no deadline (`deadlineMs: null`); its timeout only bounds registration.
+						timeoutMs: resolveTimeoutMs(input.persistent === true ? undefined : input.timeout_ms),
 						persistent: input.persistent === true,
 						deadlineMs: input.persistent === true ? null : Date.now() + resolveTimeoutMs(input.timeout_ms),
 						cwd: execCtx?.cwd ?? ctx.cwd,
