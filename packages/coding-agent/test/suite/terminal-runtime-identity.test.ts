@@ -31,7 +31,9 @@ async function harness() {
 		session: { getSessionDir: () => sessionDir, getSessionId: () => sessionId },
 	});
 	const manager = new TerminalManager();
-	const registry = new MonitorRegistry(() => {}, { onChange: (snapshot) => void writer.observeMonitorState(snapshot) });
+	const registry = new MonitorRegistry(() => {}, {
+		onChange: (snapshot) => void writer.observeMonitorState(snapshot),
+	});
 	const ctx: TerminalToolContext = {
 		manager,
 		cwd: sessionDir,
