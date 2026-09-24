@@ -66,7 +66,7 @@ describe("warmPromptCache for OpenAI Responses GPT-5.6+", () => {
 		expect(["developer", "system"]).toContain(input[0]?.role);
 		expect(JSON.stringify(input)).toContain("You are a stable prefix.");
 		expect(JSON.stringify(input)).not.toContain("this turn must not be prewarmed");
-		expect((body?.tools as Array<{ name: string }>).map((tool) => tool.name)).toEqual(["lookup"]);
+		expect((body?.tools as Array<{ name: string }> | undefined)?.map((tool) => tool.name)).toEqual(["lookup"]);
 
 		expect(result.supported).toBe(true);
 		if (!result.supported) return;
@@ -102,9 +102,9 @@ describe("warmPromptCache for OpenAI Responses GPT-5.6+", () => {
 		await expect(warmPromptCache(proxy, context, { apiKey: "test-key", fetch })).resolves.toEqual({
 			supported: false,
 		});
-		await expect(warmPromptCache(getModel("openai", "gpt-5.5"), context, { apiKey: "test-key", fetch })).resolves.toEqual(
-			{ supported: false },
-		);
+		await expect(
+			warmPromptCache(getModel("openai", "gpt-5.5"), context, { apiKey: "test-key", fetch }),
+		).resolves.toEqual({ supported: false });
 		expect(fetch).not.toHaveBeenCalled();
 	});
 });

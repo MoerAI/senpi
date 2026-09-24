@@ -75,7 +75,9 @@ describe("openai-responses prompt_cache_diagnostics", () => {
 	});
 
 	it("records cache_hit and unavailable verdicts", async () => {
-		await expect(parse({ type: "cache_hit" })).resolves.toMatchObject({ promptCacheDiagnostics: { type: "cache_hit" } });
+		await expect(parse({ type: "cache_hit" })).resolves.toMatchObject({
+			promptCacheDiagnostics: { type: "cache_hit" },
+		});
 		await expect(parse({ type: "unavailable" })).resolves.toMatchObject({
 			promptCacheDiagnostics: { type: "unavailable" },
 		});

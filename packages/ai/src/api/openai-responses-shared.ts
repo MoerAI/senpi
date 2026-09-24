@@ -38,7 +38,6 @@ import type {
 } from "../types.ts";
 import type { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
-import { parsePromptCacheDiagnostics } from "./openai-responses-prompt-cache.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import {
@@ -49,6 +48,7 @@ import {
 	resolveGrammarConstrainedSampling,
 	resolveJsonSchemaStrictSampling,
 } from "./constrained-sampling.ts";
+import { parsePromptCacheDiagnostics } from "./openai-responses-prompt-cache.ts";
 import { withResponsesCompletionGrace } from "./responses-completion-grace.ts";
 import { transformMessages } from "./transform-messages.ts";
 

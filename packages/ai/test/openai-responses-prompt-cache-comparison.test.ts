@@ -59,7 +59,7 @@ async function capturePromptCacheOptions(
 	return captured?.prompt_cache_options;
 }
 
-function history(model: Model<"openai-responses">, ...assistants: AssistantMessage[]): Message[] {
+function history(...assistants: AssistantMessage[]): Message[] {
 	return [
 		{ role: "user", content: "first", timestamp: 1 },
 		...assistants.flatMap((message): Message[] => [message, { role: "user", content: "next", timestamp: 3 }]),
@@ -72,7 +72,7 @@ describe("openai-responses prompt_cache_options.comparison_response_id", () => {
 
 	it("sends the previous same-model response id and keeps ttl/mode unchanged", async () => {
 		const luna = getModel("openai", "gpt-6-luna");
-		const messages = history(luna, assistant(luna, "resp_older"), assistant(luna, "resp_previous"));
+		const messages = history(assistant(luna, "resp_older"), assistant(luna, "resp_previous"));
 
 		await expect(capturePromptCacheOptions(luna, messages)).resolves.toEqual({
 			comparison_response_id: "resp_previous",
@@ -86,22 +86,24 @@ describe("openai-responses prompt_cache_options.comparison_response_id", () => {
 	it("skips failed turns and responses of other models", async () => {
 		const luna = getModel("openai", "gpt-6-luna");
 		const other = { ...luna, id: "gpt-6-sol" };
-		const messages = history(luna, assistant(luna, "resp_ok"), assistant(luna, "resp_failed", "error"), assistant(other, "resp_other"));
+		const messages = history(
+			assistant(luna, "resp_ok"),
+			assistant(luna, "resp_failed", "error"),
+			assistant(other, "resp_other"),
+		);
 
 		await expect(capturePromptCacheOptions(luna, messages)).resolves.toEqual({ comparison_response_id: "resp_ok" });
 	});
 
 	it("omits the comparison without a previous response, for cacheRetention none, and off api.openai.com", async () => {
 		const luna = getModel("openai", "gpt-6-luna");
-		const messages = history(luna, assistant(luna, "resp_previous"));
+		const messages = history(assistant(luna, "resp_previous"));
 		const proxy: Model<"openai-responses"> = { ...luna, baseUrl: "https://proxy.example.com/v1" };
 
-		await expect(capturePromptCacheOptions(luna, history(luna))).resolves.toBeUndefined();
+		await expect(capturePromptCacheOptions(luna, history())).resolves.toBeUndefined();
 		await expect(capturePromptCacheOptions(luna, messages, "none")).resolves.toEqual({ mode: "explicit" });
-		await expect(capturePromptCacheOptions(proxy, history(proxy, assistant(proxy, "resp_proxy")))).resolves.not.toHaveProperty(
-			"comparison_response_id",
-		);
+		await expect(capturePromptCacheOptions(proxy, history(assistant(proxy, "resp_proxy")))).resolves.toBeUndefined();
 		const gpt55 = getModel("openai", "gpt-5.5");
-		await expect(capturePromptCacheOptions(gpt55, history(gpt55, assistant(gpt55, "resp_55")))).resolves.toBeUndefined();
+		await expect(capturePromptCacheOptions(gpt55, history(assistant(gpt55, "resp_55")))).resolves.toBeUndefined();
 	});
 });
