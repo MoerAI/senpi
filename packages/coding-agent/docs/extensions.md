@@ -690,7 +690,27 @@ The `systemPromptOptions` field gives extensions access to the same structured d
 
 Inside `before_agent_start`, `event.systemPrompt` and `ctx.getSystemPrompt()` both reflect the chained system prompt as of the current handler. Later `before_agent_start` handlers can still modify it again.
 
-`event.preview` is `true` when senpi composes the next turn's system prompt before any user prompt exists: the session-start prompt-cache prewarm sends the first turn's prefix ahead of time, and `ctx.getPromptCachePrefixRequest()` returns that prefix to extensions. In a preview `event.prompt` is empty and no turn follows. Return the same `systemPrompt` a real turn would get, and skip anything that consumes one-shot state, starts work, or changes the session (the builtin `compaction` and `hooks` handlers return early).
+`event.preview` is `true` when senpi composes the next turn's system prompt before any user prompt exists: the session-start prompt-cache prewarm sends the first turn's prefix ahead of time, and `ctx.getPromptCachePrefixRequest()` returns that prefix to extensions. In a preview `event.prompt` is empty and no turn follows.
+
+A preview only reaches handlers that opt in with `{ previewSafe: true }`:
+
+```typescript
+pi.on(
+  "before_agent_start",
+  async (event) => {
+    if (event.preview === true) {
+      // Compose only: no one-shot state, no work, no session changes.
+      return { systemPrompt: `${event.systemPrompt}\n\nProject conventions...` };
+    }
+    return { systemPrompt: `${event.systemPrompt}\n\nProject conventions...`, message: drainNotices() };
+  },
+  { previewSafe: true },
+);
+```
+
+Opt in only when the handler has no side effects in a preview: it returns the same `systemPrompt` a real turn would get and consumes no one-shot state, starts no work, and changes nothing a later turn observes (the builtin `compaction`, `hooks`, and `prompt-url-widget` handlers return early; `rules` and `openai-image-gen` compose without committing state). A handler registered without the option is never called for a preview. While any registered `before_agent_start` handler lacks it, senpi skips the preview entirely, because a prefix composed without that handler's additions would not match the first turn; the prewarm then appends a `prompt-cache-prewarm` custom entry with `phase: "skipped"` and a `reason` naming the extensions.
+
+`ctx.getPromptCachePrefixRequest({ signal })` resolves `{ status: "ready", request }` or `{ status: "skipped", reason }`. It is skipped when a handler is not preview-safe, when no model is selected, when `signal` aborts, and when a user prompt starts its turn first: senpi cancels every in-flight preview before a real turn dispatches `before_agent_start`, so the two passes never run the same handlers concurrently.
 
 #### agent_start / agent_end / agent_settled
 

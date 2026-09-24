@@ -41,6 +41,7 @@ import {
 	rememberExtensionFactory,
 } from "./extension-module-cache.ts";
 import type {
+	BeforeAgentStartHandlerOptions,
 	EntryRenderer,
 	EntryRendererOptions,
 	Extension,
@@ -383,11 +384,15 @@ function createExtensionAPI(
 		sessionContext: session.sessionContext,
 
 		// Registration methods - write to extension
-		on(event: string, handler: HandlerFn): void {
+		on(event: string, handler: HandlerFn, options?: BeforeAgentStartHandlerOptions): void {
 			assertActive();
 			const list = extension.handlers.get(event) ?? [];
 			list.push(handler);
 			extension.handlers.set(event, list);
+			if (event === "before_agent_start" && options?.previewSafe === true) {
+				extension.previewSafeHandlers ??= new WeakSet();
+				extension.previewSafeHandlers.add(handler);
+			}
 		},
 
 		registerTool(tool: ToolDefinition): void {

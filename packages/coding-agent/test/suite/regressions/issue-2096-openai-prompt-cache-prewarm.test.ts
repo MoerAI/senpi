@@ -1,47 +1,9 @@
-import {
-	type Context,
-	fauxAssistantMessage,
-	type WarmPromptCacheOptions,
-	type WarmPromptCacheResult,
-} from "@earendil-works/pi-ai";
+import { type Context, fauxAssistantMessage, type WarmPromptCacheResult } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCacheKeepAliveExtension } from "../../../src/core/extensions/builtin/cache-keepalive/index.ts";
-import { PROMPT_CACHE_PREWARM_ENTRY_TYPE } from "../../../src/core/extensions/builtin/cache-keepalive/prewarm-entry.ts";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionFactory } from "../../../src/core/extensions/types.ts";
-import { createHarness, getAssistantTexts, type Harness, type HarnessOptions } from "../harness.ts";
-
-const SIGNAL_TIMEOUT_MS = 2_000;
-const harnesses: Harness[] = [];
-
-function deferred<T>() {
-	let resolve!: (value: T) => void;
-	let reject!: (error: Error) => void;
-	const promise = new Promise<T>((res, rej) => {
-		resolve = res;
-		reject = rej;
-	});
-	return { promise, resolve, reject };
-}
-
-async function within<T>(promise: Promise<T>, label: string): Promise<T> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	try {
-		return await Promise.race([
-			promise,
-			new Promise<T>((_resolve, reject) => {
-				timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), SIGNAL_TIMEOUT_MS);
-			}),
-		]);
-	} finally {
-		if (timer !== undefined) clearTimeout(timer);
-	}
-}
-
-interface WarmCall {
-	readonly context: Context;
-	readonly options: WarmPromptCacheOptions | undefined;
-}
+import { getAssistantTexts, type Harness } from "../harness.ts";
+import { cleanupPrewarmHarnesses, createPrewarmHarness, deferred, within } from "../prompt-cache-prewarm-harness.ts";
 
 type StreamFunction = Harness["agent"]["streamFunction"];
 
@@ -54,44 +16,9 @@ function toolShapes(tools: Context["tools"]) {
 	return tools?.map(({ name, description, parameters }) => ({ name, description, parameters }));
 }
 
-async function createPrewarmHarness(
-	warm: (call: WarmCall) => Promise<WarmPromptCacheResult>,
-	options: { extensionFactories?: ExtensionFactory[]; models?: HarnessOptions["models"] } = {},
-) {
-	const warmCalled = deferred<WarmCall>();
-	const harness = await createHarness({
-		...(options.models ? { models: options.models } : {}),
-		extensionFactories: [
-			createCacheKeepAliveExtension({
-				warmPromptCache: async (_model, context, options) => {
-					const call = { context, options };
-					warmCalled.resolve(call);
-					return warm(call);
-				},
-				isPromptCachePrewarmModel: () => true,
-			}),
-			...(options.extensionFactories ?? []),
-		],
-	});
-	harnesses.push(harness);
-	// createAgentSession gives the agent the session id; the bare harness Agent has none.
-	harness.agent.sessionId = harness.sessionManager.getSessionId();
-	const entryAppended = deferred<{ customType: string; data: unknown }>();
-	const appendCustomEntry = harness.sessionManager.appendCustomEntry.bind(harness.sessionManager);
-	vi.spyOn(harness.sessionManager, "appendCustomEntry").mockImplementation((customType, data) => {
-		const id = appendCustomEntry(customType, data);
-		if (customType === PROMPT_CACHE_PREWARM_ENTRY_TYPE) entryAppended.resolve({ customType, data });
-		return id;
-	});
-	return { harness, warmCalled: warmCalled.promise, entryAppended: entryAppended.promise };
-}
-
 // senpi#2096: the session-start prompt-cache prewarm is fire-and-forget.
 describe("session-start OpenAI prompt-cache prewarm (#2096)", () => {
-	afterEach(() => {
-		for (const harness of harnesses.splice(0)) harness.cleanup();
-		vi.restoreAllMocks();
-	});
+	afterEach(cleanupPrewarmHarnesses);
 
 	it("runs the first turn while the prewarm is still in flight and records its cost afterwards", async () => {
 		const pendingWarm = deferred<WarmPromptCacheResult>();
@@ -143,10 +70,14 @@ describe("session-start OpenAI prompt-cache prewarm (#2096)", () => {
 				await lateSessionStart.promise;
 				pi.setActiveTools(["lookup"]);
 			});
-			pi.on("before_agent_start", (event) => {
-				previews.push(event.preview === true);
-				return { systemPrompt: `${event.systemPrompt}\n\nComposed per turn by before_agent_start.` };
-			});
+			pi.on(
+				"before_agent_start",
+				(event) => {
+					previews.push(event.preview === true);
+					return { systemPrompt: `${event.systemPrompt}\n\nComposed per turn by before_agent_start.` };
+				},
+				{ previewSafe: true },
+			);
 		};
 		const { harness, warmCalled } = await createPrewarmHarness(async () => ({ supported: false }), {
 			extensionFactories: [composer],

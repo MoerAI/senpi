@@ -1254,9 +1254,11 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.prepareProviderRequest(messages, excludeBeforeProviderRequestExtensionPath);
 			},
-			getPromptCachePrefixRequest: async () => {
+			getPromptCachePrefixRequest: async (options) => {
 				runner.assertActive();
-				return await runner.getPromptCachePrefixRequestFn?.();
+				const build = runner.getPromptCachePrefixRequestFn;
+				if (build === undefined) return { status: "skipped", reason: "the host builds no prompt-cache prefix" };
+				return await build(options);
 			},
 			beginCompaction: (options) => {
 				runner.assertActive();
@@ -1839,22 +1841,35 @@ export class ExtensionRunner {
 		return headers;
 	}
 
+	/** Paths of extensions with a `before_agent_start` handler not registered `{ previewSafe: true }`. */
+	getPreviewUnsafeBeforeAgentStartPaths(): string[] {
+		const paths: string[] = [];
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("before_agent_start") ?? [];
+			if (handlers.some((handler) => ext.previewSafeHandlers?.has(handler) !== true)) paths.push(ext.path);
+		}
+		return paths;
+	}
+
 	async emitBeforeAgentStart(
 		prompt: string,
 		images: ImageContent[] | undefined,
 		systemPrompt: string,
 		systemPromptOptions: BuildSystemPromptOptions,
-		options: { readonly preview?: boolean } = {},
+		options: { readonly preview?: boolean; readonly signal?: AbortSignal } = {},
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
 		let currentSystemPrompt = systemPrompt;
 		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
 		let systemPromptModified = false;
 
-		for (const ext of this.extensions) {
+		dispatch: for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_agent_start");
 			if (!handlers || handlers.length === 0) continue;
 
 			for (const handler of handlers) {
+				if (options.signal?.aborted === true) break dispatch;
+				// A preview reaches only handlers that declared themselves side-effect free (senpi#2115).
+				if (options.preview === true && ext.previewSafeHandlers?.has(handler) !== true) continue;
 				try {
 					// Keep guarded context getters lazy while giving each handler its
 					// own legacy omitted-signal ownership slot.

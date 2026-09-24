@@ -1,3 +1,22 @@
+## 2026-09-24 - Build the prompt-cache prefix only from preview-safe handlers and cancel it when a turn starts (senpi#2115)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: the session owns one `PromptCachePrefixBuilds` (`_promptCachePrefixBuilds`). The `getPromptCachePrefixRequest` context action delegates to `_promptCachePrefixBuilds.build(...)` with the new `ready: this._sessionStartSettled` source and the caller's `{ signal }` option, and both real `before_agent_start` emits (`prompt()` and the `triggerTurn` custom-message path) call `_promptCachePrefixBuilds.cancelAll()` immediately before `emitBeforeAgentStart`.
+- `packages/coding-agent/src/core/prompt-cache-prefix-request.ts` (fork-only): `buildPromptCachePrefixRequest(sources, signal)` now returns a `PromptCachePrefixResult`. It waits for `sources.ready`, returns `skipped` without running any handler when `runner.getPreviewUnsafeBeforeAgentStartPaths()` is non-empty, passes `{ preview: true, signal }` to the preview pass, and resolves `skipped` with the abort reason (`PROMPT_STARTED_REASON` when a turn cancelled it) as soon as the signal aborts, without waiting for a stalled handler. `PromptCachePrefixBuilds` tracks each in-flight build's `AbortController` (linked to the caller's signal through `AbortSignal.any`) so `cancelAll()` stops every build.
+
+### Why
+
+The #2096 preview pass ran every `before_agent_start` handler with `event.preview: true`, but extensions written before that flag existed do not check it. An external memory extension that drains and marks notices delivered in `before_agent_start` lost them to the preview: the returned message was discarded and no turn followed. A preview also ran concurrently with the first real turn's `before_agent_start` when the user typed before it finished, so the same handlers raced on shared state.
+
+### Why an extension could not handle it
+
+The preview pass, its handler selection, and the moment a real turn dispatches `before_agent_start` are all host-owned; an extension cannot stop the host from invoking another extension's handler, nor observe the real turn's dispatch before it happens.
+
+### Expected merge conflict zones
+
+- LOW: the `prompt-cache-prefix-request.ts` import and the `_sessionStartSettled` field block, the `getPromptCachePrefixRequest` context action, and the two `this._refreshToolDeclarationsForModel()` + `emitBeforeAgentStart` pairs in `prompt()` and the `triggerTurn` branch of custom-message delivery in `agent-session.ts`.
+
 ## 2026-09-24 - Count session-start prompt-cache prewarm usage and build its request from the first turn's prefix (senpi#2096)
 
 ### What changed
