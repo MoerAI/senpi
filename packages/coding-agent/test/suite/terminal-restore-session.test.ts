@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerTerminalExtension } from "../../src/core/extensions/builtin/terminal/extension.ts";
 import { acquireTerminalLease, currentLeaseToken } from "../../src/core/extensions/builtin/terminal/manifest-lease.ts";
 import { processBootAtMs } from "../../src/core/extensions/builtin/terminal/process-identity.ts";
@@ -19,6 +19,23 @@ import {
 	type SentMessage,
 	type SessionGeneration,
 } from "./terminal-restore-session-harness.ts";
+
+const leaseFaults = vi.hoisted(() => ({ failNextAcquires: 0 }));
+
+vi.mock("../../src/core/extensions/builtin/terminal/manifest-lease.ts", async (importOriginal) => {
+	const original =
+		await importOriginal<typeof import("../../src/core/extensions/builtin/terminal/manifest-lease.ts")>();
+	return {
+		...original,
+		acquireTerminalLease: (...args: Parameters<typeof original.acquireTerminalLease>) => {
+			if (leaseFaults.failNextAcquires > 0) {
+				leaseFaults.failNextAcquires -= 1;
+				return Promise.reject(new Error("terminal lease kept changing while it was being acquired"));
+			}
+			return original.acquireTerminalLease(...args);
+		},
+	};
+});
 
 interface DigestDetails {
 	outcome: string;
@@ -339,6 +356,19 @@ await new Promise((resolve) => setTimeout(resolve, 3000));`;
 		await whenRestoreDecided(sessionId);
 		expect(detailsOf(digests(generation)[0]).outcome).toBe("corrupt");
 		expect(readFileSync(manifestPath(), "utf8")).toBe("{not a manifest");
+	});
+
+	it("(j) an acquire that fails at session start waits, then the keeper takes over and restores once", async () => {
+		writeManifest([persistedWatch("mon_ACQUIREFAILS001", "cat")]);
+		leaseFaults.failNextAcquires = 1;
+		const generation = await start("resume");
+		expect(generation.statuses.map(([, text]) => text)).toContain("monitors waiting for the session lease");
+		await whenRestoreDecided(sessionId);
+		const decided = digests(generation).filter((entry) => detailsOf(entry).outcome === "decided");
+		expect(decided).toHaveLength(1);
+		expect(detailsOf(decided[0]).monitors).toEqual([
+			expect.objectContaining({ monitorId: "mon_ACQUIREFAILS001", outcome: "restored" }),
+		]);
 	});
 
 	it("(g) a print-mode start restores nothing and takes no lease", async () => {

@@ -93,10 +93,12 @@ export function buildRestoreDigest(
 	meta: { readonly generation: number; readonly outcome: RestoreDigestOutcome; readonly holderPid?: number },
 ): RestoreDigestMessage {
 	const outcome = meta.outcome === "decided" && digest.storeError ? "corrupt" : meta.outcome;
-	const holder = meta.holderPid === undefined ? "another process" : `pid ${meta.holderPid}`;
+	const holder = meta.holderPid === undefined ? undefined : `pid ${meta.holderPid}`;
 	const content =
 		outcome === "deferred"
-			? `${PREFIX}: monitors held by ${holder}; they come back here when that process exits.`
+			? holder === undefined
+				? `${PREFIX}: waiting for the session lease; monitors come back here once it is acquired.`
+				: `${PREFIX}: monitors held by ${holder}; they come back here when that process exits.`
 			: outcome === "corrupt"
 				? `${PREFIX}: the saved monitor state was unreadable, nothing was restored.`
 				: decidedSentence(digest);

@@ -16,9 +16,17 @@ export function processBootAtMs(now: () => number = Date.now): number {
 	return wholeSeconds(now() - osUptimeSeconds() * 1000);
 }
 
+const floorToSecond = (ms: number): number => Math.floor(ms / 1000) * 1000;
+
+/**
+ * Captured once at load: `process.uptime()` runs on a monotonic clock that stops during a Linux
+ * suspend, so recomputing later would drift by every suspend and read our own live lease as reused.
+ */
+const OWN_START_AT_LOAD = floorToSecond(Date.now() - process.uptime() * 1000);
+
 /** Floored like `ps -o lstart`, which truncates to the second: rounding up could land after now. */
-export function ownProcessStartedAtMs(now: () => number = Date.now): number {
-	return Math.floor((now() - process.uptime() * 1000) / 1000) * 1000;
+export function ownProcessStartedAtMs(now?: () => number): number {
+	return now === undefined ? OWN_START_AT_LOAD : floorToSecond(now() - process.uptime() * 1000);
 }
 
 export function sameBoot(bootAtMs: number, otherBootAtMs: number | undefined): boolean {

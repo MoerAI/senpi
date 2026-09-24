@@ -32,6 +32,8 @@ import { bindTerminalManifestWriter, unbindTerminalManifestWriter } from "./tool
 
 export const RESTORE_STATUS_KEY = "terminal-restore";
 
+const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
 /** Test-only timing overrides; production uses the modules' own defaults. */
 export const restoreSessionTestHooks: { keeperIntervalMs?: number; graceMs?: number } = {};
 
@@ -169,10 +171,7 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 			} catch (error) {
 				// A restore that throws (an unreadable transcript, a kill error on a confirmed orphan)
 				// still decides: the session hears it failed, and the lease stays bound for shutdown.
-				ctx?.ui?.notify?.(
-					`Terminal restore failed: ${error instanceof Error ? error.message : String(error)}`,
-					"warning",
-				);
+				ctx?.ui?.notify?.(`Terminal restore failed: ${errorText(error)}`, "warning");
 				digest = { ...emptyDigest(), storeError: true };
 			}
 			// A watch that did not come back never runs again: its baseline dir goes with it.
@@ -231,7 +230,7 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 			onError: (error) => {
 				const waiting = state.keeper?.state === "waiting";
 				ctx?.ui?.notify?.(
-					`Terminal lease ${waiting ? "check failed, still waiting" : "takeover failed"}: ${error instanceof Error ? error.message : String(error)}`,
+					`Terminal lease ${waiting ? "check failed, still waiting" : "takeover failed"}: ${errorText(error)}`,
 					"warning",
 				);
 			},
@@ -240,19 +239,12 @@ export async function startPersistence({ pi, state, toolCtx, sessionKey }: Start
 	};
 
 	const acquire = async (): Promise<void> => {
-		let lease: Awaited<ReturnType<typeof acquireTerminalLease>>;
-		try {
-			lease = await acquireTerminalLease({ dir, encodedSessionId: encoded });
-		} catch (error) {
-			// The lease kept changing (or the dir failed): never leave the session undecided; wait and
-			// let the keeper re-acquire on its next tick.
-			ctx?.ui?.notify?.(
-				`Terminal lease not acquired yet, retrying: ${error instanceof Error ? error.message : String(error)}`,
-				"warning",
-			);
-			wait(null);
-			return;
-		}
+		// The lease kept changing (or the dir failed): never leave the session undecided; the keeper retries.
+		const lease = await acquireTerminalLease({ dir, encodedSessionId: encoded }).catch((error: unknown) => {
+			ctx?.ui?.notify?.(`Terminal lease not acquired yet, retrying: ${errorText(error)}`, "warning");
+			return null;
+		});
+		if (lease === null) return wait(null);
 		if (lease.acquired) {
 			state.restoreInFlight = own(lease);
 			return;
