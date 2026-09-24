@@ -9,7 +9,9 @@ import {
 	type GoalCacheWarmMetrics,
 	type GoalCacheWarmupEntryData,
 	type LiveGoalCacheWarmupEntryData,
+	resolveGoalBackstopMaxSecondsForCache,
 	resolveGoalMonitorContinuationDelayMs,
+	resolveGoalPromptCacheLifetime,
 } from "./cache-warm.ts";
 import { subscribeGoalChannelState } from "./channel-state-subscriptions.ts";
 
@@ -353,12 +355,19 @@ export class MonitorAwareGoalContinuation {
 		// delivers. A pending ask-user question is the exception: re-prompting the
 		// model every backstop while the user is deciding is noise it cannot act
 		// on, so the wait is parked on the question's own deadline instead.
+		// A best-effort prompt cache has no TTL to land inside, so an unconfigured
+		// backstop there is the long liveness re-check (senpi#831).
 		const askUserWaitMs = kind === "monitor" ? this.#askUserWaitMs() : undefined;
 		const delayMs =
 			kind === "monitor"
 				? (parked?.delayMs ??
 					askUserWaitMs ??
-					resolveGoalMonitorContinuationDelayMs(this.#ctx?.getPromptCacheGoalBackstopMaxSeconds?.()))
+					resolveGoalMonitorContinuationDelayMs(
+						resolveGoalBackstopMaxSecondsForCache(
+							this.#ctx?.getPromptCacheGoalBackstopMaxSeconds?.(),
+							resolveGoalPromptCacheLifetime(this.#ctx?.model, process.env),
+						),
+					))
 				: GOAL_USER_GRACE_DELAY_MS;
 		this.#scheduledDelayMs = delayMs;
 		let remainingMs = delayMs;

@@ -128,7 +128,10 @@ export * from "./utils/overflow.ts";
 export {
 	isAnthropicApiBaseUrl,
 	PROMPT_CACHE_TTL_LONG_SECONDS,
+	PROMPT_CACHE_TTL_OPENAI_EXTENDED_SECONDS,
 	PROMPT_CACHE_TTL_SHORT_SECONDS,
+	type PromptCacheLifetime,
+	resolvePromptCacheLifetime,
 	resolvePromptCacheTtlSeconds,
 } from "./utils/prompt-cache-ttl.ts";
 export * from "./utils/provider-failure-description.ts";

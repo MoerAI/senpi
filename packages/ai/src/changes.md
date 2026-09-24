@@ -4716,3 +4716,27 @@ The shared content type and provider serialization belong to the AI package, bef
 TextContent and pi-messages request construction.
 
 - Covered production paths: `packages/ai/src/types.ts`, `packages/ai/src/api/pi-messages.ts`.
+
+## 2026-09-24 — Classify prompt-cache lifetimes per provider contract (#2090, #831)
+
+### What changed
+
+- `packages/ai/src/utils/prompt-cache-ttl.ts` adds `resolvePromptCacheLifetime()` and the `PromptCacheLifetime` union: `ttl` (explicit expiry contract with seconds), `best-effort` (automatic caching with no expiry contract), and `none` (disabled or unknown). `resolvePromptCacheTtlSeconds()` keeps its signature and returns the `ttl` seconds, otherwise `undefined`.
+- The `openai-responses`, `azure-openai-responses` and `openai-codex-responses` branch resolves GPT-5.6 and later (`gpt-5.6*`, `gpt-6*`, or `compat.supportsExplicitPromptCacheMode`) to `PROMPT_CACHE_TTL_OPENAI_EXTENDED_SECONDS` (1800). On `openai-responses` this applies only to provider `openai` or the `api.openai.com` host; gateways that proxy the same ids keep 300. Earlier OpenAI models keep 300.
+- The `openai-completions` branch classifies direct DeepSeek (provider `deepseek` or the parsed, case-insensitive `api.deepseek.com` host) as `best-effort`. `cacheRetention: "none"` still wins first.
+- `packages/ai/src/index.ts` exports `resolvePromptCacheLifetime`, `PromptCacheLifetime` and `PROMPT_CACHE_TTL_OPENAI_EXTENDED_SECONDS`.
+
+### Why
+
+- OpenAI documents that GPT-5.6+ prompt caches stay eligible at least 30 minutes after the latest write or reuse, yet every Responses model resolved 300 s, so cache-aware budgets were about 6.7x tighter than the provider requires. DeepSeek's disk cache is automatic and best-effort, with entries cleared after hours to days, so reporting it as a fixed 5-minute TTL produced false TTL copy and 270 s goal wakes.
+
+### Why an extension could not handle it
+
+- Provider cache semantics are resolved in the shared AI provider matrix that every coding-agent consumer reads; an extension cannot change what the resolver reports to core budgets and builtins.
+
+### Expected merge conflict zones
+
+- MEDIUM: `utils/prompt-cache-ttl.ts` `resolvePromptCacheLifetime()` switch (formerly the body of `resolvePromptCacheTtlSeconds()`) and the new constants near the top of the file.
+- LOW: the prompt-cache export block in `index.ts`.
+
+- Covered production paths: `packages/ai/src/utils/prompt-cache-ttl.ts`, `packages/ai/src/index.ts`.

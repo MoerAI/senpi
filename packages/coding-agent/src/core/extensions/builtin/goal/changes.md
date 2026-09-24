@@ -1611,3 +1611,24 @@ stale-ctx error (`stale-context.ts`) inside `tick()` and retire (clear the
 interval, drop the ctx); `GoalWaitTicker.stop()` tolerates a stale ctx on its
 final clear render. A later `sync()` with a live ctx re-arms them. Covered by
 `test/suite/goal-ticker-stale-context.test.ts`.
+
+## 2026-09-24 — Goal cache-warm consumes the prompt-cache lifetime classification (#831, #2090)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/goal/cache-warm.ts` reads `resolvePromptCacheLifetime()`. For a best-effort cache, `estimateCacheWarmMetrics()` reports `cacheLifetime: "best-effort"` with the cached tokens and no `ttlSeconds` or savings estimate, and the new `resolveGoalBackstopMaxSecondsForCache()` replaces an unconfigured (270 s default) backstop with `GOAL_MONITOR_BEST_EFFORT_BACKSTOP_SECONDS` (3570). An explicitly configured backstop other than the default is kept. Explicit-TTL and unknown lanes are unchanged.
+- `packages/coding-agent/src/core/extensions/builtin/goal/monitor-continuation.ts` passes the active model's lifetime into the backstop resolution when a monitor wait is scheduled.
+- `packages/coding-agent/src/core/extensions/builtin/goal/cache-warm-renderer.ts` renders a best-effort card as "~N tokens were cached after the prior turn · provider caching is best-effort, with no expiry to beat", without TTL, warmth, or savings copy.
+- `packages/coding-agent/src/core/extensions/builtin/goal/parked-wait.ts` restores the `cacheLifetime` marker when a reload re-arms a parked wait.
+
+### Why
+
+- The 270 s default backstop exists to land the re-check inside a 5-minute TTL. A best-effort cache (direct DeepSeek) has no TTL, so that wake only preserved a fabricated expiry and the card claimed a "5m prompt-cache TTL". Explicit-TTL lanes now show their real TTL (30m for OpenAI GPT-5.6+/GPT-6).
+
+### Why an extension could not handle it
+
+- The Goal extension owns the monitor timer, the `goal-cache-warmup` entry/event payload and its renderer; no other extension can change the delay or copy after scheduling.
+
+### Expected merge conflict zones
+
+- LOW: `cache-warm.ts` backstop constants and metrics function, the delay expression in `monitor-continuation.ts` `#schedule()`, the `warmLine()` branch in `cache-warm-renderer.ts`, and `parseCache()` in `parked-wait.ts`.
