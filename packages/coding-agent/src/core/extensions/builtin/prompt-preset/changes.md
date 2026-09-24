@@ -1,5 +1,37 @@
 # prompt-preset Extension Changes
 
+## 2026-09-24 - Claude and Kimi K3 cores: handoff contract replaces quiet narration
+
+### What changed
+
+- `claude-fable-5.ts`, `claude-fable-5-1.ts`, `claude-opus-5.ts`, `claude-opus-5-5.ts`, `kimi-k3.ts`: each renders `buildHandoffSection({ turnEndRuleStatedElsewhere: true })` (`dynamic-prompt/handoff.ts`) as `## Handoff` immediately before its `## Style`, gains a completion bullet in `## Hard Limits`, and gets a one-line header rationale. Every one of these cores already carries a text-only turn-end rule ("check your last paragraph", or the Opus 5.5 four endings), so the block's "a Next with nothing after it is a defect" clause is dropped there instead of stated twice. Completion bullet: the short form where the core already bans scope swap (fable-5-1, opus-5, opus-5-5 Scope sections; kimi-k3 "deliver all of it and only it ... scaling the task down is the user's call"), the full form in fable-5 (no scope-swap sentence).
+- `kimi-k2-code.ts` (thin, shared by K2.7/K2.8): `Write lean - do not restate the request or re-derive what you already established this turn.` -> `Write lean - do not re-derive what you already established this turn.` (the rendered shared core now asks for an Ask field). The only thin-preset edit.
+
+Removed sentences and rendered `wc -w` (empty tool list, `resolvePreset` settings force; renders in the lane evidence `task-7-<preset>.before/.after.md`):
+
+| Preset | Removed (exact) | Before | After | Delta by category |
+|--------|-----------------|--------|-------|-------------------|
+| claude-fable-5 | `Announcement language ("Next, I will...") and permission-begging ("Shall I?") are prohibited.` -> `Permission-begging ("Shall I?") is prohibited.`; `Be concise and concrete: no filler openers, no self-praise,` (default traits, brevity adjective); `Terse shorthand between tool calls is fine;` (licensed the narration the handoff forbids; "see it" -> "see the work" to keep the sentence whole) | 1083 | 1211 | +113 handoff B+C; +36 full completion bullet C; -6 announcement B; -9 concise traits A; -7 shorthand allowance B; +1 referent |
+| claude-fable-5-1 | `Add a brief progress note when you learn something important or change direction.` | 1097 | 1225 | +113 handoff B+C; +28 short bullet C; -13 progress-note cadence B |
+| claude-opus-5 | `The routing line already announced the plan, so add a brief update only when you find something important or change direction, and correct an earlier statement ...` -> `Correct an earlier statement ...` (correction filter kept) | 1253 | 1372 | +113 handoff B+C; +28 short bullet C; -22 cadence clause B |
+| claude-opus-5-5 | same clause as claude-opus-5 | 1348 | 1467 | +113 handoff B+C; +28 short bullet C; -22 cadence clause B |
+| kimi-k3 | `Do not restate the request, re-derive facts ...` -> `Do not re-derive facts ...` | 1303 | 1441 | +113 handoff B+C; +28 short bullet C; -3 restate ban B |
+| kimi-k2-7 / kimi-k2-8 | `do not restate the request or` | 1416 | 1412 | -4 restate ban B |
+
+No file grew beyond its completion bullet plus the net handoff delta, so no further deletion was owed.
+
+### Why
+
+senpi#2121: the user directive of 2026-09-24 asks that progress be legible at every phase change and at the end - what was asked, what the user needs to know, what runs now, what runs next. These cores either banned announcements outright or rationed updates to "something important", which produced silent runs. Anthropic's guides describe the lever as the shape of updates, not a cadence counter (claude.md "User-facing progress updates"; Opus 5 "User-facing progress updates"; Fable 5.1 "Ask for user-facing progress updates": remove narration-suppressing lines first; Opus 5.5 "User-facing progress updates"). Kimi's guide asks for objective conditions and a stated replacement behavior (kimi.md "Explicit terminal conditions"). The request-restating bans conflicted with the handoff's Ask field.
+
+### Why an extension could not handle it
+
+The sentences are preset core text; an extension could only append a contradicting rule after them.
+
+### Expected merge conflict zones
+
+- The five cores' `## Hard Limits` tails, `## Style` paragraphs, imports, and header comments; `kimi-k2-code.ts` tuning sentence. Fork-only files.
+
 ## 2026-09-23 - GPT presets: the test decision replaces test-first
 
 ### What changed

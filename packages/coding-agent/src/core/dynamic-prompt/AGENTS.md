@@ -16,7 +16,7 @@ dynamic-prompt/
 ├── tool-categorization.ts  # categorizeTools() + getToolsPromptDisplay()
 ├── tool-section.ts         # CATEGORY_ORDER + CATEGORY_LABELS for rendering
 ├── policies.ts             # Hard blocks injected into every prompt
-├── handoff.ts              # buildHandoffSection() — labeled handoff block (Ask / For you / Now / Next): when progress reaches the user, and what it carries
+├── handoff.ts              # buildHandoffSection() — labeled handoff block (Ask / For you / Now / Next): when progress reaches the user, and what it carries; the Claude and Kimi K3 cores render it too
 ├── style.ts                # buildStyleSection() — output formatting + length norms
 └── changes.md              # Dense fork tracker (dated sections)
 ```
