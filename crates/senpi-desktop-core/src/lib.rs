@@ -6,4 +6,11 @@ pub mod backend;
 pub mod error;
 pub mod frame;
 pub mod keys;
+pub mod methods;
+pub mod protocol;
+pub mod protocol_params;
+pub mod protocol_results;
+pub mod protocol_schema;
 pub mod types;
+
+pub use protocol_schema::engine_schema;
