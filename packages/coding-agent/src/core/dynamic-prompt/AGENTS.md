@@ -31,7 +31,7 @@ dynamic-prompt/
 | Tune verification tier definitions | `verification.ts` |
 | Add/remove a tool category | `types.ts` (`AvailableTool["category"]`) + `tool-categorization.ts` + `tool-section.ts` |
 | Per-model addendum to the prompt | callers pass `tuningSection` (see `extensions/builtin/prompt-preset/`) |
-| Full per-model core rewrite | callers pass `corePrompt` (see `prompt-preset/gpt-5.5.ts`) — replaces identity→style, keeps tool section/context/skills/date/cwd assembly |
+| Full per-model core rewrite | callers pass `corePrompt` (see `prompt-preset/gpt-5.5.ts`) — replaces identity→style, keeps tool section/context/skills/workstation assembly |
 
 ## SECTION ORDER (assembled in `build.ts`)
 
@@ -44,7 +44,9 @@ dynamic-prompt/
 7. **Style** — execution stance + output formatting
 8. **Optional `tuningSection`** — per-model preset addendum (appended last)
 
-When `corePrompt` is set, sections 1–7 are replaced by the override's output (the rendered tool section is handed to it via `DynamicPromptCoreContext`); tuning, context files, skills, and date/cwd assembly are unchanged.
+When `corePrompt` is set, sections 1–7 are replaced by the override's output (the rendered tool section is handed to it via `DynamicPromptCoreContext`); tuning, context files, skills, and workstation assembly are unchanged.
+
+The prompt carries no date or cwd: both reach the model as an append-only `environment-context` custom message (`core/environment-context.ts`, injected by `agent-session.ts` before a turn when a value changes) so the system prompt is byte-stable across days and directories (senpi#2093). Never add per-turn values back here.
 
 ## CONVENTIONS
 

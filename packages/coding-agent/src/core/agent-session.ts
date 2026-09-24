@@ -131,6 +131,11 @@ import {
 	UserEditError,
 	userTextEquals,
 } from "./edited-user-message.ts";
+import {
+	type EnvironmentContext,
+	environmentContextMessageIfChanged,
+	resolveEnvironmentContext,
+} from "./environment-context.ts";
 import { areExperimentalFeaturesEnabled } from "./experimental.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
@@ -517,6 +522,11 @@ export interface AgentSessionConfig {
 	fallbackNow?: () => number;
 	/** Random source for retry jitter (tests only). */
 	retryRandom?: () => number;
+	/**
+	 * Send cwd and date as an append-only environment-context message before a turn (senpi#2093).
+	 * Default true; test fixtures that pin exact transcripts pass false.
+	 */
+	environmentContext?: boolean;
 	/** Global model narrowing for selectors and startup model choice (from --models / enabledModels) */
 	scopedModels?: Array<{
 		model: Model<any>;
@@ -1051,6 +1061,7 @@ export class AgentSession {
 	private readonly _probeBackScheduler: ProbeBackScheduler;
 	private readonly _fallbackNow: () => number;
 	private readonly _retryRandom: () => number;
+	private readonly _environmentContextEnabled: boolean;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -1119,6 +1130,7 @@ export class AgentSession {
 		this._selectorCooldowns = new SelectorCooldowns(config.fallbackNow ?? (() => Date.now()));
 		this._fallbackNow = config.fallbackNow ?? (() => Date.now());
 		this._retryRandom = config.retryRandom ?? Math.random;
+		this._environmentContextEnabled = config.environmentContext ?? true;
 		this._retryFallback = new RetryFallbackController({
 			getSettings: () => this.settingsManager.getRetryFallbackSettings(),
 			registry: this._modelRegistry,
@@ -3994,8 +4006,10 @@ export class AgentSession {
 			// The user's new prompt is sent below, so do not call agent.continue() here.
 			await this._enforceCompactionBeforeProvider(this._findLastAssistantMessage(), false, "pre_prompt");
 
-			// Build messages array (custom message if any, then user message)
+			// Build messages array (environment context if it changed, user message, then custom messages)
 			messages = [];
+			const environmentContext = this._pendingEnvironmentContextMessage();
+			if (environmentContext) messages.push(environmentContext);
 
 			// Add user message
 			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
@@ -4519,7 +4533,8 @@ export class AgentSession {
 				}
 			} else if (options?.triggerTurn) {
 				finishSessionWork ??= this._sessionWorkBarrier.begin();
-				const messages: AgentMessage[] = [appMessage];
+				const environmentContext = this._pendingEnvironmentContextMessage();
+				const messages: AgentMessage[] = environmentContext ? [environmentContext, appMessage] : [appMessage];
 				const queueTriggerForLater = (): void => {
 					if (options.deliverAs === "followUp") {
 						this.agent.followUp(appMessage);
@@ -4566,6 +4581,12 @@ export class AgentSession {
 			deferredTurnClaim?.resolve("finished-without-start");
 			finishSessionWork?.();
 		}
+	}
+
+	/** Environment context a new turn must carry: set when cwd or date differs from the latest one visible (senpi#2093). */
+	private _pendingEnvironmentContextMessage(): CustomMessage<EnvironmentContext> | undefined {
+		if (!this._environmentContextEnabled) return undefined;
+		return environmentContextMessageIfChanged(this.agent.state.messages, resolveEnvironmentContext(this._cwd));
 	}
 
 	private _appendCustomMessage(appMessage: CustomMessage): void {

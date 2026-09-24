@@ -22,7 +22,8 @@ function assertWire(requests: CapturedRequest[]): void {
 		expect(request.rawBody).not.toMatch(/OPENAI_API_KEY|authorization/iu);
 	}
 	const firstMessages = messages(requests[0]!);
-	expect(firstMessages.map((message) => message.role)).toEqual(["system", "user"]);
+	// senpi#2093: the environment-context message reaches the wire as a user message before the prompt.
+	expect(firstMessages.map((message) => message.role)).toEqual(["system", "user", "user"]);
 	expect(JSON.stringify(firstMessages[0])).not.toMatch(/<tool_call>|<invoke|tool call format/iu);
 }
 
@@ -34,7 +35,7 @@ function recoveredPair(request: CapturedRequest) {
 	expect(assistantIndex).toBeGreaterThanOrEqual(0);
 	const assistant = transcript[assistantIndex]!;
 	const tool = transcript[assistantIndex + 1]!;
-	expect(transcript.map((message) => message.role)).toEqual(["system", "user", "assistant", "tool"]);
+	expect(transcript.map((message) => message.role)).toEqual(["system", "user", "user", "assistant", "tool"]);
 	expect(assistant.content).toBe("I will check. ");
 	expect(tool.role).toBe("tool");
 	return {

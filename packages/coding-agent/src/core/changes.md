@@ -61,6 +61,26 @@ The session entry stream, `reasoningBaseline`, and the compaction commit are own
 
 - LOW: the `@earendil-works/pi-ai` value import block, the `reasoningBaseline` reset in the model-switch path, the `appendConfigurationUpdate` block in `setThinkingLevel`, and the `latestConfigurationEffort` re-append after `appendCompaction`.
 
+## 2026-09-24 - Environment context (cwd + date) moves from the system prompt into an append-only message (senpi#2093)
+
+### What changed
+
+- `packages/coding-agent/src/core/environment-context.ts` (new, fork-only): `ENVIRONMENT_CONTEXT_MESSAGE_TYPE` (`environment-context`), `resolveEnvironmentContext` (cwd with `/` separators, UTC `YYYY-MM-DD` date), `formatEnvironmentContext` (`<environment_context>` with `<cwd>` and `<current_date>`), `latestEnvironmentContext`, and `environmentContextMessageIfChanged`, which returns a hidden (`display: false`) custom message only when the cwd or date differs from the latest one in the given messages.
+- `packages/coding-agent/src/core/agent-session.ts`: `prompt()` puts that message ahead of the user message when it is due, and a `sendCustomMessage(..., { triggerTurn: true })` turn puts it ahead of the triggering message. It persists through the normal `message_end` custom-message path and `convertToLlm` sends it as a user-role message, so every provider adapter and task child sees it without adapter changes. Because the check reads the current agent state, the first turn after a compaction that summarized the message away re-appends the latest value; nothing is written at compaction time, so the compacted context tail (which post-compaction continuation logic inspects) is unchanged. Earlier entries are never rewritten. `AgentSessionConfig.environmentContext` (default `true`) gates injection; the faux test harness (`test/suite/harness.ts`) passes `false` unless a test opts in, so mechanics tests that pin exact transcripts stay exact.
+
+### Why
+
+- The generated system prompt ended in `Current date:` / `Current working directory:` lines, with extension appends after them. A new day, another directory, or a session crossing UTC midnight rewrote the provider-visible prefix, and OpenAI, Anthropic and the other prefix-cache providers re-read the whole system prompt uncached. Live probes on 2026-09-24 read 0 cached tokens after a date change inside the prompt, and 4877 of about 4900 cached in another session on another day once the values moved into an environment-context user message. An append-only rollover kept 4918 of 4973 cached. Codex sends cwd/date the same way.
+
+### Why an extension could not handle it
+
+- The message must precede the user message inside `AgentSession`'s prompt assembly; `before_agent_start` messages are pushed after the user message, and the trigger-turn branch of `sendCustomMessage` builds its request array internally.
+
+### Expected merge conflict zones
+
+- LOW: the messages-array head in `prompt()` and the `const messages: AgentMessage[] = [appMessage]` line of the `sendCustomMessage` trigger-turn branch.
+- LOW: one `AgentSessionConfig` field, one private field and its constructor assignment, and one import line.
+
 ## 2026-09-23 - Streaming tool-call events name the tool a call resolves to (senpi#2068)
 
 ### What changed

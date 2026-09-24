@@ -13,6 +13,7 @@
 
 ### Changed
 
+- The system prompt no longer ends with the current date and working directory. Both reach the model in a hidden `<environment_context>` message placed before the first user turn and appended again only when the date or directory changes, so the prompt stays byte-identical across days and directories and provider prompt caches keep hitting it. ([#2093](https://github.com/code-yeongyu/senpi/issues/2093))
 - Dynamic project rules reach the enclosing git repository root: reading a file inside a workspace member (a nested `package.json` or `Cargo.toml`) now also applies repository-level `.github/instructions` rules. Ported from pi-rules 0.2.0. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
 - Goal continuation prompts describe the objective as untrusted goal data instead of user-provided data, since the model may have written it with `create_goal`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
 - The vendored builtin manifest pins the 2026-09-24 pi-* extension releases and now also records `anthropic-web-search`, `openai-web-search` and `anthropic-bash`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
