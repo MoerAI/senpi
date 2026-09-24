@@ -196,8 +196,18 @@ export class TerminalManifestWriter {
 		await this.#persist();
 	}
 
-	recordBackgroundStart(id: string, command: string, startedAtMs?: number): Promise<void> {
-		this.#backgrounds.set(id, { id, command, startedAtMs: startedAtMs ?? this.#now() });
+	recordBackgroundStart(
+		id: string,
+		command: string,
+		startedAtMs?: number,
+		runtime?: ManifestBackgroundSession["runtime"],
+	): Promise<void> {
+		this.#backgrounds.set(id, {
+			id,
+			command,
+			startedAtMs: startedAtMs ?? this.#now(),
+			...(runtime === undefined ? {} : { runtime }),
+		});
 		return this.#persist();
 	}
 
@@ -212,7 +222,7 @@ export class TerminalManifestWriter {
 		this.#pending.clear();
 	}
 
-	#entryFor({ monitorId, spec }: MonitorRegistration): ManifestMonitor {
+	#entryFor({ monitorId, spec, runtime, deadlineMs }: MonitorRegistration): ManifestMonitor {
 		const createdAt = this.#now();
 		// A spec that omits `persistent` is ephemeral: the persisted field is a boolean the
 		// strict parse rejects as undefined, so coerce here rather than trusting the caller.
@@ -243,6 +253,8 @@ export class TerminalManifestWriter {
 			lastCheckpoint: null,
 			deliveryPaused: false,
 			fireWindow: { startMs: createdAt, count: 0 },
+			...(runtime === undefined ? {} : { runtime }),
+			...(deadlineMs === undefined || persistent ? {} : { deadlineMs }),
 		};
 	}
 

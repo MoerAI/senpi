@@ -8,6 +8,7 @@
  */
 
 import { InvalidSidecarStoreError, type SidecarStore, type SidecarStoreRef } from "../../../session-sidecar-store.ts";
+import type { ChildProcessIdentity } from "./process-identity.ts";
 import {
 	type ManifestBackgroundSession,
 	type ManifestMonitor,
@@ -87,6 +88,24 @@ function fireWindow(raw: unknown): { startMs: number; count: number } {
 	return { startMs: num(raw, "startMs"), count: num(raw, "count") };
 }
 
+function runtimeIdentity(raw: Raw, field: string): ChildProcessIdentity {
+	const value = raw[field];
+	if (!isObj(value)) invalid(`field ${field} must be an object`);
+	const argv = value.argv;
+	if (!Array.isArray(argv) || !argv.every(isStr)) invalid(`field ${field}.argv must be an array of strings`);
+	const pid = value.pid;
+	if (!isNum(pid)) invalid(`field ${field}.pid must be a finite number`);
+	const groupId = value.processGroupId;
+	if (groupId !== undefined && !isNum(groupId)) invalid(`field ${field}.processGroupId must be a finite number`);
+	return {
+		pid,
+		...(groupId !== undefined ? { processGroupId: groupId } : {}),
+		startedAtMs: num(value, "startedAtMs"),
+		bootAtMs: num(value, "bootAtMs"),
+		argv,
+	};
+}
+
 function parseMonitor(entry: unknown): ManifestMonitor {
 	if (!isObj(entry)) invalid("a monitor entry must be an object");
 	return {
@@ -108,14 +127,22 @@ function parseMonitor(entry: unknown): ManifestMonitor {
 		lastCheckpoint: entry.lastCheckpoint === null ? null : checkpoint(entry.lastCheckpoint),
 		deliveryPaused: bool(entry, "deliveryPaused"),
 		// Unknown keys are ignored by this field-by-field parse, so a manifest written before
-		// `wakeCount` was dropped still reads back cleanly; no version bump is needed.
+		// `wakeCount` was dropped still reads back cleanly; no version bump is needed. The same
+		// rule makes `runtime` / `deadlineMs` optional additions that v1 readers skip.
 		fireWindow: fireWindow(entry.fireWindow),
+		...(entry.runtime === undefined ? {} : { runtime: runtimeIdentity(entry, "runtime") }),
+		...(entry.deadlineMs === undefined ? {} : { deadlineMs: num(entry, "deadlineMs") }),
 	};
 }
 
 function parseBackgroundSession(entry: unknown): ManifestBackgroundSession {
 	if (!isObj(entry)) invalid("a background session entry must be an object");
-	return { id: str(entry, "id"), command: str(entry, "command"), startedAtMs: num(entry, "startedAtMs") };
+	return {
+		id: str(entry, "id"),
+		command: str(entry, "command"),
+		startedAtMs: num(entry, "startedAtMs"),
+		...(entry.runtime === undefined ? {} : { runtime: runtimeIdentity(entry, "runtime") }),
+	};
 }
 
 /** Strict fail-closed domain parse; the sidecar store has already checked version and session. */
