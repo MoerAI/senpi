@@ -1,4 +1,4 @@
-import { isRecord, parseFile } from "./display-js-ast.ts";
+import { isRecord, parseFile, type SourceNode } from "./display-js-ast.ts";
 import { finishLayout } from "./display-js-layout.ts";
 import { maskSource, restoreComments, restoreValues } from "./display-js-mask.ts";
 
@@ -59,6 +59,33 @@ function sameTokens(left: string, right: string): boolean {
 	return strip(left) === strip(right);
 }
 
+const POSITION_KEYS = new Set([
+	"start",
+	"end",
+	"loc",
+	"range",
+	"extra",
+	"leadingComments",
+	"trailingComments",
+	"innerComments",
+]);
+
+// Positions, raw spellings, and parenthesization flags aside, the preview must be the same program:
+// the character guard alone cannot see a dropped `(`, which can change how an expression groups.
+function programSignature(file: SourceNode): string {
+	return JSON.stringify({ program: file.record.program, comments: file.record.comments }, (key, value: unknown) => {
+		if (POSITION_KEYS.has(key)) return undefined;
+		if (typeof value === "bigint") return `${value}n`;
+		// A stray `;` in a statement list is a no-op the printer drops.
+		return Array.isArray(value) ? value.filter((item) => !isRecord(item) || item.type !== "EmptyStatement") : value;
+	});
+}
+
+function sameProgram(original: SourceNode, preview: string): boolean {
+	const reparsed = parseFile(preview);
+	return reparsed !== undefined && programSignature(reparsed) === programSignature(original);
+}
+
 /** The printer's layout of `code` with its literal, name, and comment text intact, or undefined. */
 export function prettifyJs(code: string, print: JsPrinter): string | undefined {
 	const file = parseFile(code);
@@ -69,5 +96,5 @@ export function prettifyJs(code: string, print: JsPrinter): string | undefined {
 	const withComments = printed === undefined ? undefined : restoreComments(printed, mask.comments);
 	const restored = withComments === undefined ? undefined : restoreValues(withComments, mask);
 	const finished = restored === undefined ? undefined : finishLayout(restored);
-	return finished !== undefined && sameTokens(finished, code) ? finished : undefined;
+	return finished !== undefined && sameTokens(finished, code) && sameProgram(file, finished) ? finished : undefined;
 }

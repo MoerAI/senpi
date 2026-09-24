@@ -24,6 +24,8 @@
 
 ### Fixed
 
+- Eval code previews no longer show code that means something different from the cell: breaking a long JavaScript array keeps the parentheses around each element, and a Python formatter result that changes string or docstring text (or is not valid Python) is discarded so the cell is shown as sent. ([#2076](https://github.com/code-yeongyu/senpi/issues/2076))
+
 ### Removed
 
 ## [2026.9.23-5] - 2026-09-23

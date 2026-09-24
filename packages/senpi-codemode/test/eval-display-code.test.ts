@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { displayCode } from "../src/tool/display-code.ts";
+import { prettifyJs } from "../src/tool/display-js.ts";
 import { renderEvalCall } from "../src/tool/render.ts";
 import { DENSE_JS_CELL } from "./eval-display-fixtures.ts";
 import { callContext, renderLines } from "./eval-render-fixtures.ts";
@@ -31,5 +32,20 @@ describe("displayCode on Node", () => {
 		const lines = renderLines(component);
 		expect(lines.some((line) => line.startsWith("\u2502 for(let i=0;i<4;i++){print("))).toBe(true);
 		expect(lines).not.toContain("\u2502 for (let i = 0; i < 4; i++) {");
+	});
+});
+
+describe("prettifyJs equivalence guard", () => {
+	it("shows a cell as sent when the printer's layout regroups an expression", () => {
+		const code = "total = (first(), second()); print(total)";
+		const dropsGrouping = (masked: string) => masked.replace("(", "").replace("))", ")");
+		expect(prettifyJs(code, dropsGrouping)).toBeUndefined();
+	});
+
+	it("accepts a printer that only changes whitespace and semicolons", () => {
+		const code = "total = (first(), second()); print(total)";
+		expect(prettifyJs(code, (masked) => masked.replace("; ", ";\n"))).toBe(
+			"total = (first(), second());\nprint(total)",
+		);
 	});
 });

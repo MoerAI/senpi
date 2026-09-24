@@ -1,6 +1,6 @@
 // Runs in the user's own Python interpreter: `python -c <script> <strategies...>` with the cell on
-// stdin, printing {"via", "code"} as JSON. Each strategy's output is kept only when it differs from
-// the source in layout alone (whitespace, parentheses, commas, semicolons, line continuations).
+// stdin, printing {"via", "code"} as JSON. A strategy's output is kept only when it parses to the same
+// AST as the source and keeps every string, number, and comment token's text (senpi#2076).
 export const PYTHON_FORMATTER_SCRIPT = [
 	"import ast, io, json, re, shutil, subprocess, sys, tokenize",
 	"",
@@ -8,9 +8,21 @@ export const PYTHON_FORMATTER_SCRIPT = [
 	"    sys.stdout.write(json.dumps({'via': via, 'code': code}))",
 	"    sys.exit(0)",
 	"",
-	"def same_tokens(left, right):",
-	"    strip = lambda text: re.sub(r'[\\s(),;\\\\]', '', text)",
-	"    return strip(left) == strip(right)",
+	"FLAGS = ast.PyCF_ONLY_AST | getattr(ast, 'PyCF_ALLOW_TOP_LEVEL_AWAIT', 0)",
+	"",
+	"def parse(text):",
+	"    return compile(text, '<cell>', 'exec', flags=FLAGS, dont_inherit=True)",
+	"",
+	"def literal_texts(text):",
+	"    kinds = {tokenize.STRING, tokenize.NUMBER, tokenize.COMMENT} | token_kinds('FSTRING_MIDDLE', 'TSTRING_MIDDLE')",
+	"    return [t.string for t in tokenize.generate_tokens(io.StringIO(text).readline) if t.type in kinds]",
+	"",
+	"def equivalent(source, formatted):",
+	"    try:",
+	"        same_tree = ast.dump(parse(source)) == ast.dump(parse(formatted))",
+	"        return same_tree and literal_texts(source) == literal_texts(formatted)",
+	"    except (SyntaxError, ValueError, tokenize.TokenError):",
+	"        return False",
 	"",
 	"def ruff_binary():",
 	"    found = shutil.which('ruff')",
@@ -93,8 +105,7 @@ export const PYTHON_FORMATTER_SCRIPT = [
 	"        cursor = end",
 	"    masked.append(source[cursor:])",
 	"    try:",
-	"        flags = ast.PyCF_ONLY_AST | getattr(ast, 'PyCF_ALLOW_TOP_LEVEL_AWAIT', 0)",
-	"        tree = compile(''.join(masked), '<cell>', 'exec', flags=flags, dont_inherit=True)",
+	"        tree = parse(''.join(masked))",
 	"    except (SyntaxError, ValueError):",
 	"        return None",
 	"    seen = []",
@@ -109,7 +120,7 @@ export const PYTHON_FORMATTER_SCRIPT = [
 	"for name in sys.argv[1:]:",
 	"    strategy = STRATEGIES.get(name)",
 	"    formatted = strategy(source) if strategy else None",
-	"    if formatted is not None and same_tokens(formatted, source):",
+	"    if formatted is not None and equivalent(source, formatted):",
 	"        emit(name, formatted.rstrip('\\n'))",
 	"emit('none', source)",
 ].join("\n");

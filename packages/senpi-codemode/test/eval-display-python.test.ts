@@ -79,6 +79,24 @@ describe.skipIf(pythonPath === "")("Python cell preview through the user's inter
 		},
 	);
 
+	it.skipIf(process.platform === "win32")("rejects a formatter result that rewrites a docstring's text", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "senpi-fake-ruff-"));
+		tempDirs.push(dir);
+		const ruff = join(dir, "ruff");
+		writeFileSync(ruff, ["#!/bin/sh", "cat > /dev/null", `printf '"""padded doc"""\\nx = 1\\n'`].join("\n"));
+		chmodSync(ruff, 0o755);
+		const env = { ...process.env, PATH: `${dir}${delimiter}${dirname(pythonPath)}` };
+		const cell = '"""   padded doc   """;x=1';
+		await expect(formatPythonCell(cell, python, { strategies: ["ruff"], timeoutMs: 10_000, env })).resolves.toBe(
+			cell,
+		);
+	});
+
+	it("shows a cell as sent when ast.unparse would print invalid Python", async () => {
+		const cell = "x = 1 .real;print(x)";
+		await expect(formatPythonCell(cell, python, AST_ONLY)).resolves.toBe(cell);
+	});
+
 	it("starts no formatter without a repaint callback, and repaints once the cell is formatted", async () => {
 		let interpreterCalls = 0;
 		const display = createPythonDisplay({
