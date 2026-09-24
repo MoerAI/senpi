@@ -1,3 +1,21 @@
+## 2026-09-24 - fingerprint hashes the system prompt verbatim (senpi#2093)
+
+### What changed
+
+- `session-sync.ts`: `GENERATED_DATE_LINE` and `fingerprintSystemPrompt` are removed; `configFingerprint` hashes `options.systemPrompt` as sent.
+
+### Why
+
+- The generated prompt no longer carries a `Current date:` / `Current working directory:` pair (it travels in an `environment-context` message), so a midnight rollover leaves the prompt unchanged and there is nothing to normalize. Keeping the regex would silently rewrite a user-authored date line in an override prompt.
+
+### Why an extension could not handle it
+
+- The fingerprint is internal to this builtin.
+
+### Expected merge conflict zones
+
+- LOW: the `systemPromptHash` line in `configFingerprint`.
+
 ## 2026-09-23 - version-floor remedy names the binary that ran; Windows npm shims; promoted-model guard (senpi#2053)
 
 ### What changed

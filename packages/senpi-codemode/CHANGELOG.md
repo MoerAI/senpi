@@ -12,6 +12,9 @@
 
 ### Fixed
 
+- The `eval` tool's run contract is no longer a trap: the schema descriptions now mark `language` and `code` as required for run, and a run call missing either fails with an error that names the enabled languages or the missing cell body instead of a bare "eval run requires language".
+- An omitted `eval` `language` now names only the kernels enabled in this session (`js` and `py` by default), instead of advertising gated Ruby and Julia.
+
 ### Removed
 
 ## [2026.9.24] - 2026-09-24

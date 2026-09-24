@@ -1,4 +1,4 @@
-import type { Agent, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { type Agent, buildProviderContext, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ModelsSimpleStreamOptions, ProviderHeaders } from "@earendil-works/pi-ai";
 import { isValidThinkingLevel } from "../cli/args.ts";
 import type { ExtensionRunner } from "./extensions/runner.ts";
@@ -23,7 +23,9 @@ const MAX_COMPOSITION_PASSES = 2;
  * from the source the turn itself reads, so the prewarmed prefix is the turn's prefix:
  * - system prompt: the base prompt through a `before_agent_start` preview pass, which is
  *   what `AgentSession.prompt()` installs as `agent.state.systemPrompt`;
- * - tools: `agent.state.tools`, the list and order the agent loop sends;
+ * - tools: `agent.state.tools` (and `declaredTools`) through the agent loop's own
+ *   `buildProviderContext`, so an allowed-tools model gets the same declared list and
+ *   callable subset;
  * - reasoning, thinking selection/budgets, session id, and `onPayload`: the fields
  *   `Agent.createLoopConfig()` passes to the stream function;
  * - service tier: the session's effective tier, which the SDK stream function applies to
@@ -52,11 +54,16 @@ export async function buildPromptCachePrefixRequest(
 		options.transformHeaders = async (headers: ProviderHeaders) => await runner.emitBeforeProviderHeaders(headers);
 	}
 	const prepared = await sources.modelRuntime.prepareSimpleRequest(model, options);
-	return {
-		model: prepared.model,
-		context: { systemPrompt, messages: [], tools: state.tools.slice() },
-		options: prepared.options,
-	};
+	const context = await buildProviderContext(
+		{
+			systemPrompt,
+			messages: [],
+			tools: state.tools.slice(),
+			...(state.declaredTools !== undefined ? { declaredTools: state.declaredTools.slice() } : {}),
+		},
+		{ convertToLlm: () => [], model },
+	);
+	return { model: prepared.model, context, options: prepared.options };
 }
 
 async function composeTurnSystemPrompt(sources: PromptCachePrefixSources): Promise<string> {

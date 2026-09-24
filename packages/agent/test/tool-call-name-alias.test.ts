@@ -181,6 +181,20 @@ describe("tool-call name alias resolution", () => {
 		},
 	);
 
+	it.each([
+		["MCP__srv__lazy_weather", "mcp__srv__LazyWeather"],
+		["mcp__my_server__LazyWeather", "lazy_weather"],
+		["lazy_weather", "mcp_srv_lazy_weather"],
+	])("runs the unique tool behind a recased or namespaced name (%s -> %s)", async (calledName, registeredName) => {
+		const execute = vi.fn();
+
+		const { result } = await callOnce(calledName, [weatherTool(registeredName, execute), weatherTool("read")]);
+
+		expect(execute).toHaveBeenCalledOnce();
+		expect(result.toolName).toBe(registeredName);
+		expect(result.isError).toBe(false);
+	});
+
 	it("never guesses between two tools that fold to the same key", async () => {
 		const first = vi.fn();
 		const second = vi.fn();

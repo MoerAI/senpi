@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type {
+	Tool as OpenAITool,
 	ResponseCreateParamsNonStreaming,
 	ResponseCreateParamsStreaming,
 	ResponseStreamEvent,
@@ -118,6 +119,7 @@ function getCompat(model: Model<"openai-responses">, env?: ProviderEnv): Require
 		supportsExplicitPromptCacheMode: model.compat?.supportsExplicitPromptCacheMode ?? false,
 		supportsConfigurationUpdate: model.compat?.supportsConfigurationUpdate ?? false,
 		supportsMaxOutputTokens: model.compat?.supportsMaxOutputTokens ?? true,
+		supportsAllowedTools: model.compat?.supportsAllowedTools ?? false,
 	};
 }
 
@@ -203,6 +205,56 @@ function sanitizeUnsupportedNativeTools(
 	return sanitized ? (sanitized as ResponseCreateParamsStreaming) : params;
 }
 
+type AllowedToolReference = { [key: string]: unknown };
+
+function allowedReference(tool: OpenAITool): AllowedToolReference {
+	if (tool.type === "function" || tool.type === "custom") return { type: tool.type, name: tool.name };
+	if (tool.type === "mcp") return { type: "mcp", server_label: tool.server_label };
+	return { type: tool.type };
+}
+
+/**
+ * senpi#2095: `tools` carries every tool declared this session, so removing a tool never rewrites the
+ * cached prefix; the callable subset rides `tool_choice: allowed_tools` instead. Hosted tools a payload
+ * hook added stay callable, and deferred tools (declared by transcript items rather than `tools`) are
+ * referenced by name. An empty subset forbids tool calls. An explicit `tool_choice` always wins.
+ */
+function applyAllowedToolsChoice<TParams extends ResponseCreateParamsStreaming>(
+	params: TParams,
+	context: Context,
+	compat: Required<OpenAIResponsesCompat>,
+): TParams {
+	const activeToolNames = context.activeToolNames;
+	if (!compat.supportsAllowedTools || activeToolNames === undefined || params.tool_choice !== undefined) {
+		return params;
+	}
+	const active = new Set(activeToolNames);
+	const declaredTools = context.tools ?? [];
+	if (declaredTools.every((tool) => active.has(tool.name))) return params;
+
+	const allowed: AllowedToolReference[] = [];
+	const namedInTools = new Set<string>();
+	for (const tool of params.tools ?? []) {
+		if (tool.type === "function" || tool.type === "custom") {
+			namedInTools.add(tool.name);
+			if (!active.has(tool.name)) continue;
+		}
+		allowed.push(allowedReference(tool));
+	}
+	for (const tool of declaredTools) {
+		if (namedInTools.has(tool.name) || !active.has(tool.name)) continue;
+		const [converted] = convertResponsesTools([tool], {
+			supportsStrictMode: compat.supportsStrictMode,
+			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
+		});
+		if (converted) allowed.push(allowedReference(converted));
+	}
+
+	const toolChoice: ResponseCreateParamsStreaming["tool_choice"] =
+		allowed.length > 0 ? { type: "allowed_tools", mode: "auto", tools: allowed } : "none";
+	return { ...params, tool_choice: toolChoice };
+}
+
 function formatOpenAIResponsesError(error: unknown): string {
 	return formatProviderError(normalizeProviderError(error), "OpenAI API error");
 }
@@ -270,6 +322,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			}
 
 			params = sanitizeUnsupportedNativeTools(params, compat);
+			params = applyAllowedToolsChoice(params, context, compat);
 			const transport = options?.transport ?? "sse";
 			if (transport !== "sse" && compat.supportsWebSocket) {
 				let websocketStarted = false;

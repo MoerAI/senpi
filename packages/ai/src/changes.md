@@ -1,3 +1,22 @@
+## 2026-09-24 - Shared lenient tool-name matcher (senpi#2111)
+
+### What changed
+
+- `packages/ai/src/utils/tool-name-match.ts` (new, fork-only): `resolveToolNameMatch(requested, available)`, `toolNameForms`, and `foldToolName`. Names compare with case and `-`/`_` folded away. An `mcp_`/`mcp__` prefix in any case is stripped on both the requested and the registered side. It is cut only at its delimiter: `__` for `mcp__<id>__<name>` (the id may contain `_`), and the first `_` for `mcp_<server>_<tool>`. It is never cut inside the tool's own name, so `mcp__sandbox__run_bash` cannot resolve to a local `bash`. Each form is tried most specific first (exact, fold, then a registered tool whose unprefixed name folds the same) before a shorter form, so `mcp__gh__pull_request_read` picks `mcp_github_pull_request_read` over `read`. A step resolves only on a unique match.
+- `packages/ai/src/api/anthropic-tool-references.ts`: the native tool-search reference repair resolves names through `resolveToolNameMatch` instead of its own `GATEWAY_TOOL_NAMESPACE` regex and fold map.
+
+### Why
+
+- The inbound tool-call resolver in `packages/agent` and this repair each carried a copy of the rule, and the copies drifted (senpi#2104). One matcher keeps the two paths accepting the same shapes.
+
+### Why an extension could not handle it
+
+- The tool-reference pass runs inside the Anthropic adapter while it builds the request, and the agent loop resolves tool-call names before any hook runs.
+
+### Expected merge conflict zones
+
+- LOW: `collectAvailableToolNames` and the `resolve` binding in `anthropic-tool-references.ts` (fork-only); `utils/tool-name-match.ts` is new.
+
 ## 2026-09-24 - Strip a gateway tool-reference namespace whatever the casing of its prefix (senpi#2104)
 
 ### What changed
@@ -44,6 +63,28 @@ Live platform probes (gpt-6-luna, `store: false`) showed `prompt_cache_options.p
 - `packages/ai/src/types.ts`: the new interface before `StopReason` and the `AssistantMessage` field after `diagnostics`.
 - `packages/ai/src/index.ts`: the export line before `convertResponsesMessages`.
 - `packages/ai/src/api/openai-responses.lazy.ts`: the import block and the registration call after `openAIResponsesApi`.
+
+## 2026-09-24 - Restrict callable tools with allowed_tools instead of rewriting tools (senpi#2095)
+
+### What changed
+
+- `packages/ai/src/openai-responses-compat.ts`: new `supportsAllowedTools` compat flag and the `supportsAllowedToolChoice(model)` predicate.
+- `packages/ai/src/types.ts`: `Context.activeToolNames`, the subset of `tools` the model may call on this request.
+- `packages/ai/src/api/openai-responses.ts`: `getCompat` resolves `supportsAllowedTools` (default false). After the payload hook and native-tool sanitizing, `applyAllowedToolsChoice` keeps `tools` untouched and, when some declared tool is inactive, sends `tool_choice: { type: "allowed_tools", mode: "auto", tools }` listing the active function/custom tools, every hosted tool in the payload, and active deferred tools by name; an empty list sends `tool_choice: "none"`. An explicit `toolChoice`, a model without the flag, or an absent `activeToolNames` leaves the request unchanged.
+- `packages/ai/src/index.ts`: exports `supportsAllowedToolChoice`.
+
+### Why
+
+Removing one function tool between turns rewrites the `tools` prefix and drops the prompt cache to 0 cached tokens. A live gpt-6-luna probe kept the full ~5k-token prefix cached (`cache_hit`) when the same tools were sent and the callable subset moved to `allowed_tools` (developers.openai.com/api/docs/guides/prompt-caching#manage-tools-with-append-only-updates).
+
+### Why an extension could not handle it
+
+`tool_choice` and `tools` are built inside the Responses adapter from the context the agent loop passes; the compat flag and the context field are part of the AI package contract.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/api/openai-responses.ts`: the responses type import, `getCompat`, the new function above `formatOpenAIResponsesError`, and the line after `sanitizeUnsupportedNativeTools` in `stream`.
+- `packages/ai/src/types.ts`: the `Context` interface. `packages/ai/src/index.ts`: one export line. `packages/ai/src/openai-responses-compat.ts`: the compat interface tail.
 
 ## 2026-09-24 - Parse gateway cache_creation_tokens as prompt-cache writes (senpi#2091)
 

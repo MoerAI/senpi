@@ -3,7 +3,7 @@
 ### What changed
 
 - `packages/coding-agent/src/core/agent-session.ts`: `getSessionStats` adds the usage of `prompt-cache-prewarm` custom entries in phase `warmed` (read through `getPromptCachePrewarmUsage` from `extensions/builtin/cache-keepalive/prewarm-entry.ts`) to the token and cost totals. The new `getPromptCachePrefixRequest` context action waits for `_sessionStartSettled` (settled by `bindExtensions` and by the reload `session_start` path once session_start handlers, default-tool enforcement, and `extendResourcesFromExtensions` have run, via `_beginSessionStartSettlement`) and then calls `buildPromptCachePrefixRequest` with the agent, extension runner, model runtime, effective service tier, and base prompt/options.
-- `packages/coding-agent/src/core/prompt-cache-prefix-request.ts` (new, fork-only): `buildPromptCachePrefixRequest` composes the system prompt with `emitBeforeAgentStart("", undefined, base, options, { preview: true })` (a second pass when the base prompt changed during the first), takes `agent.state.tools`, mirrors `Agent.createLoopConfig()` for reasoning (configuration-update baseline, then thinking level), thinking selection/budgets, session id, and `onPayload`, applies `before_provider_headers`, and resolves auth/headers/`extraBody`/upstream model id through `ModelRuntime.prepareSimpleRequest`.
+- `packages/coding-agent/src/core/prompt-cache-prefix-request.ts` (new, fork-only): `buildPromptCachePrefixRequest` composes the system prompt with `emitBeforeAgentStart("", undefined, base, options, { preview: true })` (a second pass when the base prompt changed during the first), builds the tools through agent-core `buildProviderContext` from `agent.state.tools`/`declaredTools` (the same declared list and `activeToolNames` subset the loop sends on allowed-tools models), mirrors `Agent.createLoopConfig()` for reasoning (configuration-update baseline, then thinking level), thinking selection/budgets, session id, and `onPayload`, applies `before_provider_headers`, and resolves auth/headers/`extraBody`/upstream model id through `ModelRuntime.prepareSimpleRequest`.
 - `packages/coding-agent/src/core/model-runtime.ts`: new public `prepareSimpleRequest(model, options)` returns the `prepareRequest` result with `withPayloadRequestMetadata`, the same preparation `streamSimple` applies on the single-credential path, without sending a request.
 - `packages/coding-agent/src/core/usage-totals.ts`: `getUsageCostBreakdown` counts the same entries in the `Tools/summaries` bucket, so the breakdown and the totals agree.
 
@@ -22,6 +22,25 @@ Session stats and the cost breakdown are computed in core from session entries; 
 - LOW: the builtin import block, the `_sessionStartEvent` field block, `bindExtensions` (settlement handle and its `finally`), the reload `session_start` block, the context-action object after `getSystemPromptOptions`, and the entry loop at the top of `getSessionStats` in `agent-session.ts`.
 - LOW: the new `prepareSimpleRequest` method before `completeSimple` in `model-runtime.ts`.
 - LOW: the import block and the `branch_summary`/`compaction` branch of `getUsageCostBreakdown` in `usage-totals.ts`.
+
+## 2026-09-24 - Keep tool declarations and the prompt tool section stable on allowed_tools models (senpi#2095)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: the session records every tool that has been active (`_declaredToolNames`, first-activation order). On a model whose compat sets `supportsAllowedTools`, `setActiveToolsByName` publishes that declared set as `agent.state.declaredTools` (only when it differs from the active list) and builds the base system prompt, including `selectedTools` for prompt presets, from it, so a tool removing itself (ask-user) or being toggled (gpt-apply-patch, tool-search promotion, MCP active set, eval-only filtering) no longer changes the tools or the prompt tool section; the active subset reaches the provider as `allowed_tools`. Models without the flag keep the active list as tools and prompt section. `_refreshToolDeclarationsForModel` re-derives the declaration before `before_agent_start` (both prompt paths) and in the next-turn snapshot, rebuilding the prompt only when a model switch moves its tool list; the snapshot carries `declaredTools`. The resources-discover prompt rebuild uses the same tool list.
+
+### Why
+
+Every mid-session tool-set change rewrote both the provider `tools` list and the prompt's "Available Tools" section, so the next GPT-5.6+ request missed the whole cached prefix.
+
+### Why an extension could not handle it
+
+The active tool list, the base system prompt and the next-turn context snapshot are owned by `AgentSession`; extensions only call `setActiveTools`.
+
+### Expected merge conflict zones
+
+- MEDIUM: the tail of `setActiveToolsByName` and the new private helpers after it; the start of `_rebuildSystemPrompt`.
+- LOW: the next-turn snapshot return in the `prepareNextTurnWithContext` wrapper, the two `emitBeforeAgentStart` call sites, `extendResourcesFromExtensions`, the private field block, and the `@earendil-works/pi-ai` import.
 
 ## 2026-09-24 - Fast /resume listing: chunked summary reader and persistent summary index (senpi#2087)
 
@@ -85,6 +104,26 @@ The session entry stream, `reasoningBaseline`, and the compaction commit are own
 ### Expected merge conflict zones
 
 - LOW: the `@earendil-works/pi-ai` value import block, the `reasoningBaseline` reset in the model-switch path, the `appendConfigurationUpdate` block in `setThinkingLevel`, and the `latestConfigurationEffort` re-append after `appendCompaction`.
+
+## 2026-09-24 - Environment context (cwd + date) moves from the system prompt into an append-only message (senpi#2093)
+
+### What changed
+
+- `packages/coding-agent/src/core/environment-context.ts` (new, fork-only): `ENVIRONMENT_CONTEXT_MESSAGE_TYPE` (`environment-context`), `resolveEnvironmentContext` (cwd with `/` separators, UTC `YYYY-MM-DD` date), `formatEnvironmentContext` (`<environment_context>` with `<cwd>` and `<current_date>`), `latestEnvironmentContext`, and `environmentContextMessageIfChanged`, which returns a hidden (`display: false`) custom message only when the cwd or date differs from the latest one in the given messages.
+- `packages/coding-agent/src/core/agent-session.ts`: `prompt()` puts that message ahead of the user message when it is due, and a `sendCustomMessage(..., { triggerTurn: true })` turn puts it ahead of the triggering message. It persists through the normal `message_end` custom-message path and `convertToLlm` sends it as a user-role message, so every provider adapter and task child sees it without adapter changes. Because the check reads the current agent state, the first turn after a compaction that summarized the message away re-appends the latest value; nothing is written at compaction time, so the compacted context tail (which post-compaction continuation logic inspects) is unchanged. Earlier entries are never rewritten. `AgentSessionConfig.environmentContext` (default `true`) gates injection; the faux test harness (`test/suite/harness.ts`) passes `false` unless a test opts in, so mechanics tests that pin exact transcripts stay exact.
+
+### Why
+
+- The generated system prompt ended in `Current date:` / `Current working directory:` lines, with extension appends after them. A new day, another directory, or a session crossing UTC midnight rewrote the provider-visible prefix, and OpenAI, Anthropic and the other prefix-cache providers re-read the whole system prompt uncached. Live probes on 2026-09-24 read 0 cached tokens after a date change inside the prompt, and 4877 of about 4900 cached in another session on another day once the values moved into an environment-context user message. An append-only rollover kept 4918 of 4973 cached. Codex sends cwd/date the same way.
+
+### Why an extension could not handle it
+
+- The message must precede the user message inside `AgentSession`'s prompt assembly; `before_agent_start` messages are pushed after the user message, and the trigger-turn branch of `sendCustomMessage` builds its request array internally.
+
+### Expected merge conflict zones
+
+- LOW: the messages-array head in `prompt()` and the `const messages: AgentMessage[] = [appMessage]` line of the `sendCustomMessage` trigger-turn branch.
+- LOW: one `AgentSessionConfig` field, one private field and its constructor assignment, and one import line.
 
 ## 2026-09-23 - Streaming tool-call events name the tool a call resolves to (senpi#2068)
 

@@ -73,7 +73,7 @@ export function createEvalTool(options: CreateEvalToolOptions) {
 	async function execute(
 		...[toolCallId, params, signal, onUpdate, ctx]: EvalExecuteArgs<EvalToolRequest>
 	): Promise<AgentToolResult<EvalResultDetails>> {
-		const request = parseEvalRequest(params);
+		const request = parseEvalRequest(params, languages);
 		if (isEvalControlRequest(request)) return await executeEvalControl(cellManager, request);
 		if (options.proxyExecutor) return await options.proxyExecutor(request, signal);
 		if (!languages.includes(request.language))

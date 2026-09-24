@@ -1,3 +1,21 @@
+## 2026-09-24 - Lenient tool-name matching through one shared matcher (senpi#2111)
+
+### What changed
+
+- `packages/agent/src/tool-name-alias.ts`: `resolveToolNameAlias` delegates to `resolveToolNameMatch` from `@earendil-works/pi-ai/utils/tool-name-match` instead of carrying its own regex and fold. It now also folds the full requested name (`MCP__srv__tool` -> `mcp__srv__Tool`), strips namespaces whose id contains underscores (`mcp__my_server__Memory` -> `memory`), and strips the namespace a registered tool carries (`create_issue` -> `mcp_github_create_issue`). It resolves only on a unique match, as before.
+
+### Why
+
+- The agent copy folded only the namespace-stripped suffix while the Anthropic tool-reference copy folded both the full name and the suffix. That drift is how senpi#2104 happened, and it left several plausible spellings answering `Tool <name> not found`.
+
+### Why an extension could not handle it
+
+- Tool-call name resolution runs inside the agent loop before any hook sees the call.
+
+### Expected merge conflict zones
+
+- LOW: `tool-name-alias.ts` (fork-only).
+
 ## 2026-09-24 - Strip a gateway namespace whatever the casing of its prefix (senpi#2104)
 
 ### What changed
@@ -15,6 +33,26 @@
 ### Expected merge conflict zones
 
 - LOW: the `GATEWAY_TOOL_NAMESPACE` line in `tool-name-alias.ts` (fork-only).
+
+## 2026-09-24 - Declared tools stay stable while the callable set changes (senpi#2095)
+
+### What changed
+
+- `packages/agent/src/types.ts`: `AgentContext.declaredTools` and `AgentState.declaredTools`, an optional superset of `tools` to declare to the provider.
+- `packages/agent/src/agent.ts`: the initial state and `createContextSnapshot` carry `declaredTools`; `Agent.buildProviderContext` passes the current model.
+- `packages/agent/src/agent-loop.ts`: `buildProviderContext` takes an optional model. When the context has `declaredTools` and the model passes `supportsAllowedToolChoice`, the provider context gets the declared tools (plus any active tool missing from them) as `tools` and the active names as `activeToolNames`; otherwise it gets the active tools exactly as before. Tool-call resolution still reads `context.tools`, so a call to a declared but inactive tool gets the existing `Tool <name> not found` result.
+
+### Why
+
+Shrinking the active tool set rewrote the provider `tools` list and dropped the whole cached prefix on OpenAI GPT-5.6+.
+
+### Why an extension could not handle it
+
+The provider context is assembled inside the agent loop from its context snapshot; no hook runs between the snapshot and the stream call.
+
+### Expected merge conflict zones
+
+- LOW: `buildProviderContext` in `agent-loop.ts` plus one import; `createMutableAgentState`, `buildProviderContext` and `createContextSnapshot` in `agent.ts`; `AgentState` / `AgentContext` in `types.ts`.
 
 ## 2026-09-23 - A resolved tool-call name is invisible outside the model's view (senpi#2064)
 

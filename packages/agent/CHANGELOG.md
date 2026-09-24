@@ -6,10 +6,13 @@
 
 ### Added
 
+- `AgentState.declaredTools` / `AgentContext.declaredTools`: a superset of the active tools to declare to models that accept an allowed-tools restriction. The provider receives the declared tools plus `activeToolNames`; calls still resolve against the active tools only. ([#2095](https://github.com/code-yeongyu/senpi/issues/2095))
+
 ### Changed
 
 ### Fixed
 
+- Tool-call name correction is more lenient about case and namespaces. A call resolves to the single matching registered tool when it differs only by a recased full name (`MCP__srv__tool` for `mcp__srv__Tool`), a namespace whose id contains underscores (`mcp__my_server__Memory` for `memory`), or a missing namespace the registered tool carries (`create_issue` for `mcp_github_create_issue`). Names that match more than one tool still fail. ([#2111](https://github.com/code-yeongyu/senpi/issues/2111))
 - A tool call whose `mcp__<id>__` gateway namespace prefix is capitalized, such as `Mcp__686f__Eval` or `MCP__686f__Eval`, now resolves to the unique registered tool the same way `mcp__686f__Eval` does, instead of failing with `Tool <name> not found`. Replayed native tool-search references with a capitalized prefix fold onto the request's tools the same way. ([#2104](https://github.com/code-yeongyu/senpi/issues/2104))
 
 ### Removed
