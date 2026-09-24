@@ -345,6 +345,7 @@ describe("terminal extension auto-detach wiring", () => {
 		let activeTools: string[] = [];
 		const fakePi = {
 			registerTool: (tool: Tool) => tools.set(tool.name, tool),
+			registerMessageRenderer: () => {},
 			on: (event: string, handler: Handler) => {
 				const registered = handlers.get(event) ?? [];
 				registered.push(handler);

@@ -387,6 +387,7 @@ describe("restartable-command durability class — reload", () => {
 		let activeTools: string[] = [];
 		const pi = {
 			registerTool: (tool: { name: string }) => tools.set(tool.name, tool as never),
+			registerMessageRenderer: () => {},
 			on: (eventType: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void) => {
 				handlers.set(eventType, [...(handlers.get(eventType) ?? []), handler]);
 			},

@@ -49,13 +49,26 @@ export type AcquireTerminalLeaseResult =
 export type LeaseClassification = "self" | "dead" | "reused" | "live-foreign";
 
 const generationTokens = new Map<string, string>();
+/**
+ * Tokens held by generations of THIS process that are still running. A same-pid lease is a live
+ * holder only when its token is here (a sibling session generation, or a racing waiter that won);
+ * a token that is not here was minted by a generation that has shut down, even one whose
+ * shutdown never reached the release (the 10 s shutdown cap), so it is ours to re-enter.
+ */
+const liveTokens = new Set<string>();
 
 export function currentLeaseToken(encodedSessionId: string): string | undefined {
 	return generationTokens.get(encodedSessionId);
 }
 
 export function forgetLeaseToken(encodedSessionId: string, token: string): void {
+	liveTokens.delete(token);
 	if (generationTokens.get(encodedSessionId) === token) generationTokens.delete(encodedSessionId);
+}
+
+/** Mark a generation's token dead the moment its shutdown starts, before any slow flush. */
+export function retireLeaseToken(token: string): void {
+	liveTokens.delete(token);
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -123,12 +136,12 @@ export async function classifyLease(
 	probes: {
 		readonly isProcessAlive?: (pid: number) => boolean;
 		readonly readProcessStartMs: (pid: number) => Promise<number | undefined>;
-		readonly ownToken?: string;
+		readonly liveTokens?: ReadonlySet<string>;
 	},
 ): Promise<LeaseClassification> {
 	if (existing.pid === self.pid) {
-		if (existing.token === undefined || existing.token === probes.ownToken) return "self";
-		return "live-foreign";
+		if (existing.token !== undefined && (probes.liveTokens ?? liveTokens).has(existing.token)) return "live-foreign";
+		return "self";
 	}
 	if (!probeAlive(existing.pid, probes.isProcessAlive)) return "dead";
 	const recordedStart = existing.processStartedAtMs ?? existing.startedAtMs;
@@ -200,12 +213,12 @@ export async function acquireTerminalLease(options: AcquireTerminalLeaseOptions)
 	};
 	const acquired = (): AcquireTerminalLeaseResult => {
 		generationTokens.set(options.encodedSessionId, token);
+		liveTokens.add(token);
 		return { acquired: true, path, pid, token };
 	};
 	const probes = {
 		isProcessAlive: options.isProcessAlive,
 		readProcessStartMs: options.readProcessStartMs ?? defaultReadProcessStartMs,
-		ownToken: generationTokens.get(options.encodedSessionId),
 	};
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
@@ -243,6 +256,7 @@ export async function releaseTerminalLease(handle: { path: string; pid: number; 
 	if (handle.token !== undefined && existing.token !== undefined && existing.token !== handle.token) return;
 	await unlinkIfPresent(handle.path);
 	if (existing.token !== undefined) {
+		liveTokens.delete(existing.token);
 		for (const [sessionId, token] of generationTokens)
 			if (token === existing.token) generationTokens.delete(sessionId);
 	}

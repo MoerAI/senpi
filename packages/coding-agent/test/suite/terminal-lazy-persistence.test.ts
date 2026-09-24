@@ -30,6 +30,7 @@ function createGeneration(cwd: string, sessionId: string, sessionDir: string): G
 	let activeTools: string[] = [];
 	const pi = {
 		registerTool: (tool: ToolLike) => tools.set(tool.name, tool),
+		registerMessageRenderer: () => {},
 		on: (eventType: string, handler: Handler) => {
 			handlers.set(eventType, [...(handlers.get(eventType) ?? []), handler]);
 		},

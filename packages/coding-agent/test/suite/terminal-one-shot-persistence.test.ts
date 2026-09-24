@@ -19,6 +19,7 @@ function createGeneration(mode: string, cwd: string, sessionId: string, sessionD
 	let activeTools: string[] = [];
 	const pi = {
 		registerTool: () => {},
+		registerMessageRenderer: () => {},
 		on: (eventType: string, handler: Handler) => {
 			handlers.set(eventType, [...(handlers.get(eventType) ?? []), handler]);
 		},

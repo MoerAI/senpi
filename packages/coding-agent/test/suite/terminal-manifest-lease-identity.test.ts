@@ -9,6 +9,7 @@ import {
 	LEASE_RECORD_VERSION,
 	readLeaseRecord,
 	releaseTerminalLease,
+	retireLeaseToken,
 } from "../../src/core/extensions/builtin/terminal/manifest-lease.ts";
 import { BOOT_INSTANT_TOLERANCE_MS } from "../../src/core/extensions/builtin/terminal/process-identity.ts";
 
@@ -139,6 +140,8 @@ describe("terminal lease identity (v2)", () => {
 		expect(previous.acquired).toBe(true);
 		if (!previous.acquired) return;
 		const staleToken = previous.token;
+		// The previous generation's shutdown started (its token is retired) but never released.
+		retireLeaseToken(staleToken);
 		const result = await acquireTerminalLease({
 			dir,
 			encodedSessionId: "s",
@@ -160,11 +163,30 @@ describe("terminal lease identity (v2)", () => {
 		expect(existsSync(path)).toBe(false);
 	});
 
-	it("treats another generation of this very process as a live holder, not a re-entry", async () => {
+	it("treats another live generation of this very process as a live holder, not a re-entry", async () => {
+		const dir = await tempDir();
+		const probes = {
+			dir,
+			encodedSessionId: "s",
+			now: () => NOW,
+			self: selfIdentity(),
+			isProcessAlive: alive,
+			readProcessStartMs: async (): Promise<number> => {
+				throw new Error("same-pid classification must not probe");
+			},
+		};
+		const sibling = await acquireTerminalLease(probes);
+		expect(sibling.acquired).toBe(true);
+		const result = await acquireTerminalLease(probes);
+		expect(result).toMatchObject({ acquired: false, holder: { pid: process.pid } });
+		if (sibling.acquired) await releaseTerminalLease(sibling);
+	});
+
+	it("re-enters a same-pid lease whose generation shut down without releasing it", async () => {
 		const dir = await tempDir();
 		await writeFile(
 			join(dir, "s.lease"),
-			JSON.stringify(v2Record({ pid: process.pid, token: "sibling-session-generation" })),
+			JSON.stringify(v2Record({ pid: process.pid, token: "generation-that-already-shut-down" })),
 			"utf8",
 		);
 		const result = await acquireTerminalLease({
@@ -177,7 +199,8 @@ describe("terminal lease identity (v2)", () => {
 				throw new Error("same-pid classification must not probe");
 			},
 		});
-		expect(result).toMatchObject({ acquired: false, holder: { pid: process.pid } });
+		expect(result.acquired).toBe(true);
+		if (result.acquired) await releaseTerminalLease(result);
 	});
 
 	it("reports a confirmed live foreign holder as attached elsewhere", async () => {
