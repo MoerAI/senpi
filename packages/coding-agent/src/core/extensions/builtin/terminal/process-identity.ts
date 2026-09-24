@@ -1,0 +1,39 @@
+import { uptime as osUptimeSeconds } from "node:os";
+
+/**
+ * Two boot instants further apart than this belong to different boots. `os.uptime()` is
+ * integral seconds on every platform, and a laptop's sleep is accounted in uptime, so the
+ * only drift left is sub-second rounding on either side.
+ */
+export const BOOT_INSTANT_TOLERANCE_MS = 120_000;
+
+/** Two process start instants further apart than this are different processes (ps/lstart is second-precise). */
+export const PROCESS_START_TOLERANCE_MS = 3_000;
+
+const wholeSeconds = (ms: number): number => Math.round(ms / 1000) * 1000;
+
+export function processBootAtMs(now: () => number = Date.now): number {
+	return wholeSeconds(now() - osUptimeSeconds() * 1000);
+}
+
+export function ownProcessStartedAtMs(now: () => number = Date.now): number {
+	return wholeSeconds(now() - process.uptime() * 1000);
+}
+
+export function sameBoot(bootAtMs: number, otherBootAtMs: number | undefined): boolean {
+	if (otherBootAtMs === undefined || !Number.isFinite(otherBootAtMs)) return false;
+	return Math.abs(bootAtMs - otherBootAtMs) <= BOOT_INSTANT_TOLERANCE_MS;
+}
+
+export function sameProcessStart(startedAtMs: number, otherStartedAtMs: number | undefined): boolean {
+	if (otherStartedAtMs === undefined || !Number.isFinite(otherStartedAtMs)) return false;
+	return Math.abs(startedAtMs - otherStartedAtMs) <= PROCESS_START_TOLERANCE_MS;
+}
+
+export interface ChildProcessIdentity {
+	readonly pid: number;
+	readonly processGroupId?: number;
+	readonly startedAtMs: number;
+	readonly bootAtMs: number;
+	readonly argv: readonly string[];
+}
