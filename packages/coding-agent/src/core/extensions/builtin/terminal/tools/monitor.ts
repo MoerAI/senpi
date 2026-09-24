@@ -1,16 +1,7 @@
 import { resolve } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
-import { type Static, Type } from "typebox";
 import { APPROVED_MONITOR_PARENT } from "../monitor-permission.ts";
 import { MonitorRegistry } from "../monitor-registry.ts";
-import {
-	DEFAULT_COLS,
-	DEFAULT_ROWS,
-	DURABLE_MONITOR_EXPIRY_MS,
-	MAX_DURABLE_MONITORS,
-	TERMINAL_MONITOR_TOOL,
-} from "../shared.ts";
-import type { MonitorRegistration, TerminalManifestWriter } from "../terminal-manifest.ts";
+import { DEFAULT_COLS, DEFAULT_ROWS, DURABLE_MONITOR_EXPIRY_MS, TERMINAL_MONITOR_TOOL } from "../shared.ts";
 import {
 	errorResult,
 	resolveTerminalId,
@@ -18,106 +9,37 @@ import {
 	type TerminalToolResult,
 	textResult,
 } from "./context.ts";
+import {
+	durableAdmissionError,
+	handFileCheckpoint,
+	handMonitorSpec,
+	manifestSessionKey,
+} from "./monitor-manifest-binding.ts";
+import {
+	compileFilter,
+	isCreateInput,
+	isFileCreateInput,
+	type MonitorCreateInput,
+	type MonitorInput,
+	monitorSchema,
+	resolveDimension,
+	resolveTimeoutMs,
+} from "./monitor-schema.ts";
 import { renderMonitorCall } from "./render.ts";
 import { spawnCommandSession } from "./spawn.ts";
 
-export const DEFAULT_MONITOR_TIMEOUT_MS = 300_000;
-export const MAX_MONITOR_TIMEOUT_MS = 3_600_000;
-
-/**
- * One flat object schema, no top-level union: several provider payload paths
- * (e.g. Anthropic's legacy input_schema conversion) rebuild tool schemas from
- * top-level `properties` only, so a root anyOf would reach the model as an
- * empty schema. Branch requirements are enforced at runtime in `execute`.
- */
-export const monitorSchema = Type.Object({
-	action: Type.Optional(
-		StringEnum(["create", "rearm"] as const, {
-			description: "Defaults to create. rearm resumes a monitor paused by the wake budget.",
-		}),
-	),
-	description: Type.Optional(
-		Type.String({
-			minLength: 1,
-			maxLength: 200,
-			description: "Create (required): specific label shown with every event, e.g. 'errors in deploy.log'.",
-		}),
-	),
-	command: Type.Optional(
-		Type.String({
-			description:
-				"Create, command branch (XOR path): shell command to run and watch in a PTY-backed monitor session.",
-		}),
-	),
-	path: Type.Optional(
-		Type.String({
-			minLength: 1,
-			description:
-				"Create, file branch (XOR command): one regular file to watch natively, whose parent directory must already exist; takes no filter.",
-		}),
-	),
-	event: Type.Optional(
-		StringEnum(["create", "modify"] as const, {
-			description: "File branch only: which file event fires the watch (defaults to create).",
-		}),
-	),
-	filter: Type.Optional(
-		Type.String({ description: "Only PTY output lines matching this regex become monitor events." }),
-	),
-	timeout_ms: Type.Optional(
-		Type.Number({
-			minimum: 1,
-			maximum: MAX_MONITOR_TIMEOUT_MS,
-			description: "Watcher deadline in milliseconds (default 300000; ignored when persistent).",
-		}),
-	),
-	persistent: Type.Optional(
-		Type.Boolean({
-			description:
-				"Standing watch: no deadline, and it survives a session restart (command re-run once, file rescanned and any detached change reported). Expires 7 days after creation; max 5 per session; stop one with kill_bash.",
-		}),
-	),
-	bash_id: Type.Optional(
-		Type.String({ description: "Rearm: paused monitor id (mon_ or bash_id) to resume; omit for all paused." }),
-	),
-});
-export type MonitorInput = Static<typeof monitorSchema>;
-
-type MonitorCreateInput = MonitorInput & { description: string; command: string };
-type FileMonitorCreateInput = MonitorInput & { description: string; path: string };
-
-function isFileCreateInput(input: MonitorInput): input is FileMonitorCreateInput {
-	return (
-		typeof input.description === "string" &&
-		input.description.length > 0 &&
-		typeof input.path === "string" &&
-		input.path.length > 0
-	);
-}
-
-function isCreateInput(input: MonitorInput): input is MonitorCreateInput {
-	return (
-		typeof input.description === "string" &&
-		input.description.length > 0 &&
-		typeof input.command === "string" &&
-		input.command.length > 0
-	);
-}
-
-function resolveDimension(value: number | undefined, fallback: number): number {
-	if (value === undefined || !Number.isFinite(value) || value < 1) return fallback;
-	return Math.trunc(value);
-}
-
-function resolveTimeoutMs(value: number | undefined): number {
-	const timeout = value ?? DEFAULT_MONITOR_TIMEOUT_MS;
-	return Math.min(Math.max(Math.trunc(timeout), 1), MAX_MONITOR_TIMEOUT_MS);
-}
-
-function compileFilter(filter: string | undefined): RegExp | undefined {
-	if (filter === undefined) return undefined;
-	return new RegExp(filter);
-}
+export {
+	bindTerminalManifestWriter,
+	MAX_PENDING_MONITOR_SPECS,
+	pendingDurableSpecCount,
+	unbindTerminalManifestWriter,
+} from "./monitor-manifest-binding.ts";
+export {
+	DEFAULT_MONITOR_TIMEOUT_MS,
+	MAX_MONITOR_TIMEOUT_MS,
+	type MonitorInput,
+	monitorSchema,
+} from "./monitor-schema.ts";
 
 async function createMonitor(
 	ctx: TerminalToolContext,
@@ -178,87 +100,6 @@ async function createMonitor(
 }
 
 /** Build the PTY-backed monitor tool. Monitor handles share TerminalManager's bash_N namespace. */
-const manifestWriters = new Map<string, TerminalManifestWriter>();
-/**
- * Specs captured before a writer is bound (lazy persistence, or a generation waiting on a
- * foreign lease holder). Drained in order the moment the writer binds, so nothing the agent
- * registered is lost to timing. Bounded: past the cap the oldest spec is dropped.
- */
-const pendingSpecs = new Map<string, MonitorRegistration[]>();
-export const MAX_PENDING_MONITOR_SPECS = 32;
-
-/** Bind the session's manifest writer so monitor tool calls can hand it specs captured at the call site. */
-export function bindTerminalManifestWriter(sessionId: string, writer: TerminalManifestWriter): void {
-	manifestWriters.set(sessionId, writer);
-	const queued = pendingSpecs.get(sessionId);
-	pendingSpecs.delete(sessionId);
-	for (const registration of queued ?? []) void writer.recordRegister(registration);
-}
-
-export function unbindTerminalManifestWriter(sessionId: string): void {
-	manifestWriters.delete(sessionId);
-}
-
-/** Persistent specs the session holds that are not yet in a writer (test seam + admission). */
-export function pendingDurableSpecCount(sessionId: string): number {
-	let count = 0;
-	for (const registration of pendingSpecs.get(sessionId) ?? []) if (registration.spec.persistent) count += 1;
-	return count;
-}
-
-/** The durability session key for a tool context: the agent session id, when the context carries one. */
-function manifestSessionKey(ctx: TerminalToolContext): string | undefined {
-	return ctx.getSessionContext?.()?.sessionManager?.getSessionId?.();
-}
-
-/**
- * Hand a spec captured at the monitor tool call site to the session's writer, or queue it until
- * one binds. A durable spec's write is awaited: the tool result must not claim a persistent
- * watch before its manifest entry exists on disk.
- */
-async function handMonitorSpec(sessionKey: string | undefined, registration: MonitorRegistration): Promise<void> {
-	if (sessionKey === undefined) return;
-	const writer = manifestWriters.get(sessionKey);
-	if (writer) {
-		const write = writer.recordRegister(registration);
-		if (registration.spec.persistent) await write;
-		return;
-	}
-	const queue = pendingSpecs.get(sessionKey) ?? [];
-	queue.push(registration);
-	if (queue.length > MAX_PENDING_MONITOR_SPECS) queue.shift();
-	pendingSpecs.set(sessionKey, queue);
-}
-
-/** Persist a durable file watch's baseline checkpoint through the writer's debounced path. */
-function handFileCheckpoint(
-	sessionKey: string | undefined,
-	monitorId: string,
-	registry: MonitorRegistry,
-	runtimeId: string,
-): void {
-	const writer = sessionKey === undefined ? undefined : manifestWriters.get(sessionKey);
-	const checkpoint = registry.fileCheckpoint(runtimeId);
-	if (writer && checkpoint) writer.scheduleCheckpoint(monitorId, checkpoint);
-}
-
-/**
- * Admission control for a durable create: refuse once the session already holds
- * MAX_DURABLE_MONITORS restart-surviving monitors, counting both the bound writer's entries
- * and the specs still queued for a writer. Checked BEFORE any spawn or registry registration
- * so a refused call leaves no PTY and no manifest entry behind. A context with no session
- * key persists nothing, so it has no durable population to cap.
- */
-function durableAdmissionError(ctx: TerminalToolContext): TerminalToolResult | undefined {
-	const sessionKey = manifestSessionKey(ctx);
-	if (sessionKey === undefined) return undefined;
-	const held = (manifestWriters.get(sessionKey)?.durableCount() ?? 0) + pendingDurableSpecCount(sessionKey);
-	if (held < MAX_DURABLE_MONITORS) return undefined;
-	return errorResult(
-		`Cannot start another persistent monitor: this session already holds ${MAX_DURABLE_MONITORS} durable monitors (the maximum). Stop one with kill_bash first.`,
-	);
-}
-
 export function createMonitorTool(ctx: TerminalToolContext) {
 	let fallbackRegistry: MonitorRegistry | undefined;
 	const getRegistry = (): MonitorRegistry => {
