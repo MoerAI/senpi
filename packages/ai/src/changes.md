@@ -2,7 +2,7 @@
 
 ### What changed
 
-- `packages/ai/src/utils/tool-name-match.ts` (new, fork-only): `resolveToolNameMatch(requested, available)`, `toolNameForms`, and `foldToolName`. Names compare with case and `-`/`_` folded away. An `mcp_`/`mcp__` prefix in any case, including ids with underscores, is stripped on both the requested and the registered side. The most specific form is tried first, and a step resolves only on a unique match.
+- `packages/ai/src/utils/tool-name-match.ts` (new, fork-only): `resolveToolNameMatch(requested, available)`, `toolNameForms`, and `foldToolName`. Names compare with case and `-`/`_` folded away. An `mcp_`/`mcp__` prefix in any case is stripped on both the requested and the registered side. It is cut only at its delimiter: `__` for `mcp__<id>__<name>` (the id may contain `_`), and the first `_` for `mcp_<server>_<tool>`. It is never cut inside the tool's own name, so `mcp__sandbox__run_bash` cannot resolve to a local `bash`. Each form is tried most specific first (exact, fold, then a registered tool whose unprefixed name folds the same) before a shorter form, so `mcp__gh__pull_request_read` picks `mcp_github_pull_request_read` over `read`. A step resolves only on a unique match.
 - `packages/ai/src/api/anthropic-tool-references.ts`: the native tool-search reference repair resolves names through `resolveToolNameMatch` instead of its own `GATEWAY_TOOL_NAMESPACE` regex and fold map.
 
 ### Why

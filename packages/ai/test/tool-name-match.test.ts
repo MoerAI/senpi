@@ -6,10 +6,11 @@ describe("toolNameForms", () => {
 		expect(toolNameForms("lazy_weather")).toEqual(["lazy_weather"]);
 	});
 
-	it("adds every namespace-stripped remainder, longest first", () => {
+	it("cuts a namespace only at its delimiter, never inside the tool name", () => {
 		expect(toolNameForms("mcp__686f__Eval")).toEqual(["mcp__686f__Eval", "Eval"]);
-		expect(toolNameForms("MCP__my_server__Tool")).toEqual(["MCP__my_server__Tool", "server__Tool", "Tool"]);
-		expect(toolNameForms("mcp_github_create_issue")).toEqual(["mcp_github_create_issue", "create_issue", "issue"]);
+		expect(toolNameForms("MCP__my_server__Tool")).toEqual(["MCP__my_server__Tool", "Tool"]);
+		expect(toolNameForms("mcp__srv__lsp_symbols")).toEqual(["mcp__srv__lsp_symbols", "lsp_symbols"]);
+		expect(toolNameForms("mcp_github_create_issue")).toEqual(["mcp_github_create_issue", "create_issue"]);
 	});
 });
 
@@ -45,6 +46,24 @@ describe("resolveToolNameMatch", () => {
 		expect(
 			resolveToolNameMatch("create_issue", ["mcp_github_create_issue", "mcp_linear_create_issue"]),
 		).toBeUndefined();
+	});
+
+	it.each([
+		["mcp__gh__pull_request_read", ["read", "mcp_github_pull_request_read"], "mcp_github_pull_request_read"],
+		["mcp__gh__create_issue", ["issue", "mcp_github_create_issue"], "mcp_github_create_issue"],
+		["mcp__my_server__Memory", ["memory", "server_memory"], "memory"],
+	])("prefers the specific tool over a trailing word (%s)", (requested, available, expected) => {
+		expect(resolveToolNameMatch(requested, available)).toBe(expected);
+	});
+
+	it.each([
+		["mcp__sandbox__run_bash", ["bash", "read"]],
+		["mcp__e2b__exec_bash", ["bash"]],
+		["mcp__fs__file_write", ["write"]],
+		["mcp__srv__lsp_symbols", ["symbols"]],
+		["mcp_a_b_c", ["c"]],
+	])("never resolves a part of the tool's own name to a local tool (%s)", (requested, available) => {
+		expect(resolveToolNameMatch(requested, available)).toBeUndefined();
 	});
 
 	it("refuses a name nothing resembles", () => {
