@@ -3,6 +3,7 @@ import { providerHeadersToRecord } from "../utils/headers.ts";
 import { isAnthropicApiBaseUrl } from "../utils/prompt-cache-ttl.ts";
 import type { AnthropicOptions } from "./anthropic-messages.ts";
 import { isOpenAIResponsesPromptCacheModel } from "./openai-responses-prompt-cache.ts";
+import { getPromptCacheWarmer } from "./prompt-cache-warmers.ts";
 
 export interface WarmPromptCacheUsage {
 	readonly input: number;
@@ -39,13 +40,10 @@ export async function warmPromptCache(
 ): Promise<WarmPromptCacheResult> {
 	if (isOpenAIResponsesPromptCacheModel(model)) {
 		if ((options.cacheRetention ?? model.cacheRetention) === "none") return { supported: false };
-		// Loaded lazily for the same lazy provider-loading contract as the Anthropic SDK below.
-		const { warmOpenAIResponsesPromptCache } = await import("./openai-responses.ts");
-		const { usage, usageRaw } = await warmOpenAIResponsesPromptCache(
-			model as Model<"openai-responses">,
-			context,
-			options,
-		);
+		// Registered by openai-responses.lazy.ts, so the root barrel never reaches the OpenAI SDK.
+		const warmer = getPromptCacheWarmer(model.api);
+		if (warmer === undefined) return { supported: false };
+		const { usage, usageRaw } = await warmer(model, context, options);
 		return {
 			supported: true,
 			usage: {

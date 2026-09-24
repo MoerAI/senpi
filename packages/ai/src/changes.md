@@ -6,7 +6,8 @@
 - `packages/ai/src/api/openai-responses-shared.ts`: `finalizeResponse` stores the terminal response's `prompt_cache_diagnostics` on `output.promptCacheDiagnostics`.
 - `packages/ai/src/types.ts`: new `PromptCacheDiagnostics` and the optional `AssistantMessage.promptCacheDiagnostics` field.
 - `packages/ai/src/index.ts`: exports `isOpenAIResponsesPromptCacheModel`.
-- Fork-owned: `packages/ai/src/api/openai-responses-prompt-cache.ts` (new, SDK-free eligibility, comparison-id lookup, diagnostics parser) and `packages/ai/src/api/warm-prompt-cache.ts` (`warmPromptCache` dispatches eligible OpenAI Responses models to the lazily loaded prewarm, returns `{ supported: false }` for `cacheRetention: "none"`, and accepts `reasoning`/`serviceTier` so the warm matches the next turn).
+- `packages/ai/src/api/openai-responses.lazy.ts`: registers the OpenAI Responses prompt-cache warmer (a lazy `import()` of `openai-responses.ts`) in the new `prompt-cache-warmers.ts` table, next to `openAIResponsesApi`.
+- Fork-owned: `packages/ai/src/api/openai-responses-prompt-cache.ts` (new, SDK-free eligibility, comparison-id lookup, diagnostics parser), `packages/ai/src/api/prompt-cache-warmers.ts` (new, api-keyed warmer table), and `packages/ai/src/api/warm-prompt-cache.ts` (`warmPromptCache` dispatches eligible OpenAI Responses models to the registered warmer, returns `{ supported: false }` for `cacheRetention: "none"` or when no warmer is registered, and accepts `reasoning`/`serviceTier` so the warm matches the next turn). The table keeps the browser-safe root barrel from reaching the OpenAI SDK: a direct `import()` from `warm-prompt-cache.ts` put `openai` into the Anthropic-only selective-provider bundle (`scripts/check-browser-smoke.mjs`).
 
 ### Why
 
@@ -22,6 +23,7 @@ Live platform probes (gpt-6-luna, `store: false`) showed `prompt_cache_options.p
 - `packages/ai/src/api/openai-responses-shared.ts`: the import block and the `responseId` assignment in `finalizeResponse`.
 - `packages/ai/src/types.ts`: the new interface before `StopReason` and the `AssistantMessage` field after `diagnostics`.
 - `packages/ai/src/index.ts`: the export line before `convertResponsesMessages`.
+- `packages/ai/src/api/openai-responses.lazy.ts`: the import block and the registration call after `openAIResponsesApi`.
 
 ## 2026-09-24 - Parse gateway cache_creation_tokens as prompt-cache writes (senpi#2091)
 
