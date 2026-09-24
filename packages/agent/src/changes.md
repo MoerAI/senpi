@@ -16,6 +16,26 @@
 
 - LOW: the `GATEWAY_TOOL_NAMESPACE` line in `tool-name-alias.ts` (fork-only).
 
+## 2026-09-24 - Declared tools stay stable while the callable set changes (senpi#2095)
+
+### What changed
+
+- `packages/agent/src/types.ts`: `AgentContext.declaredTools` and `AgentState.declaredTools`, an optional superset of `tools` to declare to the provider.
+- `packages/agent/src/agent.ts`: the initial state and `createContextSnapshot` carry `declaredTools`; `Agent.buildProviderContext` passes the current model.
+- `packages/agent/src/agent-loop.ts`: `buildProviderContext` takes an optional model. When the context has `declaredTools` and the model passes `supportsAllowedToolChoice`, the provider context gets the declared tools (plus any active tool missing from them) as `tools` and the active names as `activeToolNames`; otherwise it gets the active tools exactly as before. Tool-call resolution still reads `context.tools`, so a call to a declared but inactive tool gets the existing `Tool <name> not found` result.
+
+### Why
+
+Shrinking the active tool set rewrote the provider `tools` list and dropped the whole cached prefix on OpenAI GPT-5.6+.
+
+### Why an extension could not handle it
+
+The provider context is assembled inside the agent loop from its context snapshot; no hook runs between the snapshot and the stream call.
+
+### Expected merge conflict zones
+
+- LOW: `buildProviderContext` in `agent-loop.ts` plus one import; `createMutableAgentState`, `buildProviderContext` and `createContextSnapshot` in `agent.ts`; `AgentState` / `AgentContext` in `types.ts`.
+
 ## 2026-09-23 - A resolved tool-call name is invisible outside the model's view (senpi#2064)
 
 ### What changed

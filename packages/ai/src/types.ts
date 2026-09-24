@@ -676,6 +676,12 @@ export interface Context {
 	systemPrompt?: string;
 	messages: Message[];
 	tools?: Tool[];
+	/**
+	 * Names from `tools` the model may call on this request; absent means every tool is callable.
+	 * Set only for models whose compat declares `supportsAllowedTools`: the adapter keeps `tools`
+	 * byte-stable and restricts callability through `tool_choice` (senpi#2095).
+	 */
+	activeToolNames?: string[];
 }
 
 /**

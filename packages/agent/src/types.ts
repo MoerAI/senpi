@@ -411,6 +411,8 @@ export interface AgentState {
 	/** Available tools. Assigning a new array copies the top-level array. */
 	set tools(tools: AgentTool<any>[]);
 	get tools(): AgentTool<any>[];
+	/** Tool list the provider receives when it differs from `tools`; see {@link AgentContext.declaredTools}. */
+	declaredTools?: AgentTool<any>[];
 	/** Conversation transcript. Assigning a new array copies the top-level array. */
 	set messages(messages: AgentMessage[]);
 	get messages(): AgentMessage[];
@@ -494,6 +496,12 @@ export interface AgentContext {
 	messages: AgentMessage[];
 	/** Tools available for this run. */
 	tools?: AgentTool<any>[];
+	/**
+	 * Superset of `tools` to declare to the provider, keeping the tool prefix byte-stable while the
+	 * callable set changes (senpi#2095). Honored only for models that accept an allowed-tools
+	 * restriction; tool calls still resolve against `tools` alone.
+	 */
+	declaredTools?: AgentTool<any>[];
 }
 
 /**
