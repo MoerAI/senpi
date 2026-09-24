@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- Amazon Bedrock and Google Gemini requests no longer carry adjacent same-role messages: the Bedrock Converse and Gemini converters fold a message whose role matches the previous one into it (blocks in order, Bedrock cache point still last), so the hidden environment-context user message before a prompt, or a prompt after tool results, no longer breaks those providers' user/assistant alternation rule. ([#2114](https://github.com/code-yeongyu/senpi/issues/2114))
+
 ### Removed
 
 ## [2026.9.24-2] - 2026-09-24
