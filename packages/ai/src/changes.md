@@ -1,3 +1,23 @@
+## 2026-09-24 - Replay reasoning_details without the streaming index (senpi#2122)
+
+### What changed
+
+- `packages/ai/src/api/openai-completions.ts`: new `stripStreamingIndex` maps the preserved reasoning details through a copy without `index` at the single assignment site (`assistantMsg.reasoning_details`), so both sources — a signed array parsed from `thinkingSignature` and the legacy encrypted detail parsed from a tool call's `thoughtSignature` — are sanitized. Stream assembly is untouched: `appendOpenAIReasoningDetail` still merges by adjacency and `fillMissingCommonReasoningDetailFields` still carries `index`, and the stored `thinkingSignature` keeps it, so nothing on disk changes. The same file also gained `OPENAI_COMPLETIONS_REASONING_FIELDS` / `isOpenAICompletionsReasoningField`, and the thinking-signature replay branch now assigns a property only when the signature is one of those known reasoning field names.
+- `packages/ai/src/utils/retry.ts`: `RETRYABLE_PROVIDER_ERROR_PATTERN` gained `"must not contain streaming index"`, next to the Anthropic server-tool pairing entry and for the same reason.
+
+### Why
+
+- A gateway validates that an input reasoning entry must not carry the streaming-assembly `index` and answers `the reasoning_details at position 1271 entry 0 must not contain streaming index`. The merged array is persisted verbatim in the assistant block and replayed on every later request, so one such turn rejected every following request in that conversation. The message matched neither classification pattern, so `classifySenpiAssistantFailure` fell through to a structured status that an in-stream gateway error does not carry and returned `terminal`: the turn ended with no retry and no fallback. `index` orders deltas while a response streams, is absent from non-streamed responses, and carries nothing on the input side where array order already is the sequence — so it is consumed, never echoed. Classifying the rejection retryable is sound for the same reason the pairing class is: the builder repairs the replayed history deterministically before the retried request is built, and the retry stays bounded by the policy's attempt budget.
+- The signature slot is overloaded — it names the reasoning field to replay for llama.cpp server + gpt-oss, but it holds serialized `reasoning_details` for OpenRouter-style providers. Passing the latter to `Object.assign` created a property whose name was the entire serialized array, duplicating the reasoning into every later request; restricting the branch to the three known field names leaves the llama.cpp/gpt-oss and OpenCode Go paths (`reasoning` remapped to `reasoning_content`) untouched.
+
+### Why an extension could not handle it
+
+- Both the sanitized array and the offending property are produced inside `convertMessages` while the adapter builds the Chat Completions request; `onPayload` sees the finished body and would have to re-derive the reasoning-detail conversion to repair it. The retry classification runs in the shared provider-error path before any hook.
+
+### Expected merge conflict zones
+
+- LOW: the `preservedReasoningDetails` assignment and the thinking-signature replay branch in `convertMessages` (`openai-completions.ts`), plus the new helpers beside `appendOpenAIReasoningDetail`; one added entry in `RETRYABLE_PROVIDER_ERROR_PATTERN` (`utils/retry.ts`).
+
 ## 2026-09-24 - Fold adjacent same-role messages for Bedrock Converse and Gemini (senpi#2114)
 
 ### What changed

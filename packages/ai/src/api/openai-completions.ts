@@ -411,7 +411,39 @@ function appendOpenAIReasoningDetail(details: OpenAIReasoningDetail[], detail: O
 	details.push({ ...detail });
 }
 
+/**
+ * Replay only what a provider's INPUT schema defines. `index` exists to reassemble a
+ * stream — it orders deltas while a response arrives, it is absent from non-streamed
+ * responses, and on the input side the array's own order already carries the sequence.
+ * A strict gateway rejects a replayed entry that still holds it ("the reasoning_details
+ * at position N entry 0 must not contain streaming index"), and because the merged array
+ * is persisted verbatim, every later request in that conversation is rejected the same
+ * way. Stripping here repairs stored history without touching it on disk.
+ *
+ * General rule for this shape of field: anything that reassembles a stream (`index`,
+ * chunk ordinals) or describes the response (`usage`, `finish_reason`) is consumed here
+ * and never echoed; opaque replay tokens (`id`, `format`, `signature`, `data`) are
+ * forwarded verbatim because only the provider knows what it validates inside them.
+ */
+function stripStreamingIndex(details: readonly OpenAIReasoningDetail[]): OpenAIReasoningDetail[] {
+	return details.map((detail) => {
+		if (detail.index === undefined) return detail;
+		const { index: _streamingIndex, ...replayable } = detail;
+		return replayable;
+	});
+}
+
 type OpenAICompletionsReasoningField = "reasoning" | "reasoning_content" | "reasoning_text";
+
+const OPENAI_COMPLETIONS_REASONING_FIELDS: readonly OpenAICompletionsReasoningField[] = [
+	"reasoning",
+	"reasoning_content",
+	"reasoning_text",
+];
+
+function isOpenAICompletionsReasoningField(value: string): value is OpenAICompletionsReasoningField {
+	return OPENAI_COMPLETIONS_REASONING_FIELDS.some((field) => field === value);
+}
 
 type ChatCompletionAssistantMessageParamWithReasoning = ChatCompletionAssistantMessageParam &
 	Partial<Record<OpenAICompletionsReasoningField, string>> & {
@@ -1608,12 +1640,17 @@ export function convertMessages(
 						assistantMsg.content = assistantText;
 					}
 
-					// Use the signature from the first thinking block if available (for llama.cpp server + gpt-oss)
+					// Use the signature from the first thinking block if available (for llama.cpp server + gpt-oss).
+					// The slot is overloaded: it holds EITHER the name of the reasoning field to replay
+					// ("reasoning", "reasoning_content", "reasoning_text") OR serialized `reasoning_details`,
+					// which travel through `reasoning_details` below. Only a known field name may name a
+					// property here — otherwise the assistant message grows a key whose NAME is the whole
+					// serialized reasoning array, duplicating the reasoning into every later request.
 					let signature = nonEmptyThinkingBlocks[0].thinkingSignature;
 					if (model.provider === "opencode-go" && signature === "reasoning") {
 						signature = "reasoning_content";
 					}
-					if (signature && signature.length > 0) {
+					if (signature !== undefined && isOpenAICompletionsReasoningField(signature)) {
 						Object.assign(assistantMsg, {
 							[signature]: nonEmptyThinkingBlocks.map((block) => block.thinking).join("\n"),
 						});
@@ -1652,7 +1689,7 @@ export function convertMessages(
 				});
 			}
 			if (preservedReasoningDetails) {
-				assistantMsg.reasoning_details = preservedReasoningDetails;
+				assistantMsg.reasoning_details = stripStreamingIndex(preservedReasoningDetails);
 			}
 			if (
 				compat.requiresReasoningContentOnAssistantMessages &&
