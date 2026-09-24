@@ -207,15 +207,19 @@ that implements it. Reset only removes kernel variables: save `pool_id` and use
 arguments in other languages). An open pool's adapter can be recreated with the
 same name/spec/mode; no worker state is reconstructed in the prelude.
 
-## Required summary
+## Required run fields
 
-Every `eval` run call MUST include a `summary` — one line in the language the
+Every `eval` run call MUST include a `language` (the kernel that runs the
+cell, one of the enabled languages), the `code` cell body, and a `summary` —
+one line in the language the
 user writes in: a progress update saying what the agent is doing and why, not
 a label for the code. The
 summary is shown in the TUI while the cell runs and in the finished result, so
 you can always tell what is running and why. It has no length limit; a
-collapsed block shows its first three lines. A run request without a
-`summary` fails with a teaching error.
+collapsed block shows its first three lines. The schema marks all three
+optional only because the control actions (`peek`, `stop`, `list`) share it; a
+run request missing any of them fails with a teaching error that names what to
+add.
 
 ## Detached cells
 
