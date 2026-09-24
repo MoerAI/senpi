@@ -22,9 +22,11 @@ import {
 	captureListAsk,
 	clonePhases,
 	findTaskByContent,
+	formatHandoffCue,
 	formatSummary,
 	getCompletionTransitions,
 	getTodoMarker,
+	handoffMomentOf,
 	nextActionableTask,
 	sanitizeTodoText,
 	TODO_STATE_ENTRY_TYPE,
@@ -342,7 +344,10 @@ export function registerTodoTool(pi: ExtensionAPI, accessors: TodoAccessors): vo
 			if (ask) details.ask = ask;
 			if (corrections.length > 0) details.corrections = corrections;
 			if (completedTasks.length > 0) details.completedTasks = completedTasks;
-			const summary = formatSummary(applied.phases, [], readOnly, ask);
+			const cue = formatHandoffCue(
+				readOnly ? undefined : handoffMomentOf(previousPhases, applied.phases, createsList),
+			);
+			const summary = `${formatSummary(applied.phases, [], readOnly, ask)}${cue}`;
 			const text = corrections.length > 0 ? `${corrections.join("\n")}\n\n${summary}` : summary;
 
 			return { content: [{ type: "text", text }], details };

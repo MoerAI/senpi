@@ -4,12 +4,13 @@
 
 ### What changed
 
-- `handoff.ts`: `A handoff is the start of a turn, each todo phase change, ...` -> `A handoff is the first message after the todo list exists, each todo phase change, a blocker or plan change, and the final message; the routing line is not one.` The same moment list is reworded in the three GPT cores (`extensions/builtin/prompt-preset/changes.md`). +9 words in the rendered shared core.
+- `handoff.ts`: `A handoff is the start of a turn, each todo phase change, ...` -> `A handoff is the todo list's creation (in the message that creates it, after the routing line, or the next one), each todo phase change, a blocker or plan change, and the final message; the routing line is not one.` The same moment list is reworded in the three GPT cores (`extensions/builtin/prompt-preset/changes.md`). +9 words in the rendered shared core.
 
 ### Why
 
 - A real run on `xai/grok-4.7` against merged main (senpi#2121 QA) opened the turn with the Intent Gate routing line, initialized the todo, and never wrote the handoff block until the final message: the model read "the start of a turn" as already satisfied by the routing line, and the phase-change moments passed with free-form narration. Category B (misframing): the moment was named by position (turn start) instead of by the state the user needs reported (the plan now exists). Naming the first post-todo message and excluding the routing line removes the ambiguity without adding a rule.
 - `style.ts`: `The final summary is for a reader who did not watch the work: lead with the outcome ...` -> `The final message opens with the Handoff block; its For you slot is for a reader who did not watch the work: the outcome ...` (+7 words). Second QA finding: on the re-run `claude-fable-5-1` closed with a free-form outcome-first summary and no handoff block, because Style's final-summary sentence and `## Handoff` both governed the final message and the model followed the one it knew best (category B, competing rules). The sentence now says the final message IS the handoff block and its outcome-first shape describes the For you slot, so one rule governs the message.
+- `handoff.ts`: option `briefUpdatesBetweenHandoffs` swaps `Between handoffs, work without narration.` for `Between handoffs, one line on what you just found, ending with Now: [task]. Next: [task]., helps the user follow along.` Only `claude-fable-5-1.ts` passes it (`prompt-preset/changes.md`); every other caller keeps the quiet default.
 
 ### Why an extension could not handle it
 
@@ -17,7 +18,7 @@
 
 ### Expected merge conflict zones
 
-- `handoff.ts` first paragraph; `style.ts` final-summary sentence. Fork-only files.
+- `handoff.ts` first paragraph and option list; `style.ts` final-summary sentence. Fork-only files.
 
 ## Handoff contract replaces the announcement ban; completion bullet (2026-09-24)
 

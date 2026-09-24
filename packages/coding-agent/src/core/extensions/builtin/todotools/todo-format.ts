@@ -28,6 +28,48 @@ export function describeAskNowNext(state: { phases: readonly TodoPhase[]; ask?: 
 	};
 }
 
+/** The todo transitions at which the user is owed a handoff block (the prompts' `## Handoff` moments). */
+export type HandoffMoment = "list-created" | "phase-closed" | "all-closed";
+
+/**
+ * Which handoff moment a successful mutation produced, if any: the list was just created, the
+ * last open task of a phase closed, or the last open task of the whole list closed. The result
+ * carries the cue right before the model writes its next text, where a system-prompt rule alone
+ * proved unreliable on weaker models (senpi#2121 real-surface QA).
+ */
+export function handoffMomentOf(
+	before: readonly TodoPhase[],
+	after: readonly TodoPhase[],
+	createsList: boolean,
+): HandoffMoment | undefined {
+	const hasOpen = (tasks: readonly TodoItem[]) => tasks.some((task) => !isTerminalTodoStatus(task.status));
+	const afterTasks = after.flatMap((phase) => phase.tasks);
+	if (afterTasks.length === 0) return undefined;
+	if (createsList) return "list-created";
+	if (!hasOpen(afterTasks)) return hasOpen(before.flatMap((phase) => phase.tasks)) ? "all-closed" : undefined;
+	const closedPhase = after.some(
+		(phase) =>
+			phase.tasks.length > 0 &&
+			!hasOpen(phase.tasks) &&
+			hasOpen(before.find((prior) => prior.name === phase.name)?.tasks ?? []),
+	);
+	return closedPhase ? "phase-closed" : undefined;
+}
+
+export const HANDOFF_CUES: Readonly<Record<HandoffMoment, string>> = {
+	"list-created":
+		"Handoff due: the plan exists. Before your next tool call, write the Ask / For you / Now / Next block.",
+	"phase-closed":
+		"Handoff due: a phase closed. Before your next tool call, write the Ask / For you / Now / Next block.",
+	"all-closed":
+		"Handoff due: every task is closed - the final message is the Ask / For you / Now: none / Next: none block.",
+};
+
+/** The cue line appended to a todo result, or nothing when no handoff moment was reached. */
+export function formatHandoffCue(moment: HandoffMoment | undefined): string {
+	return moment ? `\n\n${HANDOFF_CUES[moment]}` : "";
+}
+
 /** `Ask:` / `Now:` / `Next:` lines plus a blank separator line. */
 export function formatAskNowNextHeader(phases: readonly TodoPhase[], ask: TodoAsk | undefined): string {
 	const anchors = describeAskNowNext({ phases, ask });

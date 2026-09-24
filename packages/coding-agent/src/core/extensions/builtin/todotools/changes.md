@@ -1,5 +1,24 @@
 # todotools Fork Tracker
 
+## 2026-09-25 - Todo results cue the handoff block at handoff moments (senpi#2121 real-surface QA)
+
+### What changed
+
+- `todo-format.ts`: `handoffMomentOf(before, after, createsList)` returns `"list-created"` (a list-creating call produced tasks), `"all-closed"` (the call closed the last open task of the list), `"phase-closed"` (the call closed the last open task of a phase), or `undefined`; `HANDOFF_CUES` holds one line per moment and `formatHandoffCue` appends it after a blank line. `state.ts` re-exports the three. `tools/todo.ts` appends the cue to every successful, non-`view` result; thrown errors and `view` carry none.
+- `test/suite/todo-handoff-cue.test.ts`: the moment predicate over literal phase states, and one harness run (init, a mid-phase `done`, a phase-closing `done`, the list-closing `done`) asserting each result ends with its moment's shipped cue and the mid-phase result carries none. RED with the cue call disabled.
+
+### Why
+
+- Real runs on grok-4.7 and claude-fable-5-1 with the `## Handoff` contract in the system prompt wrote the block at the final message only about half the time and almost never at the plan or a phase change: the rule sat thousands of tokens away from the moment it governs. The todo result is the one text the model reads immediately after each of those transitions, so the cue lands where the decision is made (the gajae-code reporting mechanism, tool results that carry the reporting ask). Measured on 12 runs (6 per model) after the cue: the final message carried the block in 11/12 (5/8 before); after `phase-closed`, 7/16 with the "before your next tool call" wording (5/18 with the earlier "open your next text" wording, which the models satisfied by writing no text). Fable 5.1 remains weakest mid-task (its guide documents fewer between-tool updates; they arrive as progress-update thinking blocks this harness does not request) - tracked separately.
+
+### Why an extension could not handle it
+
+- This is the todo builtin's own result text; another extension cannot append to a tool result it does not own.
+
+### Expected merge conflict zones
+
+- `tools/todo.ts` result assembly and its `todo-format.ts` import list; `todo-format.ts` exports. Fork-only files.
+
 ## 2026-09-25 - First-turn plan opener and the single decomposition mandate (senpi#2121)
 
 ### What changed
