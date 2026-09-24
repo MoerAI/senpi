@@ -1,3 +1,22 @@
+## 2026-09-24 - Shared lenient tool-name matcher (senpi#2111)
+
+### What changed
+
+- `packages/ai/src/utils/tool-name-match.ts` (new, fork-only): `resolveToolNameMatch(requested, available)`, `toolNameForms`, and `foldToolName`. Names compare with case and `-`/`_` folded away. An `mcp_`/`mcp__` prefix in any case is stripped on both the requested and the registered side. It is cut only at its delimiter: `__` for `mcp__<id>__<name>` (the id may contain `_`), and the first `_` for `mcp_<server>_<tool>`. It is never cut inside the tool's own name, so `mcp__sandbox__run_bash` cannot resolve to a local `bash`. Each form is tried most specific first (exact, fold, then a registered tool whose unprefixed name folds the same) before a shorter form, so `mcp__gh__pull_request_read` picks `mcp_github_pull_request_read` over `read`. A step resolves only on a unique match.
+- `packages/ai/src/api/anthropic-tool-references.ts`: the native tool-search reference repair resolves names through `resolveToolNameMatch` instead of its own `GATEWAY_TOOL_NAMESPACE` regex and fold map.
+
+### Why
+
+- The inbound tool-call resolver in `packages/agent` and this repair each carried a copy of the rule, and the copies drifted (senpi#2104). One matcher keeps the two paths accepting the same shapes.
+
+### Why an extension could not handle it
+
+- The tool-reference pass runs inside the Anthropic adapter while it builds the request, and the agent loop resolves tool-call names before any hook runs.
+
+### Expected merge conflict zones
+
+- LOW: `collectAvailableToolNames` and the `resolve` binding in `anthropic-tool-references.ts` (fork-only); `utils/tool-name-match.ts` is new.
+
 ## 2026-09-24 - Strip a gateway tool-reference namespace whatever the casing of its prefix (senpi#2104)
 
 ### What changed
