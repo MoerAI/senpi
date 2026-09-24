@@ -1,5 +1,46 @@
 # prompt-preset Extension Changes
 
+## 2026-09-24 - Grok 4.7 tuned against the field trace; the 4.6 byte-copy contract retired
+
+### What changed
+
+- `grok-4.7.ts`: the file stops being a verbatim copy of `grok-4.6.ts` (the 2026-09-22 copy ruling below, senpi#1990, anticipated exactly this: the copy and its equality test retire together when 4.7 gets its own tuning). Edits, each against the full-day Grok 4.7 field trace (stopped early repeatedly, claimed done with open work, did not decompose a five-step natural-language build request, gave no visibility), with no vendor prompting guide for 4.7 to lean on:
+  - A: `You are ${APP_NAME}, a coding agent running on Grok 4.6 - a fast, decisive daily driver.` -> `... running on Grok 4.7.`
+  - B: Intent Gate paragraph 2 (`Before naming the stop condition, decide what done actually means ... is a defect, not diligence.`, an over-work warning while the observed failure is early stopping) -> `Done means the deliverable the user asked for exists and they can see it working - never a plan, a partial, or a report about it. Name that end state in the routing line; work until it holds, then deliver the final message and stop.`
+  - B: routes `"what do you think about X?": judge and propose; wait for confirmation.` -> `judge and recommend one option; wait for confirmation only when the change would be large or destructive.`; `"refactor" / "improve" / "clean up": assess first, propose an approach.` -> `assess, then make the smallest change that meets the goal; propose first only when it would be large or destructive.`
+  - C: appended route `A request that names a deliverable - build, make, create, do X then Y - is implementation however it is phrased; a multi-step request is one deliverable executed in order.`
+  - C: the grok-4.6 treatment - `buildHandoffSection()` as `## Handoff` before `## Style`, the dense/quiet/never-restate paragraph deleted, the announcement ban reduced to permission-begging, and the full completion bullet in `## Hard Limits`.
+  - A (paying for the growth; each rule keeps one home): `; open-ended ones take the smallest path that fully satisfies the goal` (the refactor route now says it), `- Never speculate about code, tests, or runtime behavior you have not read or verified.` (the Working the Task re-read rule; kimi-k3 made the same cut), `Concise, concrete` (brevity adjective), `Keep working until your declared stop condition is met.` (the new stop paragraph).
+  - Header: the first paragraph now records the trace, the missing vendor guide, and the A/B/C edits; the 4.6 field-guide findings stay (explicit done beats exhortation), and the file names no `Grok 4.6` string.
+- `test/suite/prompt-presets-grok-4-7.test.ts`: both byte-equality assertions against 4.6 and the `buildGrok46Prompt` import are gone. The built prompt is now checked with sentinels: `toContain("running on Grok 4.7")`, `not.toContain("Grok 4.6")`, `occurrences(prompt, "## Handoff") === 1`, `toContain("## Intent Gate")`. Each went RED under a one-line mutation first (4.6 self-id restored; a `Grok 4.6` leak with the 4.7 self-id kept; Handoff rendered twice; Intent Gate heading renamed). The settings-force case asserts `running on Grok 4.7` instead of `Grok 4.6`.
+- `AGENTS.md`: the covered-family list names grok-4.5, grok-4.6, and grok-4.7 (its own tuned core).
+
+Rendered `wc -w` (empty tool list, `resolvePreset` settings force): 1057 -> 1130 (+73).
+
+| Delta | Words | Category |
+|-------|-------|----------|
+| Self-id line | -6 | A |
+| Intent Gate paragraph 2 | -14 | B |
+| Judgment + refactor routes | +26 | B |
+| Deliverable route (new) | +31 | C |
+| `## Handoff` (+122) minus quiet paragraph (-78) and announcement ban (-6) | +38 | B+C |
+| Completion bullet | +36 | C |
+| Four redundant deletions | -38 | A |
+
+Net B is +12 (the two route rewrites add their large-or-destructive conditions and the stop paragraph shrinks by 14); the growth past the bullet plus the net handoff delta (+74) is paid by the four A deletions, so the file ends 1 word under it.
+
+### Why
+
+senpi#2121. The field trace shows the 4.6 posture failing on 4.7 in the opposite direction from what the 4.6 text guards against: the stop paragraph warned against doing too much, the routes told the model to propose and wait, and the Style section told it to stay quiet. The gajae-code routing stance (a directly implementable request is implemented) and its completion contract informed the route and bullet wording.
+
+### Why an extension could not handle it
+
+The preset core text and its test are this builtin's own; an extension could only append after the contradicting sentences.
+
+### Expected merge conflict zones
+
+- `grok-4.7.ts` header, Intent Gate, `## Hard Limits`, `## Style`; `prompt-presets-grok-4-7.test.ts` imports and the replaced case. Fork-only files.
+
 ## 2026-09-24 - Grok 4.5 and 4.6 cores: handoff contract and completion bullet
 
 ### What changed
