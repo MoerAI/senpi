@@ -1,4 +1,13 @@
-//! Fail-closed supervisor, stop-path registry, and `gate()`.
-//! Skeleton: later lanes own the implementation.
+//! Fail-closed supervisor and stop-path registry for desktop input.
+//! `gate()` lands in a later lane.
 
-pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
+mod clock;
+mod reset;
+mod supervisor;
+
+pub use clock::{Clock, FakeClock, MonotonicClock};
+pub use reset::{ResumeToken, UserReset};
+pub use supervisor::{
+    ActiveStopPath, StopPathId, StopPolicy, StopSource, Supervisor, SupervisorStatus, HEARTBEAT_FRESH_MS,
+    HEARTBEAT_INTERVAL_MS,
+};
