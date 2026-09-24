@@ -22,6 +22,8 @@
 
 ### Changed
 
+- The `Stop` hook no longer fires when a turn ends while background work that will wake the session is still running - a background subagent task, a DAG run, a terminal monitor, a background bash session, a detached eval cell, or a loop-guard recovery hold. It fires once that work is done: at the end of the turn the work wakes, or right after the work clears if nothing wakes the session. A pending ask-user question still counts as stopped, since the session is waiting on you. Turns with no background work fire `Stop` exactly as before. ([#2077](https://github.com/code-yeongyu/senpi/issues/2077))
+- The builtin herdr reporter keeps a pane `working` while any background wake source is live - DAG runs, background bash sessions, and detached eval cells now count alongside subagents and terminal monitors - and names each kind of live work in the pane message. The pane returns to `idle` when the last source clears, even without another turn. ([#2077](https://github.com/code-yeongyu/senpi/issues/2077))
 - The recommended default model ladder is now Claude Opus 5.5 (medium), Claude Fable 5.1 (xhigh), Kimi K3 (max), GPT-6 Astra (xhigh), GPT-6 Sol (medium), GLM 5.3 (max). When a recommended model is available from several providers, the subscription lane wins (for Claude: the Claude subscription before the Anthropic API, Copilot, and OpenCode), and gateway aggregators such as OpenGateway and OpenRouter are never picked. ([#2074](https://github.com/code-yeongyu/senpi/issues/2074))
 
 ### Fixed
