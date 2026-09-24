@@ -38,6 +38,7 @@ function expectedText(harness: Harness, day: Date): string {
 
 function withCompactionSummary(): Parameters<typeof createHarness>[0] {
 	return {
+		environmentContext: true,
 		settings: { compaction: { keepRecentTokens: 1 } },
 		extensionFactories: [
 			(pi) => {
@@ -65,7 +66,7 @@ describe("senpi#2093: environment context message", () => {
 	async function start(options?: Parameters<typeof createHarness>[0]): Promise<Harness> {
 		vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
 		setToday(DAY_ONE);
-		const harness = await createHarness(options);
+		const harness = await createHarness({ environmentContext: true, ...options });
 		harnesses.push(harness);
 		return harness;
 	}
@@ -76,7 +77,7 @@ describe("senpi#2093: environment context message", () => {
 		await first.session.prompt("hi");
 
 		setToday(DAY_TWO);
-		const second = await createHarness();
+		const second = await createHarness({ environmentContext: true });
 		harnesses.push(second);
 		second.setResponses([fauxAssistantMessage("two")]);
 		await second.session.prompt("hi");
@@ -137,7 +138,7 @@ describe("senpi#2093: environment context message", () => {
 	});
 
 	it("replays the persisted environment message at its original position on resume", async () => {
-		const harness = await start({ persistSession: true });
+		const harness = await start({ environmentContext: true, persistSession: true });
 		harness.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
 		await harness.session.prompt("hi");
 		const sessionFile = harness.sessionManager.getSessionFile();
@@ -153,7 +154,7 @@ describe("senpi#2093: environment context message", () => {
 		expect(getMessageText(harness.faux.getCallLog()[1]?.context.messages[0])).toBe(expectedText(harness, DAY_ONE));
 	});
 
-	it("re-appends the latest environment context after compaction summarizes it away", async () => {
+	it("keeps the latest environment context visible to the first turn after compaction", async () => {
 		const harness = await start(withCompactionSummary());
 		harness.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
 		await harness.session.prompt("one");
@@ -161,20 +162,17 @@ describe("senpi#2093: environment context message", () => {
 		await harness.session.prompt("two");
 
 		await harness.session.compact();
-
-		const messages = harness.session.messages;
-		expect(messages[0]?.role).toBe("compactionSummary");
-		expect(latestEnvironmentContext(messages)).toEqual({
-			cwd: harness.tempDir.replace(/\\/g, "/"),
-			currentDate: "2026-09-25",
-		});
-		expect(latestEnvironmentContext(harness.sessionManager.buildSessionContext().messages)).toEqual(
-			latestEnvironmentContext(messages),
-		);
+		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
 
 		harness.setResponses([fauxAssistantMessage("third")]);
-		const environmentCount = environmentMessages(harness.session.messages).length;
 		await harness.session.prompt("three");
-		expect(environmentMessages(harness.session.messages)).toHaveLength(environmentCount);
+
+		const request = harness.faux.getCallLog().at(-1)?.context.messages ?? [];
+		const texts = request.map((message) => getMessageText(message));
+		const latest = expectedText(harness, DAY_TWO);
+		expect(texts.filter((text) => text === latest)).toHaveLength(1);
+		expect(texts.indexOf(latest)).toBeLessThan(texts.lastIndexOf("three"));
+		expect(texts).not.toContain(expectedText(harness, DAY_ONE));
+		expect(latestEnvironmentContext(harness.session.messages)?.currentDate).toBe("2026-09-25");
 	});
 });

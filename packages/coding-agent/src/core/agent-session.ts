@@ -521,6 +521,11 @@ export interface AgentSessionConfig {
 	fallbackNow?: () => number;
 	/** Random source for retry jitter (tests only). */
 	retryRandom?: () => number;
+	/**
+	 * Send cwd and date as an append-only environment-context message before a turn (senpi#2093).
+	 * Default true; test fixtures that pin exact transcripts pass false.
+	 */
+	environmentContext?: boolean;
 	/** Global model narrowing for selectors and startup model choice (from --models / enabledModels) */
 	scopedModels?: Array<{
 		model: Model<any>;
@@ -1055,6 +1060,7 @@ export class AgentSession {
 	private readonly _probeBackScheduler: ProbeBackScheduler;
 	private readonly _fallbackNow: () => number;
 	private readonly _retryRandom: () => number;
+	private readonly _environmentContextEnabled: boolean;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -1123,6 +1129,7 @@ export class AgentSession {
 		this._selectorCooldowns = new SelectorCooldowns(config.fallbackNow ?? (() => Date.now()));
 		this._fallbackNow = config.fallbackNow ?? (() => Date.now());
 		this._retryRandom = config.retryRandom ?? Math.random;
+		this._environmentContextEnabled = config.environmentContext ?? true;
 		this._retryFallback = new RetryFallbackController({
 			getSettings: () => this.settingsManager.getRetryFallbackSettings(),
 			registry: this._modelRegistry,
@@ -4577,6 +4584,7 @@ export class AgentSession {
 
 	/** Environment context a new turn must carry: set when cwd or date differs from the latest one visible (senpi#2093). */
 	private _pendingEnvironmentContextMessage(): CustomMessage<EnvironmentContext> | undefined {
+		if (!this._environmentContextEnabled) return undefined;
 		return environmentContextMessageIfChanged(this.agent.state.messages, resolveEnvironmentContext(this._cwd));
 	}
 
@@ -6354,23 +6362,6 @@ export class AgentSession {
 			}
 
 			const sessionContext = this.sessionManager.buildSessionContext();
-			// A summary replaces the entry that carried the environment context; re-append it so the
-			// continued context still names the cwd and date (senpi#2093).
-			const environmentContext = environmentContextMessageIfChanged(
-				sessionContext.messages,
-				resolveEnvironmentContext(this._cwd),
-			);
-			if (environmentContext) {
-				this._emitEntryAppended(
-					this.sessionManager.appendCustomMessageEntry(
-						environmentContext.customType,
-						environmentContext.content,
-						environmentContext.display,
-						environmentContext.details,
-					),
-				);
-				sessionContext.messages.push(environmentContext);
-			}
 			const currentAgentMessages = this.agent.state.messages;
 			const hasUnchangedPrefix = agentMessagesAtStart.every(
 				(message, index) => currentAgentMessages[index] === message,

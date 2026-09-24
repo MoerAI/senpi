@@ -3,7 +3,7 @@
 ### What changed
 
 - `packages/coding-agent/src/core/environment-context.ts` (new, fork-only): `ENVIRONMENT_CONTEXT_MESSAGE_TYPE` (`environment-context`), `resolveEnvironmentContext` (cwd with `/` separators, UTC `YYYY-MM-DD` date), `formatEnvironmentContext` (`<environment_context>` with `<cwd>` and `<current_date>`), `latestEnvironmentContext`, and `environmentContextMessageIfChanged`, which returns a hidden (`display: false`) custom message only when the cwd or date differs from the latest one in the given messages.
-- `packages/coding-agent/src/core/agent-session.ts`: `prompt()` puts that message ahead of the user message when it is due, and a `sendCustomMessage(..., { triggerTurn: true })` turn puts it ahead of the triggering message. It persists through the normal `message_end` custom-message path and `convertToLlm` sends it as a user-role message, so every provider adapter and task child sees it without adapter changes. After a completed compaction, `_executeCompaction` appends a fresh entry when the summarized context no longer shows the current value, before agent state is rebuilt from the session context. Earlier entries are never rewritten.
+- `packages/coding-agent/src/core/agent-session.ts`: `prompt()` puts that message ahead of the user message when it is due, and a `sendCustomMessage(..., { triggerTurn: true })` turn puts it ahead of the triggering message. It persists through the normal `message_end` custom-message path and `convertToLlm` sends it as a user-role message, so every provider adapter and task child sees it without adapter changes. Because the check reads the current agent state, the first turn after a compaction that summarized the message away re-appends the latest value; nothing is written at compaction time, so the compacted context tail (which post-compaction continuation logic inspects) is unchanged. Earlier entries are never rewritten. `AgentSessionConfig.environmentContext` (default `true`) gates injection; the faux test harness (`test/suite/harness.ts`) passes `false` unless a test opts in, so mechanics tests that pin exact transcripts stay exact.
 
 ### Why
 
@@ -11,12 +11,12 @@
 
 ### Why an extension could not handle it
 
-- Injecting a message before the user turn and re-appending it after compaction happen inside `AgentSession`'s prompt assembly and compaction completion. `before_agent_start` messages are pushed after the user message, and an extension cannot write a session entry between the compaction entry and the agent-state rebuild.
+- The message must precede the user message inside `AgentSession`'s prompt assembly; `before_agent_start` messages are pushed after the user message, and the trigger-turn branch of `sendCustomMessage` builds its request array internally.
 
 ### Expected merge conflict zones
 
 - LOW: the messages-array head in `prompt()` and the `const messages: AgentMessage[] = [appMessage]` line of the `sendCustomMessage` trigger-turn branch.
-- LOW: the lines right after `const sessionContext = this.sessionManager.buildSessionContext();` in `_executeCompaction`, and one import line.
+- LOW: one `AgentSessionConfig` field, one private field and its constructor assignment, and one import line.
 
 ## 2026-09-23 - Streaming tool-call events name the tool a call resolves to (senpi#2068)
 
