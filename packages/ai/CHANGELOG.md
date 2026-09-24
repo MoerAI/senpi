@@ -8,7 +8,7 @@
 
 - `compat.supportsConfigurationUpdate` on OpenAI Responses models marks models that accept `configuration_update` input items, and `supportsConfigurationUpdate(model)` reads it. The catalog sets it on the `openai` GPT-5.6 and GPT-6 rows (including `-fast`) and on `chatgpt-subscription` `gpt-6-astra` / `gpt-6-astra-fast`; mid-session effort changes on those models go through the item instead of a top-level `reasoning.effort` change. ([#2094](https://github.com/code-yeongyu/senpi/issues/2094))
 
-- `warmPromptCache` prewarms native OpenAI Responses GPT-5.6+ models with `prompt_cache_options.prewarm` (system prompt + tools, no conversation), and those requests now send `prompt_cache_options.comparison_response_id` for the previous same-model response and record the returned `prompt_cache_diagnostics` on `AssistantMessage.promptCacheDiagnostics`. ([#2096](https://github.com/code-yeongyu/senpi/issues/2096))
+- `warmPromptCache` prewarms native OpenAI Responses GPT-5.6+ models with `prompt_cache_options.prewarm` (system prompt + tools, no conversation), and those requests now send `prompt_cache_options.comparison_response_id` for the previous same-model response and record the returned `prompt_cache_diagnostics` on `AssistantMessage.promptCacheDiagnostics`. On these models (unless `cacheRetention` is `none`) the system prompt is sent as one `input_text` block with `prompt_cache_breakpoint: { mode: "explicit" }`, so a prewarmed or previous prefix is read even when the hosted `web_search_preview` tool is present. ([#2096](https://github.com/code-yeongyu/senpi/issues/2096))
 
 ### Changed
 

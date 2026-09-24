@@ -151,6 +151,12 @@ export interface ConvertResponsesMessagesOptions {
 	deferredTools?: ReadonlyMap<string, Tool>;
 	deferredToolsMode?: "additional-tools" | "tool-search";
 	toolOptions?: ConvertResponsesToolsOptions;
+	/**
+	 * Send the system prompt as one `input_text` block carrying an explicit
+	 * `prompt_cache_breakpoint`, so the platform writes and looks up the prefix at the end of
+	 * the system prompt even when hosted tools (`web_search_preview`) are present (senpi#2096).
+	 */
+	systemPromptCacheBreakpoint?: boolean;
 	/** Internal request-local provenance sealing pass. Never serialized to provider payloads. */
 	sealContextProvenance?: boolean;
 }
@@ -284,10 +290,13 @@ export function convertResponsesMessages<TApi extends Api>(
 	if (includeSystemPrompt && context.systemPrompt) {
 		const compat = model.compat as { supportsDeveloperRole?: boolean } | undefined;
 		const role = model.reasoning && compat?.supportsDeveloperRole !== false ? "developer" : "system";
-		messages.push({
-			role,
-			content: sanitizeSurrogates(context.systemPrompt),
-		});
+		const text = sanitizeSurrogates(context.systemPrompt);
+		if (options?.systemPromptCacheBreakpoint === true) {
+			const block = { type: "input_text" as const, text, prompt_cache_breakpoint: { mode: "explicit" } };
+			messages.push({ role, content: [block] });
+		} else {
+			messages.push({ role, content: text });
+		}
 	}
 
 	let msgIndex = 0;

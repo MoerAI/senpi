@@ -192,6 +192,9 @@ describe("session-start OpenAI prompt-cache prewarm (#2096)", () => {
 
 		await within(harness.session.prompt("hello"), "the first turn");
 		expect(getAssistantTexts(harness)).toEqual(["still answered"]);
-		expect(harness.session.getSessionStats().tokens.cacheWrite).toBe(0);
+		const turnCacheWrite = harness.session.messages
+			.filter((message) => message.role === "assistant")
+			.reduce((total, message) => total + message.usage.cacheWrite, 0);
+		expect(harness.session.getSessionStats().tokens.cacheWrite).toBe(turnCacheWrite);
 	});
 });

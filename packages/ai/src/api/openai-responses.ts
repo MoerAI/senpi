@@ -519,8 +519,12 @@ function buildParams(
 	const reasoningEffort = mappedReasoningEffort === undefined ? requestedReasoningEffort : mappedReasoningEffort;
 	const reasoningRequested = reasoningEffort !== undefined && reasoningEffort !== null;
 	const reasoningUnavailable = reasoningEffort === null;
+	const cacheRetention = resolveCacheRetention(options?.cacheRetention ?? model.cacheRetention, options?.env);
 	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
 		preserveThinking: reasoningRequested,
+		// senpi#2096: with a hosted web_search_preview tool the platform reads neither a prewarmed
+		// nor a previous prefix unless the system prompt carries an explicit breakpoint.
+		systemPromptCacheBreakpoint: compat.supportsExplicitPromptCacheMode && cacheRetention !== "none",
 		grammarToolInputProperties,
 		deferredTools: toolPlacement.deferred,
 		deferredToolsMode,
@@ -530,7 +534,6 @@ function buildParams(
 		},
 	});
 
-	const cacheRetention = resolveCacheRetention(options?.cacheRetention ?? model.cacheRetention, options?.env);
 	const isNativeEndpoint = isOpenAIResponsesNativeEndpoint(model, options?.env);
 	// senpi#2096: ask the platform why this request missed the prefix of the previous same-model response.
 	const comparisonResponseId =

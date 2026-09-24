@@ -21,7 +21,8 @@
 ### What changed
 
 - `packages/ai/src/api/openai-responses.ts`: `buildParams` adds `prompt_cache_options.comparison_response_id` (the most recent completed same-model assistant `responseId` in `context.messages`) for native `api.openai.com` models with `compat.supportsExplicitPromptCacheMode`, unless `cacheRetention` is `none`. The existing `mode`/`ttl` fields are unchanged. `streamSimple`'s option mapping moved into `resolveSimpleOptions`, which the new `warmOpenAIResponsesPromptCache` also uses: it builds the next turn's payload with an empty conversation (system prompt + tools only), runs `onPayload` and native-tool sanitizing, sends it non-streaming with `prompt_cache_options.prewarm: true` and a 30 s default timeout, and returns priced usage.
-- `packages/ai/src/api/openai-responses-shared.ts`: `finalizeResponse` stores the terminal response's `prompt_cache_diagnostics` on `output.promptCacheDiagnostics`.
+- `packages/ai/src/api/openai-responses.ts` (same function): when `compat.supportsExplicitPromptCacheMode` is set and `cacheRetention` is not `none`, `buildParams` asks `convertResponsesMessages` for `systemPromptCacheBreakpoint`, so every turn and the prewarm send the system prompt as `[{ type: "input_text", text, prompt_cache_breakpoint: { mode: "explicit" } }]`. `cacheRetention` is now resolved before the input conversion.
+- `packages/ai/src/api/openai-responses-shared.ts`: `finalizeResponse` stores the terminal response's `prompt_cache_diagnostics` on `output.promptCacheDiagnostics`. `ConvertResponsesMessagesOptions.systemPromptCacheBreakpoint` emits the system/developer item as one `input_text` block with `prompt_cache_breakpoint: { mode: "explicit" }` instead of a plain string.
 - `packages/ai/src/types.ts`: new `PromptCacheDiagnostics` and the optional `AssistantMessage.promptCacheDiagnostics` field.
 - `packages/ai/src/index.ts`: exports `isOpenAIResponsesPromptCacheModel`.
 - `packages/ai/src/api/openai-responses.lazy.ts`: registers the OpenAI Responses prompt-cache warmer (a lazy `import()` of `openai-responses.ts`) in the new `prompt-cache-warmers.ts` table, next to `openAIResponsesApi`.
@@ -29,7 +30,7 @@
 
 ### Why
 
-Live platform probes (gpt-6-luna, `store: false`) showed `prompt_cache_options.prewarm` writes the instructions + tools prefix with no output and the next request reads it, and `comparison_response_id` returns `cache_hit` / `cache_miss` with a reason (`reasoning_effort_changed`, `service_tier_changed`, ...). senpi had neither: the first turn always paid a cold prefix and misses were unexplained.
+Live platform probes (gpt-6-luna, `store: false`) showed `prompt_cache_options.prewarm` writes the instructions + tools prefix with no output and the next request reads it (but with the hosted `web_search_preview` tool present the next request read 0 of a prewarmed prefix until the system block carried an explicit `prompt_cache_breakpoint`; with it, 9,508 of 9,583 tokens were read), and `comparison_response_id` returns `cache_hit` / `cache_miss` with a reason (`reasoning_effort_changed`, `service_tier_changed`, ...). senpi had neither: the first turn always paid a cold prefix and misses were unexplained.
 
 ### Why an extension could not handle it
 
@@ -38,7 +39,8 @@ Live platform probes (gpt-6-luna, `store: false`) showed `prompt_cache_options.p
 ### Expected merge conflict zones
 
 - `packages/ai/src/api/openai-responses.ts`: imports, the `MutableResponsesPayload` type, `streamSimple` (now delegating to `resolveSimpleOptions`), the new `warmOpenAIResponsesPromptCache` after it, and the `prompt_cache_key` / `prompt_cache_options` fields in `buildParams`.
-- `packages/ai/src/api/openai-responses-shared.ts`: the import block and the `responseId` assignment in `finalizeResponse`.
+- `packages/ai/src/api/openai-responses-shared.ts`: the import block, the `responseId` assignment in `finalizeResponse`, `ConvertResponsesMessagesOptions`, and the system-prompt push at the top of `convertResponsesMessages`.
+- `packages/ai/src/api/openai-responses.ts`: the `cacheRetention` line moved above the `convertResponsesMessages` call in `buildParams`.
 - `packages/ai/src/types.ts`: the new interface before `StopReason` and the `AssistantMessage` field after `diagnostics`.
 - `packages/ai/src/index.ts`: the export line before `convertResponsesMessages`.
 - `packages/ai/src/api/openai-responses.lazy.ts`: the import block and the registration call after `openAIResponsesApi`.

@@ -1,8 +1,8 @@
 import type { Agent, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ProviderHeaders, ServiceTier } from "@earendil-works/pi-ai";
+import type { ModelsSimpleStreamOptions, ProviderHeaders } from "@earendil-works/pi-ai";
 import { isValidThinkingLevel } from "../cli/args.ts";
 import type { ExtensionRunner } from "./extensions/runner.ts";
-import type { BuildSystemPromptOptions, PromptCachePrefixRequest } from "./extensions/types.ts";
+import type { BuildSystemPromptOptions, PromptCachePrefixRequest, ServiceTier } from "./extensions/types.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 
 export interface PromptCachePrefixSources {
@@ -39,19 +39,19 @@ export async function buildPromptCachePrefixRequest(
 	const state = agent.state;
 	const model = state.model;
 	if (model === undefined) return undefined;
+	const options: ModelsSimpleStreamOptions = {};
 	const reasoning = loopReasoning(state.reasoningBaseline, state.thinkingLevel);
+	if (reasoning !== undefined) options.reasoning = reasoning;
+	if (state.thinkingSelection !== undefined) options.thinkingSelection = state.thinkingSelection;
+	if (agent.thinkingBudgets !== undefined) options.thinkingBudgets = agent.thinkingBudgets;
+	if (agent.sessionId !== undefined) options.sessionId = agent.sessionId;
 	const serviceTier = sources.getServiceTier();
-	const prepared = await sources.modelRuntime.prepareSimpleRequest(model, {
-		...(reasoning !== undefined ? { reasoning } : {}),
-		...(state.thinkingSelection !== undefined ? { thinkingSelection: state.thinkingSelection } : {}),
-		...(agent.thinkingBudgets !== undefined ? { thinkingBudgets: agent.thinkingBudgets } : {}),
-		...(agent.sessionId !== undefined ? { sessionId: agent.sessionId } : {}),
-		...(serviceTier !== undefined ? { serviceTier } : {}),
-		...(agent.onPayload !== undefined ? { onPayload: agent.onPayload } : {}),
-		...(runner.hasHandlers("before_provider_headers")
-			? { transformHeaders: async (headers: ProviderHeaders) => await runner.emitBeforeProviderHeaders(headers) }
-			: {}),
-	});
+	if (serviceTier !== undefined) options.serviceTier = serviceTier;
+	if (agent.onPayload !== undefined) options.onPayload = agent.onPayload;
+	if (runner.hasHandlers("before_provider_headers")) {
+		options.transformHeaders = async (headers: ProviderHeaders) => await runner.emitBeforeProviderHeaders(headers);
+	}
+	const prepared = await sources.modelRuntime.prepareSimpleRequest(model, options);
 	return {
 		model: prepared.model,
 		context: { systemPrompt, messages: [], tools: state.tools.slice() },
