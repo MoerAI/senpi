@@ -43,6 +43,8 @@ const turnFrames: Body[] = [];
 class FakeResponsesWebSocket {
 	readyState = 1;
 	private readonly listeners = new Map<string, Set<Listener>>();
+	// The provider subscribes to messages only after send() returns, so replies wait for it.
+	private readonly pendingMessages: string[] = [];
 
 	constructor(_url: string, _options?: unknown) {
 		queueMicrotask(() => this.emit("open", {}));
@@ -52,7 +54,11 @@ class FakeResponsesWebSocket {
 		turnFrames.push(parseBody(data));
 		const message = { type: "message", id: "msg_1", role: "assistant" };
 		const events = [
-			{ type: "response.output_item.added", output_index: 0, item: { ...message, content: [], status: "in_progress" } },
+			{
+				type: "response.output_item.added",
+				output_index: 0,
+				item: { ...message, content: [], status: "in_progress" },
+			},
 			{ type: "response.output_text.delta", output_index: 0, content_index: 0, item_id: "msg_1", delta: "A" },
 			{
 				type: "response.output_item.done",
@@ -61,9 +67,13 @@ class FakeResponsesWebSocket {
 			},
 			{ type: "response.completed", response: { id: "resp_turn", status: "completed", usage: USAGE } },
 		];
-		queueMicrotask(() => {
-			for (const event of events) this.emit("message", { data: JSON.stringify(event) });
-		});
+		this.pendingMessages.push(...events.map((event) => JSON.stringify(event)));
+		this.flushMessages();
+	}
+
+	private flushMessages(): void {
+		if ((this.listeners.get("message")?.size ?? 0) === 0) return;
+		for (const data of this.pendingMessages.splice(0)) this.emit("message", { data });
 	}
 
 	close(): void {
@@ -75,6 +85,7 @@ class FakeResponsesWebSocket {
 		const listeners = this.listeners.get(type) ?? new Set<Listener>();
 		listeners.add(listener);
 		this.listeners.set(type, listeners);
+		if (type === "message") queueMicrotask(() => this.flushMessages());
 	}
 
 	removeEventListener(type: string, listener: Listener): void {
