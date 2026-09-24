@@ -39,6 +39,11 @@ function formattedCode(stdout: string): string | undefined {
 	}
 }
 
+// ruff runs inside the formatter process, so it gets most of the caller's budget and never outlives it.
+function ruffTimeoutSeconds(timeoutMs: number): string {
+	return String(Math.max(1, timeoutMs - 1_000) / 1_000);
+}
+
 export function formatPythonCell(
 	code: string,
 	invocation: PythonInvocation,
@@ -47,7 +52,13 @@ export function formatPythonCell(
 	return new Promise((resolve) => {
 		const child = spawn(
 			invocation.command,
-			[...invocation.args, "-c", PYTHON_FORMATTER_SCRIPT, ...options.strategies],
+			[
+				...invocation.args,
+				"-c",
+				PYTHON_FORMATTER_SCRIPT,
+				ruffTimeoutSeconds(options.timeoutMs),
+				...options.strategies,
+			],
 			{
 				stdio: ["pipe", "pipe", "ignore"],
 				timeout: options.timeoutMs,
