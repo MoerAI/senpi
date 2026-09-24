@@ -8,7 +8,13 @@ import { createHarness, type Harness } from "../harness.ts";
 function withCompat(harness: Harness, modelId: string, supportsConfigurationUpdate: boolean): Model<string> {
 	const model = harness.getModel(modelId);
 	if (!model) throw new Error(`Missing test model: ${modelId}`);
-	return supportsConfigurationUpdate ? { ...model, compat: { supportsConfigurationUpdate: true } } : model;
+	if (!supportsConfigurationUpdate) return model;
+	const flagged: Model<"openai-responses"> = {
+		...model,
+		api: "openai-responses",
+		compat: { supportsConfigurationUpdate: true },
+	};
+	return flagged;
 }
 
 function configurationUpdateEfforts(harness: Harness): string[] {

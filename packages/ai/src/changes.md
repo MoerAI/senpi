@@ -5,6 +5,7 @@
 - `packages/ai/src/openai-responses-compat.ts`: `OpenAIResponsesCompat.supportsConfigurationUpdate` (boolean, default false) marks models that accept Responses `configuration_update` input items.
 - `packages/ai/src/models.ts`: new `supportsConfigurationUpdate(model)`, true only for a Responses-family api (`openai-responses`, `openai-codex-responses`, `azure-openai-responses`) whose `compat.supportsConfigurationUpdate` is true.
 - `packages/ai/src/api/openai-responses-shared.ts`: the `configurationUpdate` branch of `convertResponsesMessages` gates on `supportsConfigurationUpdate(model)` instead of `model.id === "gpt-6-astra"` on `openai` / `chatgpt-subscription`; adjacent updates still coalesce into one item.
+- `packages/ai/src/api/openai-responses.ts`: `getCompat` resolves `supportsConfigurationUpdate` (default false) with the other `Required<OpenAIResponsesCompat>` fields.
 - `packages/ai/src/providers/data/openai.json`, `packages/ai/src/providers/data/chatgpt-subscription.json`, `packages/ai/src/providers/data/.manifest.json`: the flag lands on the 12 `openai` GPT-5.6/GPT-6 rows (base and `-fast`) and on `chatgpt-subscription` `gpt-6-astra` / `gpt-6-astra-fast`; no other field changed.
 - `packages/ai/test/openai-config-update.test.ts`: flagged and unflagged catalog rows, the api guard, and the exact flagged set per provider.
 
@@ -21,6 +22,7 @@ The Responses input list is built inside `convertResponsesMessages` before the r
 - `packages/ai/src/api/openai-responses-shared.ts`: the `configurationUpdate` branch at the top of the message loop and the `../models.ts` import.
 - `packages/ai/src/models.ts`: the block after `supportsMax` and the `./types.ts` type import.
 - `packages/ai/src/openai-responses-compat.ts`: the field after `supportsExplicitPromptCacheMode`.
+- `packages/ai/src/api/openai-responses.ts`: the `getCompat` return object.
 - `packages/ai/src/providers/data/*.json` + `.manifest.json`: regenerate rather than merge.
 
 ## 2026-09-23 - Cursor variant grouping derived from the live catalog (senpi#2038)
