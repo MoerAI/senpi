@@ -5,9 +5,11 @@
 ### What changed
 
 - `gpt-5.5.ts`, `gpt-5.6.ts`, `gpt-6-astra.ts` (`handoff-report` directive): `At a handoff - turn start, a todo phase change, ...` -> `At a handoff - the first message after the todo list exists, a todo phase change, a blocker or plan change, the final message; the routing line is not one - ...`. Mirrors the shared-core `handoff.ts` rewording (`dynamic-prompt/changes.md`); the Claude, Kimi, and Grok cores render the shared builder and pick it up there. +9 words per GPT core.
+- The final-message rule in every core that states one is merged into the handoff block instead of competing with it: `claude-fable-5.ts`, `claude-fable-5-1.ts`, `kimi-k3.ts` ("The final message opens with the Handoff block; its/write its For you slot ..."), `claude-opus-5.ts`, `claude-opus-5-5.ts` ("When you finish, open with the Handoff block; its For you slot answers ..."), `gpt-5.5.ts` ("The final message is the Handoff block: its outcome and You need slots carry the result and its verification ..."), `gpt-5.6.ts` ("Final message: the Handoff block, whose outcome leads and whose You need slot carries the evidence ..."), `gpt-6-astra.ts` `FINAL_MESSAGE_SHAPE` ("The final message is the handoff block and stands alone ..."), `grok-4.5.ts` ("the final message is the Handoff block, whose For you slot leads with the outcome ..."). The outcome-first content of each rule is kept; only its container changes. +2 to +11 words per core. `prompt-presets-extension.test.ts` pinned the old gpt-5.6 wording (`Lead with the conclusion`) as a presence marker; it now pins the section label `Final message:` (a structural marker, not the prose).
 
 ### Why
 
+- Second QA finding: on the re-run `claude-fable-5-1` wrote no handoff block at all and closed with a free-form outcome-first summary, because each core's final-summary rule and `## Handoff` both claimed the final message. Merging them leaves one rule per message.
 - Category B: on the real `xai/grok-4.7` run the routing line satisfied "turn start" in the model's reading, so the first handoff block only appeared in the final message. Naming the moment by state (the plan now exists) removes the ambiguity in every family at once.
 
 ### Why an extension could not handle it

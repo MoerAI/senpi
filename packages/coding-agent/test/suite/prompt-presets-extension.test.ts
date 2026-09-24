@@ -180,7 +180,7 @@ describe("prompt preset resolver", () => {
 		expect(preset?.prompt).toContain("reconcile every item");
 		// GPT-5.6 tuning: prioritization instead of brevity, tool-loop stopping conditions.
 		expect(preset?.prompt).toContain("fewest useful tool loops");
-		expect(preset?.prompt).toContain("Lead with the conclusion");
+		expect(preset?.prompt).toContain("Final message:");
 		// Execution discipline: every typed directive ships in the rendered core.
 		for (const rule of GPT56_EXECUTION_RULES) {
 			expect(preset?.prompt).toContain(rule.directive);
