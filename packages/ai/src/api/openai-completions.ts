@@ -412,25 +412,43 @@ function appendOpenAIReasoningDetail(details: OpenAIReasoningDetail[], detail: O
 }
 
 /**
- * Replay only what a provider's INPUT schema defines. `index` exists to reassemble a
- * stream — it orders deltas while a response arrives, it is absent from non-streamed
- * responses, and on the input side the array's own order already carries the sequence.
- * A strict gateway rejects a replayed entry that still holds it ("the reasoning_details
- * at position N entry 0 must not contain streaming index"), and because the merged array
- * is persisted verbatim, every later request in that conversation is rejected the same
- * way. Stripping here repairs stored history without touching it on disk.
+ * Build a replayed entry from the provider's INPUT schema instead of echoing the stored
+ * object. A parsed detail is an open record: `isOpenAIReasoningDetail` type-checks the
+ * fields it knows and lets every other key through, so anything a provider streams or an
+ * earlier build persisted would otherwise travel back on the next request. A gateway that
+ * validates its input reasoning schema rejects such a key ("the reasoning_details at
+ * position N entry 0 must not contain streaming index"), and because the key lives in
+ * stored history the conversation is wedged for good. Removing one field by name only ever
+ * fixes the field that was observed; constructing the entry makes every unknown key absent
+ * by construction, which is how `assistantMsg.tool_calls` is already built below.
  *
- * General rule for this shape of field: anything that reassembles a stream (`index`,
- * chunk ordinals) or describes the response (`usage`, `finish_reason`) is consumed here
- * and never echoed; opaque replay tokens (`id`, `format`, `signature`, `data`) are
- * forwarded verbatim because only the provider knows what it validates inside them.
+ * The rule this encodes: replay `type`, the optional common fields, and exactly the payload
+ * the type defines. Fields that reassemble a stream (`index`, chunk ordinals) or describe
+ * the response are consumed here and never echoed, while opaque replay tokens (`id`,
+ * `format`, `signature`, `data`) are forwarded verbatim because only the provider knows what
+ * it validates inside them. `null` survives where the schema allows it, since the provider
+ * sent it. The switch is exhaustive over the same union `isOpenAIReasoningDetail` validates,
+ * so a new detail type or payload field fails to compile until both sides agree.
  */
-function stripStreamingIndex(details: readonly OpenAIReasoningDetail[]): OpenAIReasoningDetail[] {
-	return details.map((detail) => {
-		if (detail.index === undefined) return detail;
-		const { index: _streamingIndex, ...replayable } = detail;
-		return replayable;
-	});
+function toReplayableReasoningDetail(detail: OpenAIReasoningDetail): OpenAIReasoningDetail {
+	const common: OpenAIReasoningDetailBase = {};
+	if (detail.id !== undefined) common.id = detail.id;
+	if (detail.format !== undefined) common.format = detail.format;
+	switch (detail.type) {
+		case "reasoning.text": {
+			const replayable: OpenAIReasoningTextDetail = { ...common, type: "reasoning.text", text: detail.text };
+			if (detail.signature !== undefined) replayable.signature = detail.signature;
+			return replayable;
+		}
+		case "reasoning.summary":
+			return { ...common, type: "reasoning.summary", summary: detail.summary };
+		case "reasoning.encrypted":
+			return { ...common, type: "reasoning.encrypted", data: detail.data };
+	}
+}
+
+function toReplayableReasoningDetails(details: readonly OpenAIReasoningDetail[]): OpenAIReasoningDetail[] {
+	return details.map(toReplayableReasoningDetail);
 }
 
 type OpenAICompletionsReasoningField = "reasoning" | "reasoning_content" | "reasoning_text";
@@ -1689,7 +1707,7 @@ export function convertMessages(
 				});
 			}
 			if (preservedReasoningDetails) {
-				assistantMsg.reasoning_details = stripStreamingIndex(preservedReasoningDetails);
+				assistantMsg.reasoning_details = toReplayableReasoningDetails(preservedReasoningDetails);
 			}
 			if (
 				compat.requiresReasoningContentOnAssistantMessages &&
