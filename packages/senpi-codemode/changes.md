@@ -1,5 +1,25 @@
 # senpi-codemode fork changes
 
+## 2026-09-24 - Eval language errors list the enabled kernels
+
+### What changed
+
+- `packages/senpi-codemode/src/tool/eval-request.ts`: `parseEvalRequest` takes the enabled language list; a missing or unknown `language` fails with `eval run requires language — one of` those tokens, not the full js/py/rb/jl set.
+- `packages/senpi-codemode/src/tool/eval-tool.ts`: execute passes the session's enabled languages into the parser so the teaching error matches the schema the model already sees.
+- Tests: `test/eval-request-language.test.ts` pins a js-only execute path and a py+js parse path. QA: `scripts/qa-e2e-eval.ts` expects `one of "js", "py"` on the default host.
+
+### Why
+
+- The published schema already enumerates only enabled kernels. The teaching error still listed Ruby and Julia, which are off by default, so a model that omitted `language` was told to retry with a kernel that would then fail as unsupported.
+
+### Why an extension could not handle it
+
+- The eval request parser belongs to this package.
+
+### Expected merge conflict zones
+
+- LOW: the fork-only eval parser, its tests, and the QA driver.
+
 ## 2026-09-24 - Eval run schema and parser agree on required language/code
 
 ### What changed

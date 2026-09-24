@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { parseEvalRequest } from "../src/tool/eval-request.ts";
 import { createEvalTool } from "../src/tool/eval-tool.ts";
-import type { EvalToolRequest } from "../src/tool/types.ts";
+import type { EvalLanguage, EvalToolRequest } from "../src/tool/types.ts";
 import { FakeKernel, FakeManager, fakeExtensionContext, result } from "./eval/fakes.ts";
 
 const LANGUAGE_TEACHING_ERROR = 'eval run requires language — one of "js", "py", "rb", "jl"';
+const JS_ONLY_LANGUAGE_TEACHING_ERROR = 'eval run requires language — one of "js"';
+const DEFAULT_ENABLED_LANGUAGE_TEACHING_ERROR = 'eval run requires language — one of "js", "py"';
 const CODE_TEACHING_ERROR = "eval run requires code — the cell body to execute, verbatim";
 const LANGUAGE_SCHEMA_DESCRIPTION =
 	"REQUIRED for run. Kernel that runs the cell; each language keeps its own persistent state across eval calls.";
@@ -22,9 +24,9 @@ function buildTool(): EvalTool {
 	});
 }
 
-function parseError(params: unknown): TypeError {
+function parseError(params: unknown, enabledLanguages?: readonly EvalLanguage[]): TypeError {
 	try {
-		parseEvalRequest(params);
+		parseEvalRequest(params, enabledLanguages);
 	} catch (error) {
 		expect(error).toBeInstanceOf(TypeError);
 		return error as TypeError;
@@ -46,6 +48,15 @@ describe("parseEvalRequest language and code enforcement", () => {
 	it("names language first when a run omits both language and code", () => {
 		expect(parseError({ summary: "Listing available senpi tips for the tour", timeout: 60 }).message).toBe(
 			LANGUAGE_TEACHING_ERROR,
+		);
+	});
+
+	it("lists only the enabled languages when a run omits language", () => {
+		expect(parseError({ code: "return 1", summary: "run without a language" }, ["js", "py"]).message).toBe(
+			DEFAULT_ENABLED_LANGUAGE_TEACHING_ERROR,
+		);
+		expect(parseError({ code: "return 1", summary: "run without a language" }, ["js"]).message).toBe(
+			JS_ONLY_LANGUAGE_TEACHING_ERROR,
 		);
 	});
 
@@ -79,6 +90,6 @@ describe("eval tool execute error path", () => {
 			fakeExtensionContext(),
 		);
 		await expect(call).rejects.toThrowError(TypeError);
-		await expect(call).rejects.toThrow(LANGUAGE_TEACHING_ERROR);
+		await expect(call).rejects.toThrow(JS_ONLY_LANGUAGE_TEACHING_ERROR);
 	});
 });

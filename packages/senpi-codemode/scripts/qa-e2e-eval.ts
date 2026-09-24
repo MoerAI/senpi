@@ -120,7 +120,7 @@ async function runDefaultScenario(
 	if (!result.details.truncated) throw new QaScenarioError("eval output was not truncated");
 	if (!spillExists) throw new QaScenarioError("eval spill artifact was not written");
 	if (!rubyRejected) throw new QaScenarioError("disabled Ruby input was accepted");
-	if (omittedLanguageError !== 'eval run requires language — one of "js", "py", "rb", "jl"')
+	if (omittedLanguageError !== 'eval run requires language — one of "js", "py"')
 		throw new QaScenarioError(`omitted-language call did not fail with the actionable error: ${omittedLanguageError}`);
 }
 
