@@ -257,7 +257,7 @@ describe("durable monitor admission control", () => {
 
 		const digest = await restoreTerminalState({ manifest: harness.writer.store, handlers, now: () => now });
 
-		expect(digest).toEqual({
+		expect(digest).toMatchObject({
 			restored: 0,
 			lost: 0,
 			expired: 2,

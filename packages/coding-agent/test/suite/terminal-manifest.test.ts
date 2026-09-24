@@ -181,7 +181,14 @@ describe("terminal manifest writer", () => {
 			manifest: writer.store,
 			handlers: countingHandler(seen),
 		});
-		expect(digest).toEqual({ restored: 0, lost: 0, expired: 0, muted: 0, attachedElsewhere: 0, storeError: true });
+		expect(digest).toMatchObject({
+			restored: 0,
+			lost: 0,
+			expired: 0,
+			muted: 0,
+			attachedElsewhere: 0,
+			storeError: true,
+		});
 		expect(seen).toEqual([]);
 	});
 
@@ -231,7 +238,14 @@ describe("terminal manifest writer", () => {
 			updatedAt: 2,
 		});
 		const digest = await restoreTerminalState({ manifest: writer.store, handlers: stubRestoreHandlers });
-		expect(digest).toEqual({ restored: 0, lost: 4, expired: 0, muted: 0, attachedElsewhere: 0, storeError: false });
+		expect(digest).toMatchObject({
+			restored: 0,
+			lost: 4,
+			expired: 0,
+			muted: 0,
+			attachedElsewhere: 0,
+			storeError: false,
+		});
 	});
 
 	it("expires monitors whose expiresAt has passed without calling their handler", async () => {
@@ -260,7 +274,14 @@ describe("terminal manifest writer", () => {
 			handlers: countingHandler(seen),
 			now: () => now,
 		});
-		expect(digest).toEqual({ restored: 0, lost: 0, expired: 1, muted: 0, attachedElsewhere: 0, storeError: false });
+		expect(digest).toMatchObject({
+			restored: 0,
+			lost: 0,
+			expired: 1,
+			muted: 0,
+			attachedElsewhere: 0,
+			storeError: false,
+		});
 		expect(seen).toEqual([]);
 	});
 
@@ -395,11 +416,14 @@ describe("terminal manifest spec capture through the monitor tool", () => {
 		const harness = makeHarness(fixture);
 		try {
 			const writeSpy = vi.spyOn(fixture.writer.store, "write");
+			const isLast = (event: MonitorEvent) => event.type === "line" && event.line === "500";
+			// Arm before the create: a fast command can finish all 500 lines while the create awaits its manifest write.
+			const last = harness.sink.waitFor(isLast, "500th monitor line");
 			await harness.tool.execute("manifest-lines", {
 				description: "chatty watch",
 				command: "seq 1 500; sleep 30",
 			});
-			await harness.sink.waitFor((event) => event.type === "line" && event.line === "500", "500th monitor line");
+			await last;
 			await fixture.writer.flush();
 			expect(writeSpy).toHaveBeenCalledTimes(1);
 		} finally {

@@ -8,7 +8,6 @@ import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { createSidecarStore, type SidecarStore } from "../../../session-sidecar-store.ts";
 import type { MonitorSnapshotEntry } from "./monitor-registry.ts";
-import { parseTerminalManifest } from "./restore.ts";
 import { DURABLE_MONITOR_EXPIRY_MS } from "./shared.ts";
 import {
 	type ManifestBackgroundSession,
@@ -20,6 +19,7 @@ import {
 	type TerminalManifestCheckpoint,
 	type TerminalManifestSession,
 } from "./terminal-manifest-model.ts";
+import { parseTerminalManifest } from "./terminal-manifest-parse.ts";
 
 export type {
 	CommandMonitorSpec,

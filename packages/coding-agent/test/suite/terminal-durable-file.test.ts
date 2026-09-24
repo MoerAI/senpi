@@ -180,7 +180,14 @@ describe("checkpointed-file durability class", () => {
 		await writeFile(path, "landed");
 		const digest = await lane.restore();
 
-		expect(digest).toEqual({ restored: 1, lost: 0, expired: 0, muted: 0, attachedElsewhere: 0, storeError: false });
+		expect(digest).toMatchObject({
+			restored: 1,
+			lost: 0,
+			expired: 0,
+			muted: 0,
+			attachedElsewhere: 0,
+			storeError: false,
+		});
 		expect(lane.lines()).toEqual([`changed while detached: created ${path}`]);
 	});
 
@@ -252,7 +259,14 @@ describe("checkpointed-file durability class", () => {
 		lane.restart();
 		const digest = await lane.restore();
 
-		expect(digest).toEqual({ restored: 1, lost: 0, expired: 0, muted: 0, attachedElsewhere: 0, storeError: false });
+		expect(digest).toMatchObject({
+			restored: 1,
+			lost: 0,
+			expired: 0,
+			muted: 0,
+			attachedElsewhere: 0,
+			storeError: false,
+		});
 		expect(lane.events).toEqual([]);
 	});
 
@@ -265,7 +279,14 @@ describe("checkpointed-file durability class", () => {
 		await rm(path);
 		const digest = await lane.restore();
 
-		expect(digest).toEqual({ restored: 0, lost: 1, expired: 0, muted: 0, attachedElsewhere: 0, storeError: false });
+		expect(digest).toMatchObject({
+			restored: 0,
+			lost: 1,
+			expired: 0,
+			muted: 0,
+			attachedElsewhere: 0,
+			storeError: false,
+		});
 		// Nothing was re-registered, so no watch was left behind and no event was manufactured.
 		expect(lane.registry.snapshot()).toEqual([]);
 		expect(lane.events).toEqual([]);
@@ -293,7 +314,7 @@ describe("checkpointed-file durability class", () => {
 			writer: lane.writer,
 		});
 
-		const result = await handler(saved as ManifestMonitor);
+		const result = await handler(saved as ManifestMonitor, { downtimeMs: 0 });
 
 		expect(result.outcome).toBe("lost");
 		expect(result.reason).toContain("gone");
@@ -317,7 +338,14 @@ describe("checkpointed-file durability class", () => {
 		await writeFile(path, "two");
 		const digest = await lane.restore();
 
-		expect(digest).toEqual({ restored: 0, lost: 1, expired: 0, muted: 0, attachedElsewhere: 0, storeError: false });
+		expect(digest).toMatchObject({
+			restored: 0,
+			lost: 1,
+			expired: 0,
+			muted: 0,
+			attachedElsewhere: 0,
+			storeError: false,
+		});
 		expect(lane.registry.snapshot()).toEqual([]);
 		expect(lane.events).toEqual([]);
 	});

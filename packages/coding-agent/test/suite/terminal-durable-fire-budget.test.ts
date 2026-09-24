@@ -283,8 +283,8 @@ describe("durable monitor rolling fire budget", () => {
 		const digest = await restoreTerminalState({
 			manifest: writer.store,
 			handlers: {
-				"restartable-command": async (monitor) => {
-					const result = await handler(monitor);
+				"restartable-command": async (monitor, context) => {
+					const result = await handler(monitor, context);
 					if (result.outcome === "restored" || result.outcome === "muted") {
 						writer.adoptRestored(monitor);
 						registry.adoptFireWindow(monitor.monitorId, monitor.fireWindow);

@@ -21,6 +21,7 @@ import { MonitorStatusTicker } from "./monitor-status-ticker.ts";
 import { getTerminalNotificationDelivery, TerminalNotifier } from "./notify.ts";
 import { buildTerminalPromptSection } from "./prompt.ts";
 import {
+	type RestoreContext,
 	type RestoreDigest,
 	type RestoreHandler,
 	type RestoreHandlers,
@@ -329,8 +330,8 @@ async function adoptPersistedTerminalState(
 	const outcomesById = new Map<string, RestoreOutcome>();
 	const registry = bundle.monitors;
 	const record = (handler: RestoreHandler): RestoreHandler => {
-		return async (monitor: ManifestMonitor) => {
-			const result = await handler(monitor);
+		return async (monitor: ManifestMonitor, context: RestoreContext) => {
+			const result = await handler(monitor, context);
 			outcomesById.set(monitor.monitorId, result.outcome);
 			// Re-adopt every entry that is LIVE in this generation, so the next persist rewrites
 			// the manifest with it instead of erasing it: `restored` and `muted` both describe a
@@ -359,9 +360,9 @@ async function adoptPersistedTerminalState(
 	});
 	const handlers: RestoreHandlers = {
 		"restartable-command": record(restartableCommand),
-		"checkpointed-file": record(async (monitor) => {
+		"checkpointed-file": record(async (monitor, context) => {
 			freshFileRuntimeId = undefined;
-			const result = await checkpointedFile(monitor);
+			const result = await checkpointedFile(monitor, context);
 			if (result.outcome !== "restored" || freshFileRuntimeId === undefined) return result;
 			return { ...result, outcome: reapplyPersistedMute(registry, monitor, freshFileRuntimeId) };
 		}),

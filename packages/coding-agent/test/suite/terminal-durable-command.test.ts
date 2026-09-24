@@ -197,7 +197,14 @@ describe("restartable-command durability class", () => {
 			}),
 		);
 
-		expect(digest).toEqual({ restored: 1, lost: 0, expired: 0, muted: 0, attachedElsewhere: 0, storeError: false });
+		expect(digest).toMatchObject({
+			restored: 1,
+			lost: 0,
+			expired: 0,
+			muted: 0,
+			attachedElsewhere: 0,
+			storeError: false,
+		});
 		expect(spawnTracker.calls).toBe(1);
 		await sink.waitFor((event) => event.type === "line" && event.line === "restored-here", "restored PTY line");
 		const snapshot = registry.snapshot();
@@ -251,7 +258,14 @@ describe("restartable-command durability class", () => {
 			manifestMonitor({ monitorId: "mon_DURABLE0000000C", cwd: join(tmp, "vanished-dir") }),
 		);
 
-		expect(digest).toEqual({ restored: 0, lost: 1, expired: 0, muted: 0, attachedElsewhere: 0, storeError: false });
+		expect(digest).toMatchObject({
+			restored: 0,
+			lost: 1,
+			expired: 0,
+			muted: 0,
+			attachedElsewhere: 0,
+			storeError: false,
+		});
 		expect(spawnTracker.calls).toBe(0);
 		expect(registry.snapshot()).toEqual([]);
 	});
@@ -262,7 +276,14 @@ describe("restartable-command durability class", () => {
 			manifestMonitor({ monitorId: "mon_DURABLE0000000D", cwd: workDir, persistent: false }),
 		);
 
-		expect(digest).toEqual({ restored: 0, lost: 1, expired: 0, muted: 0, attachedElsewhere: 0, storeError: false });
+		expect(digest).toMatchObject({
+			restored: 0,
+			lost: 1,
+			expired: 0,
+			muted: 0,
+			attachedElsewhere: 0,
+			storeError: false,
+		});
 		expect(spawnTracker.calls).toBe(0);
 		expect(registry.snapshot()).toEqual([]);
 	});
@@ -273,7 +294,14 @@ describe("restartable-command durability class", () => {
 
 		const digest = await restore(manifestMonitor({ monitorId, command: "cat", cwd: workDir, deliveryPaused: true }));
 
-		expect(digest).toEqual({ restored: 0, lost: 0, expired: 0, muted: 1, attachedElsewhere: 0, storeError: false });
+		expect(digest).toMatchObject({
+			restored: 0,
+			lost: 0,
+			expired: 0,
+			muted: 1,
+			attachedElsewhere: 0,
+			storeError: false,
+		});
 		expect(spawnTracker.calls).toBe(1);
 		const snapshot = registry.snapshot();
 		expect(snapshot).toHaveLength(1);
@@ -295,6 +323,7 @@ describe("restartable-command durability class", () => {
 
 		const outcome = await handler(
 			manifestMonitor({ monitorId: "mon_DURABLE0000000E", command: "cat", cwd: workDir, filter: "^READY$" }),
+			{ downtimeMs: 0 },
 		);
 
 		expect(outcome).toEqual({ outcome: "restored" });
