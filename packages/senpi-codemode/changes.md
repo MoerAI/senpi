@@ -1,5 +1,27 @@
 # senpi-codemode fork changes
 
+## 2026-09-24 - Eval preview equivalence guards (#2076 follow-up)
+
+### What changed
+
+- `packages/senpi-codemode/src/tool/display-js-layout.ts`: the long-array break rewrites only the whitespace in each gap, so the parentheses of a parenthesized element (`[(a, 1), (b, 2)]`) stay.
+- `packages/senpi-codemode/src/tool/display-js.ts`: besides the character guard, the preview must re-parse to the same program as the cell (positions, raw spellings, and parenthesization flags ignored; comments compared), otherwise the cell is shown as sent.
+- `packages/senpi-codemode/src/tool/display-python-script.ts`: `same_tokens` becomes `equivalent`: a formatter result is kept only when `ast.dump` of it equals the source's and its string, number, f-string, and comment tokens have the same text. Rejects docstring normalization and `ast.unparse` output that is not valid Python (`1 .real`).
+- `packages/senpi-codemode/src/tool/display-python.ts`: a rejected formatter promise settles as "no formatted cell" instead of an unhandled rejection.
+- Tests: `test/eval-display-fixtures.ts` gains the parenthesized-element array; `test/eval-display-python.test.ts` gains a fake ruff that rewrites a docstring and the `1 .real` cell.
+
+### Why
+
+- A post-merge gate review of #2078 reproduced both cases: the character guard ignored `()` and Python whitespace inside strings, so a preview with a different meaning passed.
+
+### Why an extension could not handle it
+
+- The eval renderer belongs to this package.
+
+### Expected merge conflict zones
+
+- LOW: the display modules only.
+
 ## 2026-09-24 - Bun-laid-out JS previews and interpreter-formatted Python previews (#2076)
 
 ### What changed

@@ -34,6 +34,12 @@ function lineIndent(code: string, position: number): string {
 	return line.slice(0, line.length - line.trimStart().length);
 }
 
+// Only whitespace in a gap is rewritten: a gap between babel element nodes can also hold the
+// parentheses of a parenthesized element, and those must stay (senpi#2076).
+function gapTokens(code: string, start: number, end: number): string {
+	return code.slice(start, end).replace(/\s+/gu, "");
+}
+
 // A one-line array longer than ARRAY_BREAK_LENGTH puts each element on its own line (senpi#2050).
 // `forcedIndent` is the indentation of an element line an enclosing break just created.
 function arrayEdits(code: string, node: SourceNode, forcedIndent: string | undefined, edits: Edit[]): void {
@@ -55,17 +61,17 @@ function arrayEdits(code: string, node: SourceNode, forcedIndent: string | undef
 	}
 	const base = forcedIndent ?? lineIndent(code, node.start);
 	const inner = `${base}${INDENT}`;
-	edits.push({ start: node.start + 1, end: first.start, text: `\n${inner}` });
-	elements.slice(1).forEach((element, index) => {
-		edits.push({ start: elements[index]?.end ?? element.start, end: element.start, text: `,\n${inner}` });
+	edits.push({
+		start: node.start + 1,
+		end: first.start,
+		text: `\n${inner}${gapTokens(code, node.start + 1, first.start)}`,
 	});
-	const trailingComma = code
-		.slice(last.end, node.end - 1)
-		.trim()
-		.startsWith(",")
-		? ","
-		: "";
-	edits.push({ start: last.end, end: node.end - 1, text: `${trailingComma}\n${base}` });
+	elements.slice(1).forEach((element, index) => {
+		const start = elements[index]?.end ?? element.start;
+		const [before = "", after = ""] = gapTokens(code, start, element.start).split(",");
+		edits.push({ start, end: element.start, text: `${before},\n${inner}${after}` });
+	});
+	edits.push({ start: last.end, end: node.end - 1, text: `${gapTokens(code, last.end, node.end - 1)}\n${base}` });
 	for (const element of elements) arrayEdits(code, element, inner, edits);
 }
 

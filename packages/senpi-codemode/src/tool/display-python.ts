@@ -89,6 +89,7 @@ export function createPythonDisplay(options: PythonDisplayOptions): PythonDispla
 			if (code === undefined) return;
 			running += 1;
 			void format(code)
+				.catch(() => undefined)
 				.then((formatted) => {
 					remember(code, formatted ?? code);
 					const waiting = listeners.get(code);

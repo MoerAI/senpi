@@ -122,6 +122,10 @@ export const BUN_DISPLAY_CASES: Readonly<Record<string, { readonly code: string;
 			"];",
 		].join("\n"),
 	},
+	parenthesizedElements: {
+		code: `const m=[(log("${"a".repeat(40)}"), 1), (log("${"b".repeat(40)}"), 2)]`,
+		expected: ["const m = [", `  (log("${"a".repeat(40)}"), 1),`, `  (log("${"b".repeat(40)}"), 2)`, "];"].join("\n"),
+	},
 	commentInsideExpression: { code: `const x = foo(a, /* inner */ b); print(x)${LONG_TAIL}` },
 	unparseable: { code: `const x = (${"a + ".repeat(40)}` },
 };
