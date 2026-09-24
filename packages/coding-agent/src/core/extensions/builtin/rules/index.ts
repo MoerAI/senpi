@@ -45,6 +45,15 @@ export default function piRulesExtension(pi: ExtensionAPI): void {
 	registerSlashCommands(pi, engine);
 	registerRuleActivationRenderer(pi);
 
+	/**
+	 * Absolute paths (and realpaths) of context files pi loaded natively into the system
+	 * prompt. Rebuilt on every before_agent_start. Dynamic discovery walks to the repository
+	 * root, so single-file rules (AGENTS.md/CLAUDE.md) from levels the agent has natively
+	 * loaded must be deduplicated in the tool_result path as well — otherwise each matching
+	 * read re-injects a context file that is already in the system prompt.
+	 */
+	const nativeContextPaths = new Set<string>();
+
 	function syncConfigFromFlags(): void {
 		const disabled = pi.getFlag("pi-rules-disabled");
 		const mode = pi.getFlag("pi-rules-mode");
@@ -59,11 +68,11 @@ export default function piRulesExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		syncConfigFromFlags();
+		engine.resetSession(ctx.cwd);
 		if (engine.config.disabled) {
 			return undefined;
 		}
 
-		engine.resetSession(ctx.cwd);
 		pi.appendEntry("pi-rules.scan", { cwd: ctx.cwd, reason: event.reason });
 		return undefined;
 	});
@@ -83,9 +92,11 @@ export default function piRulesExtension(pi: ExtensionAPI): void {
 		}
 
 		const loaded = engine.loadStaticRules(ctx.cwd);
-		const nativeContextPaths = new Set(
-			event.systemPromptOptions.contextFiles?.flatMap((contextFile) => pathKeys(contextFile.path)) ?? [],
-		);
+		nativeContextPaths.clear();
+		for (const path of event.systemPromptOptions.contextFiles?.flatMap((contextFile) => pathKeys(contextFile.path)) ??
+			[]) {
+			nativeContextPaths.add(path);
+		}
 		for (const rule of loaded.rules) {
 			if (nativeContextPaths.has(rule.path) || nativeContextPaths.has(rule.realPath)) {
 				engine.markStaticInjected(rule);
@@ -134,8 +145,19 @@ export default function piRulesExtension(pi: ExtensionAPI): void {
 			pendingFingerprints.map((target) => target.targetPath),
 		);
 		engine.commitDynamicTargetFingerprints(fingerprints);
+		for (const rule of loaded.rules) {
+			if (nativeContextPaths.has(rule.path) || nativeContextPaths.has(rule.realPath)) {
+				engine.markStaticInjected(rule);
+			}
+		}
+		// DYNAMIC_CONTEXT_SCOPE already dedups every rule (single-file or glob) session-wide, which
+		// subsumes upstream's per-session single-file set.
 		const rules = loaded.rules.filter(
-			(rule) => !engine.isStaticInjected(rule) && !engine.isDynamicInjected(DYNAMIC_CONTEXT_SCOPE, rule),
+			(rule) =>
+				!nativeContextPaths.has(rule.path) &&
+				!nativeContextPaths.has(rule.realPath) &&
+				!engine.isStaticInjected(rule) &&
+				!engine.isDynamicInjected(DYNAMIC_CONTEXT_SCOPE, rule),
 		);
 		if (rules.length === 0) {
 			return undefined;
