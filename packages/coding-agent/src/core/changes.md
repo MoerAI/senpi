@@ -1,3 +1,22 @@
+## 2026-09-24 - Profile /resume session switches under TIMING (senpi#2087)
+
+### What changed
+
+- `packages/coding-agent/src/core/timings.ts`: adds the `switch` namespace to `TimingLabel`.
+- `packages/coding-agent/src/core/agent-session-runtime.ts`: `switchSession` resets the `switch` namespace and marks `beforeSwitch`, `open`, `apply`, and `rebind`; `teardownCurrent` marks `abort`, `shutdown`, and `dispose` when the reason is `resume`. Every mark is a no-op unless `TIMING=1` (brand or legacy prefix), exactly like the existing `reload` namespace.
+
+### Why
+
+- Resuming a 42.5 MB / 8,201-message session took 2-4 s from Enter to "Resumed session" with no way to see where the time went. The marks showed the switch has no single avoidable phase: the wall time is ~40 serial `session_start` handlers (~0.8 s self time) interleaved with the deferred transcript hydration (~0.65 s in 11 chunks), plus open/services/session construction/render at ~0.1 s each. `test/suite/switch-timings.test.ts` pins the runtime-owned mark sequence the same way `reload-timings.test.ts` pins the reload one.
+
+### Why an extension could not handle it
+
+- The phases are runtime internals (`SessionManager.open`, teardown, factory, rebind) that run before any extension of the new session is bound.
+
+### Expected merge conflict zones
+
+- LOW: the `TimingLabel` union in `timings.ts`; the import block, `switchSession`, and `teardownCurrent` in `agent-session-runtime.ts`.
+
 ## 2026-09-23 - Streaming tool-call events name the tool a call resolves to (senpi#2068)
 
 ### What changed
