@@ -9,9 +9,14 @@
  * everything after it. Carrying the values in a message placed before the
  * next user turn keeps the system prompt byte-stable; a new message is
  * appended only when a value changes, and earlier ones are never rewritten.
+ *
+ * On the wire the message is the leading content block of the user message it
+ * precedes (senpi#2118), so providers whose chat templates require strict
+ * user/assistant alternation never see two consecutive user messages.
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
 import type { CustomMessage } from "./messages.ts";
 
 export const ENVIRONMENT_CONTEXT_MESSAGE_TYPE = "environment-context";
@@ -82,4 +87,38 @@ export function environmentContextMessageIfChanged(
 	const latest = latestEnvironmentContext(messages);
 	if (latest?.cwd === current.cwd && latest.currentDate === current.currentDate) return undefined;
 	return createEnvironmentContextMessage(current);
+}
+
+function contentBlocks(content: string | (TextContent | ImageContent)[]): (TextContent | ImageContent)[] {
+	return typeof content === "string" ? [{ type: "text", text: content }] : content;
+}
+
+/**
+ * Merge each converted environment-context message into the user message that
+ * immediately follows it, as that message's leading content block(s). One that
+ * no user message follows stays a standalone user message. Conversion runs on
+ * the persisted entries, so a resumed session produces the same bytes and a
+ * sent user message never changes on later requests.
+ */
+export function foldEnvironmentContextIntoNextUserMessage(
+	messages: readonly Message[],
+	environmentMessages: ReadonlySet<Message>,
+): Message[] {
+	const folded: Message[] = [];
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index];
+		const next = messages[index + 1];
+		if (
+			environmentMessages.has(message) &&
+			message.role === "user" &&
+			next?.role === "user" &&
+			!environmentMessages.has(next)
+		) {
+			folded.push({ ...next, content: [...contentBlocks(message.content), ...contentBlocks(next.content)] });
+			index++;
+			continue;
+		}
+		folded.push(message);
+	}
+	return folded;
 }

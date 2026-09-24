@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- The hidden `<environment_context>` block is now the first content block of the user message it precedes instead of a separate user message, so OpenAI Chat Completions requests no longer carry two consecutive user messages that alternation-enforcing chat templates (vLLM Mistral tool template, Gemma 3) reject. Saved sessions, date or directory rollover, and resume behave as before. ([#2118](https://github.com/code-yeongyu/senpi/issues/2118))
 - The session-start prompt-cache prewarm no longer runs `before_agent_start` handlers that never opted in to previews, so an extension that consumes one-shot state there (such as delivering queued notices) no longer loses it before the first turn. While such a handler is registered the prewarm is skipped and a `prompt-cache-prewarm` entry records `phase: "skipped"` with the reason; a prompt that starts its turn while the preview is still composing cancels it. ([#2115](https://github.com/code-yeongyu/senpi/issues/2115))
 
 ### Removed

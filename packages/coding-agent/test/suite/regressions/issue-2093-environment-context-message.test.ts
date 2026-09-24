@@ -88,8 +88,9 @@ describe("senpi#2093: environment context message", () => {
 		expect(secondRequest?.systemPrompt).toBe(firstRequest?.systemPrompt);
 		expect(firstRequest?.systemPrompt).not.toContain("Current date:");
 		expect(firstRequest?.systemPrompt).not.toContain("Current working directory:");
-		expect(getMessageText(firstRequest?.messages[0])).toBe(expectedText(first, DAY_ONE));
-		expect(getMessageText(secondRequest?.messages[0])).toBe(expectedText(second, DAY_TWO));
+		// senpi#2118: the environment context is the leading block of the prompt's user message.
+		expect(getMessageText(firstRequest?.messages[0])).toBe(`${expectedText(first, DAY_ONE)}\nhi`);
+		expect(getMessageText(secondRequest?.messages[0])).toBe(`${expectedText(second, DAY_TWO)}\nhi`);
 	});
 
 	it("sends exactly one hidden user-role environment message before the first user turn", async () => {
@@ -110,8 +111,7 @@ describe("senpi#2093: environment context message", () => {
 		expect(environment?.role === "custom" && environment.display).toBe(false);
 		const secondRequest = harness.faux.getCallLog()[1]?.context;
 		expect(secondRequest?.messages[0]?.role).toBe("user");
-		expect(getMessageText(secondRequest?.messages[0])).toBe(expectedText(harness, DAY_ONE));
-		expect(getMessageText(secondRequest?.messages[1])).toBe("hi");
+		expect(getMessageText(secondRequest?.messages[0])).toBe(`${expectedText(harness, DAY_ONE)}\nhi`);
 	});
 
 	it("appends one new environment message before the next user turn after a date rollover", async () => {
@@ -133,8 +133,8 @@ describe("senpi#2093: environment context message", () => {
 		]);
 		const secondRequestMessages = harness.faux.getCallLog()[1]?.context.messages ?? [];
 		expect(secondRequestMessages.slice(0, firstRequestMessages.length)).toEqual(firstRequestMessages);
-		expect(getMessageText(secondRequestMessages[3])).toBe(expectedText(harness, DAY_TWO));
-		expect(getMessageText(secondRequestMessages[4])).toBe("tomorrow");
+		expect(secondRequestMessages).toHaveLength(3);
+		expect(getMessageText(secondRequestMessages[2])).toBe(`${expectedText(harness, DAY_TWO)}\ntomorrow`);
 	});
 
 	it("replays the persisted environment message at its original position on resume", async () => {
@@ -151,7 +151,9 @@ describe("senpi#2093: environment context message", () => {
 		harness.session.agent.state.messages = resumed;
 		await harness.session.prompt("same day");
 		expect(environmentMessages(harness.session.messages)).toHaveLength(1);
-		expect(getMessageText(harness.faux.getCallLog()[1]?.context.messages[0])).toBe(expectedText(harness, DAY_ONE));
+		expect(getMessageText(harness.faux.getCallLog()[1]?.context.messages[0])).toBe(
+			`${expectedText(harness, DAY_ONE)}\nhi`,
+		);
 	});
 
 	it("keeps the latest environment context visible to the first turn after compaction", async () => {
@@ -170,9 +172,11 @@ describe("senpi#2093: environment context message", () => {
 		const request = harness.faux.getCallLog().at(-1)?.context.messages ?? [];
 		const texts = request.map((message) => getMessageText(message));
 		const latest = expectedText(harness, DAY_TWO);
-		expect(texts.filter((text) => text === latest)).toHaveLength(1);
-		expect(texts.indexOf(latest)).toBeLessThan(texts.lastIndexOf("three"));
-		expect(texts).not.toContain(expectedText(harness, DAY_ONE));
+		expect(texts.filter((text) => text.includes(latest))).toHaveLength(1);
+		expect(texts.findIndex((text) => text.includes(latest))).toBeLessThanOrEqual(
+			texts.findLastIndex((text) => text.endsWith("three")),
+		);
+		expect(texts.some((text) => text.includes(expectedText(harness, DAY_ONE)))).toBe(false);
 		expect(latestEnvironmentContext(harness.session.messages)?.currentDate).toBe("2026-09-25");
 	});
 });
