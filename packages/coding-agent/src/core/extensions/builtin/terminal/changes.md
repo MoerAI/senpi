@@ -1,3 +1,50 @@
+## 2026-09-24 - Monitor resume durability: identity leases, grace-window restores, one digest (senpi#2108)
+
+### What changed
+
+Ownership (who may restore a session):
+
+- `manifest-lease.ts`: the lease record is v2, `{v: 2, token, pid, startedAtMs, bootAtMs, processStartedAtMs, acquiredAtMs}`. `startedAtMs` duplicates `acquiredAtMs` so a v1 reader still parses the file instead of reclaiming it. A found lease is classified `self`, `dead`, `reused` (pid alive but its OS start instant differs from the recorded one, so the pid was reused and the lease is reclaimed) or `live-foreign`. A boot mismatch alone never reclaims an alive pid. Same pid is `live-foreign` only when the lease token belongs to a generation of this process that is still running; tokens are retired the moment a shutdown starts, so an in-process `/resume` re-enters its own lease. Release compares the token, so a stale release is a no-op.
+- `lease-keeper.ts`: a generation that lost to a live foreign holder polls every 10 s with `stat` and `kill(pid, 0)` only, re-runs the acquire when the holder's file or pid is gone, and hands over exactly once.
+- `process-identity.ts`: boot instant from `os.uptime`, own start from `process.uptime` floored to the second like `ps`, and the tolerances (boot 120 s, process start 3 s). `process-start-probe.ts` reads a foreign pid's start instant cold (procfs, one `ps`, or one PowerShell query).
+- `terminal-state-gc.ts`: a bounded background sweep (at most 500 entries) of the shared terminal state dir unlinks dead and reused leases and empty manifests; unparseable files and the current session's files are kept.
+
+What the manifest records:
+
+- `terminal-manifest-model.ts`: monitors and background sessions gain an optional `runtime` `{pid, processGroupId?, startedAtMs, bootAtMs, argv}` and ephemeral monitors an optional absolute `deadlineMs`. Both are optional and unknown keys are ignored on read, so `TERMINAL_MANIFEST_VERSION` stays 1 in both directions. A malformed runtime record fails closed like every other field.
+- `runtime-session.ts` exposes `identity()` from the PTY child's pid and process group. `packages/pty` and `crates/senpi-pty` expose `pid`/`processGroupId` on session handles (additive napi getters, ABI sentinel unchanged; the darwin-arm64 prebuild was rebuilt).
+- `terminal-manifest-parse.ts`: the strict fail-closed parse, moved verbatim out of `restore.ts`.
+- Persistence is lazy: no lease and no manifest until the first durable registration or an existing manifest to restore. An empty manifest is unlinked instead of written. Print and JSON one-shot modes persist nothing (`monitor-state-dir.ts` returns no dir for them). A reload generation seeds its writer from disk (SF-2), so the first post-reload transition keeps the pre-reload entries.
+
+What a watched command sees (`tools/monitor.ts`, `tools/kill-bash.ts`, `monitor-state-dir.ts`):
+
+- `SENPI_MONITOR_ID` on every command watch. `SENPI_MONITOR_STATE_DIR` only on a persistent one: `<sessionDir>/extensions/terminal/state/<mon_id>/`, removed by `kill_bash`, kept when the process dies so the restore can hand it back. A restore re-spawn adds `SENPI_MONITOR_RESTORED=1` and `SENPI_MONITOR_DOWNTIME_MS`, an upper bound.
+- `prompt.ts`: the restore-aware base-HEAD baseline pattern (baseline file in the state dir, `git fetch -q || true` before comparing) taught inside the 3435-byte section ceiling.
+
+How entries come back:
+
+- `restore.ts` classifies every entry up front, runs the handlers concurrently and returns a result per monitor (outcome, reason, orphan handling), each background session as running (pid, identity-confirmed) or exited, and a downtime upper bound: now minus the newest of the manifest's last transition and the last transcript entry before this process started (`session-activity.ts`). An ephemeral watch with time left is re-spawned with only that time; one past its deadline is lost with that reason.
+- `orphan-reaper.ts`: before a re-spawn, a crash-orphaned watcher is killed (process group, SIGTERM then SIGKILL) only when confirmed: alive on the same boot, start within 2 s of the recorded instant, and a content marker (`SENPI_MONITOR_ID=<id>` in `/proc/<pid>/environ` on Linux, argv elsewhere). Anything unverifiable is left running and reported. win32 never kills.
+- `durable-command.ts`: the re-spawn waits `RESTORE_GRACE_MS` (2000 ms). A non-zero exit inside the window is `lost` with `exited <code> in <ms>ms: <first output line, sanitized, capped>`; a zero exit is the new outcome `completed`; a survivor is `restored` and gets one injected line through `registry.emitLine`, `restored after up to <d> offline; the command started fresh`, which isn't a budget hit.
+- `durable-file.ts` / `monitor-registry.ts`: a persistent file watch has no live deadline (SF-1); a live ephemeral file entry is re-registered with its remaining time.
+
+How the session learns about it:
+
+- `restore-digest.ts`: ONE custom message per generation, type `senpi-terminal:restore-digest`, `display: true`, content starting `Terminal state after restart`, details `{generation, outcome: decided|deferred|corrupt, downtimeMs, downtimeIsUpperBound, holder?, actionable, monitors, backgroundSessions}`, rendered through `registerMessageRenderer`. A slot keeps it pending until a model is bound and delivers exactly one decided digest. Actionable (lost, orphan, running background) goes as a `followUp` with `triggerTurn`; the rest ride the `nextTurn`. `terminal.notify: off` keeps it a user notice. No RPC event was added.
+- `restore-session.ts` and `extension-state.ts`: `session_start` takes the lease, restores on a detached promise and fills the slot. A live foreign holder shows `monitors held by pid N` in the footer, leaves a deferred note, and starts the keeper, whose takeover runs the same restore once. The digest flushes on decision, `model_select` and real input. Shutdown stops the keeper, awaits an in-flight restore, suspends and flushes the manifest, and releases the lease by token.
+
+### Why
+
+A pid alone proved nothing: a reused pid looked like a live holder, a same-pid `/resume` saw itself as foreign, and a crashed process left its watcher running while the restore spawned a second one. A heartbeat wouldn't have fixed it: it needs a timer in every session and still can't tell a stalled holder from a dead one, while boot instant plus process start instant identifies the holder without any writer. Counting a re-spawn as restored before it ran hid missing scripts, and a restore with no model bound dropped its digest.
+
+### Why an extension could not handle it
+
+The lease, manifest, restore handlers and the PTY child identity are this builtin's own state and its spawn path; the pid getters needed the native binding.
+
+### Expected merge conflict zones
+
+`extension.ts` lifecycle hooks (`session_start`, `model_select`, shutdown), `tools/monitor.ts` create path and env, `restore.ts` return shape, `terminal-manifest-model.ts` types, `packages/pty` session handle types.
+
 ## 2026-09-23 — PTY bash truncation markers are model-only text parts (senpi#2063)
 
 ### What changed
