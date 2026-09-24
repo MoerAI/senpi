@@ -430,7 +430,8 @@ describe("prompt preset resolver", () => {
 		expect(activePrompt).toContain("## Working the Task");
 		expect(activePrompt).toContain("## Verification");
 		expect(activePrompt).toContain("## Available Tools");
-		expect(activePrompt).toContain("Current working directory: /repo");
+		// senpi#2093: cwd travels in the environment-context message, not the prompt.
+		expect(activePrompt).not.toContain("Current working directory:");
 	});
 
 	it("allows settings.json to force claude-opus-4-7 regardless of model id", () => {

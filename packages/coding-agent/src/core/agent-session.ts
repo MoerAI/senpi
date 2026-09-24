@@ -130,6 +130,11 @@ import {
 	UserEditError,
 	userTextEquals,
 } from "./edited-user-message.ts";
+import {
+	type EnvironmentContext,
+	environmentContextMessageIfChanged,
+	resolveEnvironmentContext,
+} from "./environment-context.ts";
 import { areExperimentalFeaturesEnabled } from "./experimental.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
@@ -3993,8 +3998,10 @@ export class AgentSession {
 			// The user's new prompt is sent below, so do not call agent.continue() here.
 			await this._enforceCompactionBeforeProvider(this._findLastAssistantMessage(), false, "pre_prompt");
 
-			// Build messages array (custom message if any, then user message)
+			// Build messages array (environment context if it changed, user message, then custom messages)
 			messages = [];
+			const environmentContext = this._pendingEnvironmentContextMessage();
+			if (environmentContext) messages.push(environmentContext);
 
 			// Add user message
 			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
@@ -4518,7 +4525,8 @@ export class AgentSession {
 				}
 			} else if (options?.triggerTurn) {
 				finishSessionWork ??= this._sessionWorkBarrier.begin();
-				const messages: AgentMessage[] = [appMessage];
+				const environmentContext = this._pendingEnvironmentContextMessage();
+				const messages: AgentMessage[] = environmentContext ? [environmentContext, appMessage] : [appMessage];
 				const queueTriggerForLater = (): void => {
 					if (options.deliverAs === "followUp") {
 						this.agent.followUp(appMessage);
@@ -4565,6 +4573,11 @@ export class AgentSession {
 			deferredTurnClaim?.resolve("finished-without-start");
 			finishSessionWork?.();
 		}
+	}
+
+	/** Environment context a new turn must carry: set when cwd or date differs from the latest one visible (senpi#2093). */
+	private _pendingEnvironmentContextMessage(): CustomMessage<EnvironmentContext> | undefined {
+		return environmentContextMessageIfChanged(this.agent.state.messages, resolveEnvironmentContext(this._cwd));
 	}
 
 	private _appendCustomMessage(appMessage: CustomMessage): void {
@@ -6341,6 +6354,23 @@ export class AgentSession {
 			}
 
 			const sessionContext = this.sessionManager.buildSessionContext();
+			// A summary replaces the entry that carried the environment context; re-append it so the
+			// continued context still names the cwd and date (senpi#2093).
+			const environmentContext = environmentContextMessageIfChanged(
+				sessionContext.messages,
+				resolveEnvironmentContext(this._cwd),
+			);
+			if (environmentContext) {
+				this._emitEntryAppended(
+					this.sessionManager.appendCustomMessageEntry(
+						environmentContext.customType,
+						environmentContext.content,
+						environmentContext.display,
+						environmentContext.details,
+					),
+				);
+				sessionContext.messages.push(environmentContext);
+			}
 			const currentAgentMessages = this.agent.state.messages;
 			const hasUnchangedPrefix = agentMessagesAtStart.every(
 				(message, index) => currentAgentMessages[index] === message,

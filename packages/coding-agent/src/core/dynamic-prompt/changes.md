@@ -1,5 +1,23 @@
 # changes.md — dynamic-prompt
 
+## Date and cwd footer removed from the dynamic prompt (2026-09-24, senpi#2093)
+
+### What changed
+
+- `packages/coding-agent/src/core/dynamic-prompt/build.ts`: `buildDynamicSystemPrompt()` no longer appends `Current date:` / `Current working directory:`; the workstation section now closes the prompt. `BuildDynamicSystemPromptOptions.cwd` stays (callers and extensions read it from `_baseSystemPromptOptions`) but is not rendered.
+
+### Why
+
+The footer made the prompt differ per day and per directory, so every prefix cache missed the whole system prompt and everything appended after it. The values now reach the model as an append-only `environment-context` message (`core/environment-context.ts`, see `core/changes.md`).
+
+### Why an extension could not handle it
+
+The footer was emitted by the core assembler every preset calls; an extension can only append after it, not remove it.
+
+### Expected merge conflict zones
+
+- `build.ts` tail after the workstation push, against prompt-section changes.
+
 ## claude-sdk-oauth provider id renamed to anthropic-subscription in the dynamic-prompt comment (2026-09-22)
 
 ### What changed
