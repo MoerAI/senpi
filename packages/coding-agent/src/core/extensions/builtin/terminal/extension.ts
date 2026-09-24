@@ -16,7 +16,7 @@ import { acquireTerminalLease, currentLeaseToken, releaseTerminalLease } from ".
 import { MonitorNotifier } from "./monitor-notify.ts";
 import { MONITOR_STATUS_KEY } from "./monitor-status.ts";
 import { MonitorStatusTicker } from "./monitor-status-ticker.ts";
-import { getTerminalNotificationDelivery, TerminalNotifier } from "./notify.ts";
+import { getTerminalNotificationDelivery, NON_INTERACTIVE_MODES, TerminalNotifier } from "./notify.ts";
 import { buildTerminalPromptSection } from "./prompt.ts";
 import {
 	type RestoreDigest,
@@ -70,9 +70,11 @@ function sessionKeyOf(ctx: ExtensionContext | undefined): string | undefined {
 
 /**
  * Per-session persistence dir for the terminal lease + manifest; undefined when the context
- * carries no durable session dir (SDK/in-memory sessions must not persist terminal state).
+ * carries no durable session dir (SDK/in-memory sessions must not persist terminal state) or
+ * runs a one-shot `print`/`json` turn, which has no later generation to restore into.
  */
 function terminalStateDir(ctx: ExtensionContext | undefined): string | undefined {
+	if (ctx !== undefined && NON_INTERACTIVE_MODES.has(ctx.mode)) return undefined;
 	const sessionDir = ctx?.sessionManager?.getSessionDir?.();
 	if (sessionDir === undefined || sessionDir.length === 0 || !isAbsolute(sessionDir)) return undefined;
 	return join(sessionDir, "extensions", "terminal");
