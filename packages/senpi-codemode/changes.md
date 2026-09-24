@@ -1,5 +1,26 @@
 # senpi-codemode fork changes
 
+## 2026-09-24 - Bun-laid-out JS eval previews (#2076)
+
+### What changed
+
+- `packages/senpi-codemode/src/tool/display-code.ts`: `displayCode(code, language)` lays out a dense JavaScript cell (a line over 100 characters) only when the renderer runs on Bun (`process.versions.bun` plus a constructible `Bun.Transpiler`); on Node, and for other languages, the cell is shown as sent. The #2050 Babel line breaker is removed.
+- `packages/senpi-codemode/src/tool/display-js.ts`, `display-js-mask.ts`, `display-js-layout.ts`, `display-js-ast.ts` (new): every literal, template, tagged template, identifier (one placeholder per spelling so labels resolve), private name, and directive is swapped for a placeholder, statement-level comments become placeholder statements, `Bun.Transpiler` lays the masked cell out (unwrapped for module syntax, inside an async function for top-level `return`), and the source text is substituted back with exact occurrence counts. Trailing line comments return to their statement's line, `for` headers print as `for (a; b; c)` / `for (;;)`, and one-line arrays over 60 characters still break one element per line. A comment inside an expression, a Bun parse failure, a count mismatch, or any non-layout character difference shows the cell as sent.
+- `packages/senpi-codemode/AGENTS.md`: the "No Bun-only APIs" invariant now allows them only behind runtime detection with a correct Node path.
+- Tests: `test/eval-display-code.test.ts` (Node: cells shown as sent), `test/eval-display-code-bun.test.ts` (spawns `bun` for the layout and fidelity battery plus the rendered frame), fixtures in `test/eval-display-fixtures.ts`.
+
+### Why
+
+- The #2050 preview only split lines, so dense cells kept minified spacing. The renderer runs on Bun in the compiled distribution, and Bun ships a printer; a raw `Bun.Transpiler` round trip is not faithful (it rewrites `"a\nb"` into a multi-line template, `0xff` into `255`, emoji into escapes, folds `typeof undefined`, and drops comments and directives), hence the masking.
+
+### Why an extension could not handle it
+
+- The eval renderer belongs to this package.
+
+### Expected merge conflict zones
+
+- LOW: `packages/senpi-codemode/src/tool/display-code.ts` is rewritten; the `display-js*.ts` modules are new.
+
 ## 2026-09-23 - Readable preview for dense JS eval cells (#2050)
 
 ### What changed
