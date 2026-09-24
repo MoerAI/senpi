@@ -20,6 +20,26 @@ Usage is parsed inside the OpenAI Completions, Responses, and OpenRouter images 
 - `packages/ai/src/api/openai-completions.ts`: `parseChunkUsage` and its `prompt_tokens_details` type.
 - `packages/ai/src/api/openrouter-images.ts`: `parseUsage` and its `prompt_tokens_details` type.
 
+## 2026-09-24 - Omit session prompt_cache_key on GPT-5.6+ OpenAI API (senpi#2097)
+
+### What changed
+
+- `packages/ai/src/api/openai-responses.ts`: `buildParams` omits `prompt_cache_key` for native `api.openai.com` GPT-5.6+ models (`compat.supportsExplicitPromptCacheMode` or `cost.cacheWrite > 0`). Pre-5.6 models still send the clamped session id. `cacheRetention: "none"` still omits it.
+- `packages/ai/src/api/openai-completions.ts`: the same omit on `api.openai.com` when `cost.cacheWrite > 0`. Other send conditions (long retention, `supportsPromptCacheKey`) are unchanged.
+
+### Why
+
+On GPT-5.6 and later, OpenAI treats `prompt_cache_key` as cache-accounting only. A per-session value returns `prompt_cache_key_changed` and a full miss even when the prefix is identical, so forks and task children cannot reuse the parent's cached prefix. Live probes on gpt-6-luna showed key-less requests share the prefix across sessions.
+
+### Why an extension could not handle it
+
+The key is written inside the provider request builders (`packages/ai/src/api/openai-responses.ts`, `packages/ai/src/api/openai-completions.ts`) before any extension observes the payload.
+
+### Expected merge conflict zones
+
+- `packages/ai/src/api/openai-responses.ts`: the `prompt_cache_key` field in `buildParams`.
+- `packages/ai/src/api/openai-completions.ts`: the `prompt_cache_key` ternary in `buildParams`.
+
 ## 2026-09-23 - Cursor variant grouping derived from the live catalog (senpi#2038)
 
 ### What changed
