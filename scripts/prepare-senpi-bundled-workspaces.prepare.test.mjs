@@ -42,7 +42,7 @@ const BUNDLED_WORKSPACE_NAMES = [
 	"@earendil-works/pi-tui",
 	"@code-yeongyu/senpi-codemode",
 ];
-// Staged beside the others although coding-agent does not declare them yet; staging adds their exact edges.
+// Outside the publish set: staging leaves them out unless something shipped reaches them (senpi#2141).
 const DESKTOP_WORKSPACES = ["desktop-protocol", "desktop-prelude", "desktop-service", "desktop-tool", "desktop-engine"];
 const DESKTOP_WORKSPACE_NAMES = DESKTOP_WORKSPACES.map((workspace) => `@code-yeongyu/senpi-${workspace}`);
 const VENDORED_WORKSPACE_NAMES = ["@earendil-works/pi-client", "@earendil-works/pi-protocol"];
@@ -173,23 +173,42 @@ describe("prepareSenpiBundledWorkspaces", () => {
 		);
 	});
 
-	it("stages the desktop engine's host executable beside its bundled package", () => {
-		// Given
-		tempDir = mkdtempSync(join(tmpdir(), "senpi-bundle-desktop-engine-"));
+	it("leaves the never-published desktop workspaces out of the staged tree when nothing shipped reaches them (senpi#2141)", () => {
+		// Given: every workspace is built, and a stale desktop copy is left over from an earlier staging
+		tempDir = mkdtempSync(join(tmpdir(), "senpi-bundle-desktop-left-out-"));
 		writeShrinkwrap(tempDir, { "": { dependencies: {} } });
 		writeCodingAgentManifest(tempDir);
 		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "pty", "telemetry", "tui", "senpi-codemode", ...DESKTOP_WORKSPACES]) {
 			writeBundledWorkspace(tempDir, workspace);
 		}
-		const target = nativePrebuildTarget();
-		const executable = target.startsWith("win32-") ? "senpi-desktop-engine.exe" : "senpi-desktop-engine";
+		const stagedDesktopRoot = join(tempDir, "packages", "coding-agent", "node_modules", "@code-yeongyu");
+		writeJson(join(stagedDesktopRoot, "senpi-desktop-engine", "package.json"), { name: DESKTOP_WORKSPACE_NAMES[4], version: "stale" });
 
 		// When
 		prepareSenpiBundledWorkspaces(tempDir);
 
 		// Then
-		const stagedEngine = join(tempDir, "packages", "coding-agent", "node_modules", "@code-yeongyu", "senpi-desktop-engine");
-		assert.equal(existsSync(join(stagedEngine, "native", "prebuilds", target, executable)), true);
+		for (const workspace of DESKTOP_WORKSPACES) {
+			assert.equal(existsSync(join(stagedDesktopRoot, `senpi-${workspace}`)), false, workspace);
+		}
+		const manifest = JSON.parse(readFileSync(join(tempDir, "packages", "coding-agent", "package.json"), "utf8"));
+		assert.deepEqual(Object.keys(manifest.dependencies).filter((name) => name.includes("desktop")), []);
+	});
+
+	it("fails staging when the built dist imports a never-published desktop package (senpi#2141)", () => {
+		// Given: the shipped bundle keeps the desktop engine external
+		tempDir = mkdtempSync(join(tmpdir(), "senpi-bundle-desktop-reached-"));
+		writeShrinkwrap(tempDir, { "": { dependencies: {} } });
+		writeCodingAgentManifest(tempDir);
+		for (const workspace of ["chord", "agent", "ai", "client", "protocol", "pty", "telemetry", "tui", "senpi-codemode", ...DESKTOP_WORKSPACES]) {
+			writeBundledWorkspace(tempDir, workspace);
+		}
+		const bundleFile = join(tempDir, "packages", "coding-agent", "dist", "bundle", "desktop.js");
+		mkdirSync(dirname(bundleFile), { recursive: true });
+		writeFileSync(bundleFile, 'const engine = await import("@code-yeongyu/senpi-desktop-engine");\n');
+
+		// When / Then
+		assert.throws(() => prepareSenpiBundledWorkspaces(tempDir), /never published: @code-yeongyu\/senpi-desktop-engine \(imported by/);
 	});
 
 	it("bundles pty with a pipe-fallback warning when the host prebuild is missing", () => {
@@ -324,14 +343,12 @@ describe("prepareSenpiBundledWorkspaces", () => {
 		// protocol are ordinary vendored files with relative declaration imports, so
 		// Bun never sees registry edges for their unpublished upstream package names.
 		const manifest = JSON.parse(readFileSync(join(tempDir, "packages", "coding-agent", "package.json"), "utf8"));
-		const expectedBundle = [...BUNDLED_WORKSPACE_NAMES, ...DESKTOP_WORKSPACE_NAMES, "cross-spawn", "which"].sort((a, b) => a.localeCompare(b));
+		const expectedBundle = [...BUNDLED_WORKSPACE_NAMES, "cross-spawn", "which"].sort((a, b) => a.localeCompare(b));
 		assert.deepEqual(manifest.bundleDependencies, expectedBundle);
 		assert.deepEqual(manifest.bundledDependencies, expectedBundle);
 		assert.deepEqual(manifest.files, ["dist", "README.md", "vendor"]);
 		assert.deepEqual(manifest.dependencies, {
 			"@code-yeongyu/senpi-codemode": "2026.7.22",
-			// Unaliased desktop packages keep their exact staged version.
-			...Object.fromEntries(DESKTOP_WORKSPACE_NAMES.map((name) => [name, "1.0.0"])),
 			// Chord keeps upstream's own release line, so its edge stays a plain range instead of a
 			// fork alias; the packed copy still ships (issue #1632).
 			"@earendil-works/chord": "^2026.7.22",

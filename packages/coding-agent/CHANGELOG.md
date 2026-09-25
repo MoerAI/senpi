@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- `bun add @code-yeongyu/senpi` works again. 2026.9.25 declared five unpublished desktop packages as dependencies, which npm installs from the bundle but bun looks up on the registry and fails; the package no longer ships them until a released feature uses them. ([#2141](https://github.com/code-yeongyu/senpi/issues/2141))
+
 ### Removed
 
 ## [2026.9.25] - 2026-09-25
