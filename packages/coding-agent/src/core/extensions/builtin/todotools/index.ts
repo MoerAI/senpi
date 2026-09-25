@@ -102,9 +102,9 @@ export default function todotoolsExtension(pi: ExtensionAPI): void {
 			const setting = readFirstTurnPlan(ctx);
 			const armed = shouldArmFirstTurn({
 				preview: event.preview,
+				trigger: event.trigger,
 				prompt: event.prompt,
 				branchEntries,
-				phases: getLatestTodoStateFromBranchEntries(branchEntries).phases,
 				todoActive: pi.getActiveTools().includes("todo"),
 				setting,
 				mode: ctx.mode,

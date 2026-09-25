@@ -1,5 +1,24 @@
 # todotools Fork Tracker
 
+## 2026-09-25 - The first-turn opener arms on the user's first request, never on an extension-triggered turn (senpi#2137)
+
+### What changed
+
+- `first-turn.ts` `shouldArmFirstTurn`: `FirstTurnGateInput` gains `trigger` and loses `phases`; the gate refuses any `trigger !== "prompt"` and no longer refuses an existing list (before the first user message a list can only come from an extension-triggered turn). `index.ts` passes `event.trigger`.
+- `test/suite/todo-first-turn.test.ts`: the gate table covers an extension-triggered turn; a real-session case triggers a hidden turn that inits its own list before the user speaks, and the user's first request still gets the reminder (RED with the trigger clause removed).
+
+### Why
+
+- On first launch omo's onboarding bootstrap triggers a turn before the user says anything. The opener armed on it (`Ask: (no user request captured)`), the model planned the onboarding, and the user's real multi-step request then failed the empty-list clause and got no opener.
+
+### Why an extension could not handle it
+
+- The gate is this builtin's own logic; it needed the host's `trigger` field (`extensions/changes.md`).
+
+### Expected merge conflict zones
+
+- `shouldArmFirstTurn` and its input type; the `before_agent_start` handler in `index.ts`.
+
 ## 2026-09-25 - The all-closed cue names where other reports go (senpi#2133)
 
 ### What changed

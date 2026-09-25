@@ -4614,6 +4614,7 @@ export class AgentSession {
 						undefined,
 						this._baseSystemPrompt,
 						this._baseSystemPromptOptions,
+						{ trigger: "extension" },
 					);
 					if (userAbortGeneration !== this._userAbortGeneration) {
 						queueTriggerForLater();

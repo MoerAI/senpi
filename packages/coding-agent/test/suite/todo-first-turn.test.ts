@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	FIRST_TURN_CUSTOM_TYPE,
@@ -42,9 +42,9 @@ const USER_ENTRY: SessionEntry = {
 
 const ARMED: FirstTurnGateInput = {
 	preview: false,
+	trigger: "prompt",
 	prompt: "add retries to fetchUser",
 	branchEntries: [],
-	phases: [],
 	todoActive: true,
 	setting: "force",
 	mode: "tui",
@@ -59,11 +59,7 @@ describe("shouldArmFirstTurn", () => {
 		["skips an exclamation behind a closing quote and paren", { prompt: 'ship it!")  ' }, false],
 		["skips a blank prompt", { prompt: "   " }, false],
 		["skips a branch with a prior user message", { branchEntries: [USER_ENTRY] }, false],
-		[
-			"skips an existing todo list",
-			{ phases: [{ name: "Build", tasks: [{ content: "Wire it", status: "pending" }] }] },
-			false,
-		],
+		["skips an extension-triggered turn", { trigger: "extension" }, false],
 		["skips an inactive todo tool", { todoActive: false }, false],
 		["skips a preview", { preview: true }, false],
 		["skips the off setting", { setting: "off" }, false],
@@ -149,7 +145,11 @@ function fauxPi(options: { setting?: string } = {}) {
 		return result;
 	};
 	const startTurn = () =>
-		emit("before_agent_start", { prompt: "add retries to fetchUser", systemPrompt: "base" }) as Promise<{
+		emit("before_agent_start", {
+			prompt: "add retries to fetchUser",
+			trigger: "prompt",
+			systemPrompt: "base",
+		}) as Promise<{
 			message?: { customType: string };
 		}>;
 	const providerRequest = (payload: Record<string, unknown>, requestModel: Model<Api> = model("claude-opus-5")) =>
@@ -274,6 +274,32 @@ describe("first-turn reminder through the real AgentSession", () => {
 		const entries = firstTurnEntries(harness);
 		expect(entries).toHaveLength(1);
 		expect(entries[0]?.type === "custom_message" ? entries[0].display : undefined).toBe(false);
+	}, 20_000);
+
+	it("arms on the user's first request after an extension-triggered turn planned its own list (senpi#2137)", async () => {
+		// given: an extension triggers a hidden turn before the user speaks, and that turn inits a list
+		const harness = await createTuiHarness();
+		harness.setResponses([
+			fauxAssistantMessage(
+				[fauxToolCall("todo", { op: "init", list: [{ phase: "Onboarding", items: ["Greet the user"] }] })],
+				{
+					stopReason: "toolUse",
+				},
+			),
+			fauxAssistantMessage("welcome"),
+			fauxAssistantMessage("on it"),
+		]);
+		await harness.session.sendCustomMessage(
+			{ customType: "test:bootstrap", content: "Greet the user.", display: false },
+			{ triggerTurn: true },
+		);
+		expect(firstTurnEntries(harness)).toHaveLength(0);
+
+		// when
+		await harness.session.prompt("add retries to fetchUser");
+
+		// then
+		expect(firstTurnEntries(harness)).toHaveLength(1);
 	}, 20_000);
 
 	it("does not arm for a question", async () => {
