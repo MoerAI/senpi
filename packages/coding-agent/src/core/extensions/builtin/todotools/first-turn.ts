@@ -3,7 +3,6 @@ import { getAnthropicCompat } from "@earendil-works/pi-ai/utils/prompt-cache-ttl
 import type { SessionEntry } from "../../../session-manager.ts";
 import type { TodoFirstTurnPlan } from "../../../settings-shapes.ts";
 import type { ExtensionMode } from "../../types.ts";
-import type { TodoPhase } from "./todo-types.ts";
 
 export const FIRST_TURN_CUSTOM_TYPE = "senpi.todo-first-turn";
 
@@ -18,27 +17,28 @@ const TRAILING_CLOSERS = /[\s"'`\u2018\u2019\u201C\u201D)\]}]+$/u;
 
 export type FirstTurnGateInput = {
 	preview: boolean | undefined;
+	trigger: "prompt" | "extension";
 	prompt: string;
 	branchEntries: readonly SessionEntry[];
-	phases: readonly TodoPhase[];
 	todoActive: boolean;
 	setting: TodoFirstTurnPlan;
 	mode: ExtensionMode;
 };
 
 /**
- * Arms the first-turn plan opener only for a session's first real request that asks for work:
- * never in a preview, never once any user message is on the branch (`before_agent_start` fires
- * before the prompt is persisted), never over an existing list, never for a question or an
- * exclamation, and never in print/json runs.
+ * Arms the first-turn plan opener only for a session's first user-authored request that asks for
+ * work: never in a preview, never on a turn an extension triggered (senpi#2137), never once any
+ * user message is on the branch (`before_agent_start` fires before the prompt is persisted), never
+ * for a question or an exclamation, and never in print/json runs. Before the first user message a
+ * list can only come from an extension-triggered turn, so an existing list does not block the
+ * user's first request.
  */
 export function shouldArmFirstTurn(input: FirstTurnGateInput): boolean {
-	if (input.preview || input.setting === "off" || !input.todoActive) return false;
+	if (input.preview || input.trigger !== "prompt" || input.setting === "off" || !input.todoActive) return false;
 	if (NON_INTERACTIVE_MODES.has(input.mode)) return false;
 	const request = input.prompt.trim().replace(TRAILING_CLOSERS, "");
 	if (request === "" || /[?!\uFF1F\uFF01]$/u.test(request)) return false;
-	if (input.branchEntries.some((entry) => entry.type === "message" && entry.message.role === "user")) return false;
-	return input.phases.every((phase) => phase.tasks.length === 0);
+	return !input.branchEntries.some((entry) => entry.type === "message" && entry.message.role === "user");
 }
 
 /**

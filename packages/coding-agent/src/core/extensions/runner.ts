@@ -1856,7 +1856,11 @@ export class ExtensionRunner {
 		images: ImageContent[] | undefined,
 		systemPrompt: string,
 		systemPromptOptions: BuildSystemPromptOptions,
-		options: { readonly preview?: boolean; readonly signal?: AbortSignal } = {},
+		options: {
+			readonly preview?: boolean;
+			readonly signal?: AbortSignal;
+			readonly trigger?: BeforeAgentStartEvent["trigger"];
+		} = {},
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
 		let currentSystemPrompt = systemPrompt;
 		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
@@ -1884,6 +1888,7 @@ export class ExtensionRunner {
 					const event: BeforeAgentStartEvent = {
 						type: "before_agent_start",
 						prompt,
+						trigger: options.trigger ?? "prompt",
 						images,
 						systemPrompt: currentSystemPrompt,
 						systemPromptOptions,

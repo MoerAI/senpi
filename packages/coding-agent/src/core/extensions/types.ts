@@ -1180,6 +1180,12 @@ export interface BeforeAgentStartEvent {
 	type: "before_agent_start";
 	/** The raw user prompt text (after expansion). */
 	prompt: string;
+	/**
+	 * Who started this turn: `"prompt"` for a user prompt (and a preview of one), `"extension"` for a
+	 * turn an extension triggered with `sendMessage(..., { triggerTurn: true })`, whose `prompt` is
+	 * that custom message's text.
+	 */
+	trigger: "prompt" | "extension";
 	/** Images attached to the user prompt, if any. */
 	images?: ImageContent[];
 	/** The fully assembled system prompt string. */
