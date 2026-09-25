@@ -1,3 +1,25 @@
+## 2026-09-25 - The published tarball leaves out never-published workspaces nothing shipped reaches (senpi#2141)
+
+### What changed
+
+- `scripts/registry-packages.mjs`: `isUnpublishedForkPackage(name)` is true for a `@code-yeongyu/` package outside `registryPackageNames` (the publish set), which the registry can never serve.
+- `scripts/unpublished-bundled-workspaces.mjs` (new): `unpublishedBundledWorkspaces(repoRoot, workspaces)` returns those bundled workspaces, measured against the BUILT `packages/coding-agent/dist` (any quoted specifier of the package in a shipped `.js`/`.mjs`/`.cjs`) and against the manifests that ship (the CLI's and every published bundled workspace's `dependencies`/`optionalDependencies`/`peerDependencies`). If anything shipped reaches one, it throws and names the importer or declarer, so a release can never publish an uninstallable CLI.
+- `scripts/prepare-senpi-bundled-workspaces.mjs`: `prepareSenpiBundledWorkspaces` skips those workspaces and removes any stale staged copy, so `stagePublishManifest` never declares them. `assertSenpiPackedWorkspaceFiles` skips their required-file checks and throws when the packed manifest's runtime or bundled dependencies name one.
+- Tests: `unpublished-bundled-workspaces.test.mjs` (the rule, an import from `dist/bundle`, declarations by the CLI and by a published workspace); `prepare-senpi-bundled-workspaces-pack.test.mjs` replaces the "desktop engine loader required" case with the guard and the leave-out case.
+
+### Why
+
+`@code-yeongyu/senpi@2026.9.25` declared the five private desktop workspaces (`2026.9.24-2`) as dependencies because `stagePublishManifest` declares every bundled package. npm installs from the bundle, but bun resolves every declared dependency from the registry even when it is bundled (as in #1632), so `bun add` failed and omo could not adopt the release. Nothing in the shipped `dist/` imports them yet (#2128 PR-0 has no user-visible tool). When the chain ships the engine as an external native sidecar, it joins the publish set and this guard is what forces that step.
+
+### Why an extension could not handle it
+
+This is release tooling.
+
+### Expected merge conflict zones
+
+- The workspace loop of `prepareSenpiBundledWorkspaces` and the check loop of `assertSenpiPackedWorkspaceFiles`.
+- `registryPackageNames` in `scripts/registry-packages.mjs`, when a desktop package joins the publish set.
+
 ## 2026-09-24 - The five desktop packages join every enumerating build and publish script (senpi#2128)
 
 ### What changed

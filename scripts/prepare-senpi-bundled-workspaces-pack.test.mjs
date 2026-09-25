@@ -387,14 +387,27 @@ describe("assertSenpiPackedWorkspaceFiles", () => {
 		]);
 	});
 
-	it("rejects senpi package metadata that omits the bundled desktop engine loader", () => {
-		// Given: every bundled file except the engine package's native loader.
-		const engineLoader = "package/node_modules/@code-yeongyu/senpi-desktop-engine/native/index.js";
+	it("rejects a packed manifest that declares a never-published fork package (senpi#2141)", () => {
+		// Given: the desktop workspaces are outside the publish set, so bun cannot resolve them.
+		const packed = { files: [{ path: "package/dist/cli.js" }, ...desktopFiles()] };
+
+		// When / Then
+		assert.throws(
+			() =>
+				assertSenpiPackedWorkspaceFiles(packed, {
+					runtimeDependencies: ["cross-spawn", DESKTOP_ENGINE_PACKAGE],
+					bundledDependencies: ["cross-spawn", DESKTOP_ENGINE_PACKAGE],
+				}),
+			/declares packages that are never published.*@code-yeongyu\/senpi-desktop-engine/,
+		);
+	});
+
+	it("does not require the files of never-published desktop workspaces the tarball leaves out", () => {
+		// Given: every bundled file except the desktop workspaces, which are outside the publish set.
 		const packed = {
 			files: [
 				{ path: "package/dist/cli.js" },
 				...clientProtocolFiles(),
-				...desktopFiles().filter(({ path }) => path !== engineLoader),
 				...telemetryFiles(),
 				...chordFiles(),
 				...agentCoreFiles(),
@@ -416,10 +429,7 @@ describe("assertSenpiPackedWorkspaceFiles", () => {
 		const originalWarn = console.warn;
 		console.warn = () => {};
 		try {
-			assert.throws(
-				() => assertSenpiPackedWorkspaceFiles(packed),
-				/missing bundled workspace files: package\/node_modules\/@code-yeongyu\/senpi-desktop-engine\/native\/index\.js or/,
-			);
+			assert.doesNotThrow(() => assertSenpiPackedWorkspaceFiles(packed));
 		} finally {
 			console.warn = originalWarn;
 		}

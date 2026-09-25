@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { rewriteOwnedRegistryAliases, stagePublishManifest } from "./prepare-senpi-publish-manifest.mjs";
 import { stagePublishDependencies } from "./prepare-senpi-publish-dependencies.mjs";
 import { pinSenpiPeerDependency } from "./publish-manifest.mjs";
+import { isUnpublishedForkPackage } from "./registry-packages.mjs";
+import { unpublishedBundledWorkspaces } from "./unpublished-bundled-workspaces.mjs";
 export {
 	bundlablePublishPackageNames,
 	isPlatformConstrainedPackage,
@@ -388,6 +390,14 @@ export function assertSenpiPackedWorkspaceFiles(packed, options = {}) {
 	// Every dependency selected by the staged bundle manifest must be vendored in the
 	// tarball. Platform-specific optional dependencies intentionally stay outside this
 	// list so npm can resolve the matching native package on the consumer machine.
+	const declaredUnpublished = [...(options.bundledDependencies ?? []), ...(options.runtimeDependencies ?? [])].filter(
+		isUnpublishedForkPackage,
+	);
+	if (declaredUnpublished.length > 0) {
+		throw new Error(
+			`senpi package manifest declares packages that are never published, which bun cannot install (senpi#2141): ${[...new Set(declaredUnpublished)].join(", ")}`,
+		);
+	}
 	const missingRuntimeDependencies = [];
 	for (const dependencyName of options.bundledDependencies ?? options.runtimeDependencies ?? []) {
 		const packageJsonPath = `node_modules/${dependencyName}/package.json`;
@@ -414,6 +424,7 @@ export function assertSenpiPackedWorkspaceFiles(packed, options = {}) {
 	const missing = [];
 
 	for (const { packageName, requiredFiles, prebuildFiles } of bundledWorkspacePackageChecks(nativeTargets)) {
+		if (isUnpublishedForkPackage(packageName)) continue;
 		const packageRoot = `package/node_modules/${packageName}`;
 		const dryRunPackageRoot = `node_modules/${packageName}`;
 		for (const requiredFile of requiredFiles) {
@@ -455,8 +466,13 @@ export function assertSenpiPackedWorkspaceFiles(packed, options = {}) {
 export function prepareSenpiBundledWorkspaces(repoRoot = root) {
 	const publishDependencies = copyPublishDependencies(repoRoot);
 	const codingAgentNodeModules = join(repoRoot, "packages/coding-agent/node_modules");
+	const unpublished = unpublishedBundledWorkspaces(repoRoot, bundledWorkspaces);
 
 	for (const workspace of bundledWorkspaces) {
+		if (unpublished.has(workspace.packageName)) {
+			rmSync(join(codingAgentNodeModules, ...workspace.targetParts), { recursive: true, force: true });
+			continue;
+		}
 		const sourceRoot = join(repoRoot, workspace.source);
 		const distPath = join(sourceRoot, "dist");
 		if (!workspace.sourceOnly && !existsSync(distPath)) {
