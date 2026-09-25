@@ -1,5 +1,23 @@
 # todotools Fork Tracker
 
+## 2026-09-25 - The all-closed cue names where other reports go (senpi#2133)
+
+### What changed
+
+- `todo-format.ts` `HANDOFF_CUES["all-closed"]`: `... the final message is the Ask / For you / Now: none / Next: none block.` -> `... Your final message is the Ask / For you / Now: none / Next: none block; any other report an instruction asks for (a self-review, a checklist, a summary) goes inside For you.` The list-created and phase-closed cues are unchanged.
+
+### Why
+
+- On the released 2026.9.24-3, grok-4.7 closed a finished task with a project rule's self-review instead of the handoff block when that rule was active (a rule injected on `.ts` writes asks for an out-loud review "before declaring done"). Two instructions claimed the final message and the cue did not say where the other one goes (category B). Naming the slot keeps both: measured 3/3 grok-4.7 runs ending in the block with that rule active, one of them carrying the self-review inside For you (was 4 of 10 runs without the block).
+
+### Why an extension could not handle it
+
+- The cue is the todo builtin's own result text.
+
+### Expected merge conflict zones
+
+- `HANDOFF_CUES` in `todo-format.ts`. Fork-only file.
+
 ## 2026-09-25 - Todo results cue the handoff block at handoff moments (senpi#2121 real-surface QA)
 
 ### What changed

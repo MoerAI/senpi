@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- When every todo closes, the cue in the todo result now says that any other report an instruction asks for (a self-review, a checklist) goes inside the handoff block's For you slot, so a project rule that asks for a report no longer replaces the block. ([#2133](https://github.com/code-yeongyu/senpi/issues/2133))
+
 ### Removed
 
 ## [2026.9.24-3] - 2026-09-24
