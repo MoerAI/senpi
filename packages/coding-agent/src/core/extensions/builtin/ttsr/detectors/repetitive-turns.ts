@@ -11,9 +11,13 @@ const WORD_PATTERN = /[\p{L}\p{N}#]+/gu;
 const DIGIT_RUN_PATTERN = /\d[\d.,:/-]*/g;
 const HEX_LIKE_PATTERN = /\b[0-9a-f]{7,}\b/gi;
 const SAMPLE_LENGTH = 80;
+// The handoff contract restates the user's request verbatim after `Ask:` in every block, so that clause is
+// identical by design across turns; it ends where the block's own status starts (`For you:` / `You need:` / `Now:`).
+const HANDOFF_ASK_CLAUSE = /\bAsk:[\s\S]*?(?=\b(?:For you|You need|Now):|$)/g;
 
 export function normalizeTurnText(text: string): string {
 	return text
+		.replace(HANDOFF_ASK_CLAUSE, " ")
 		.toLowerCase()
 		.replace(HEX_LIKE_PATTERN, "#")
 		.replace(DIGIT_RUN_PATTERN, "#")
