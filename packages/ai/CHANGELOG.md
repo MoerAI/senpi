@@ -12,6 +12,115 @@
 
 ### Removed
 
+## [2026.9.25] - 2026-09-25
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.24-3] - 2026-09-24
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- A forced `tool_choice` refused because extended thinking is on now falls back to a request without `tool_choice` instead of failing the turn: Anthropic Messages "Thinking may not be enabled when tool_choice forces tool use" and the OpenAI-compatible gateway wording for always-thinking Claude models ("tool_choice cannot force tool use") join the classifier behind the one-shot retry. ([#2121](https://github.com/code-yeongyu/senpi/issues/2121))
+- Replayed `reasoning_details` entries are now built from the OpenAI Chat Completions input schema instead of echoing the stored object, so a key the schema does not define — a streaming ordinal, a delta id, any field a provider adds later — can no longer reach a provider and wedge the conversation. Each entry carries `type`, its optional `id` and `format`, and exactly the payload its type defines (`text` plus optional `signature`, `summary`, or `data`); `null` survives where the schema allows it, array order still carries the sequence, and stored signatures are untouched, so sessions already on disk recover with no migration. This generalizes the `index`-only fix from #2122. ([#2125](https://github.com/code-yeongyu/senpi/issues/2125))
+- Replayed `reasoning_details` no longer carry the streaming-assembly `index` field on OpenAI Chat Completions requests. A gateway that rejects an input reasoning entry holding `index` ("the reasoning_details at position N entry 0 must not contain streaming index") wedged the conversation permanently, because the merged array is persisted in the assistant block and replayed on every later request. The field is stripped when the request is built, so sessions already on disk recover with no migration, and that rejection is now classified retryable so retry and the model-fallback chain can unwedge an affected session instead of ending the turn. ([#2122](https://github.com/code-yeongyu/senpi/issues/2122))
+- An assistant message replayed to an OpenAI Chat Completions provider no longer grows a property whose name is the serialized `reasoning_details` array. The thinking block's signature slot holds either a reasoning field name or serialized reasoning details, and only a known field name (`reasoning`, `reasoning_content`, `reasoning_text`) may name a property, so the reasoning is no longer duplicated into every later request. ([#2122](https://github.com/code-yeongyu/senpi/issues/2122))
+- OpenAI Responses GPT-5.6+ requests send `prompt_cache_options.comparison_response_id` only when the previous same-provider, same-model response id begins with `resp`; the platform rejects other ids with HTTP 400. ([#2118](https://github.com/code-yeongyu/senpi/issues/2118))
+- Amazon Bedrock and Google Gemini requests no longer carry adjacent same-role messages: the Bedrock Converse and Gemini converters fold a message whose role matches the previous one into it (blocks in order, Bedrock cache point still last), so the hidden environment-context user message before a prompt, or a prompt after tool results, no longer breaks those providers' user/assistant alternation rule. ([#2114](https://github.com/code-yeongyu/senpi/issues/2114))
+
+### Removed
+
+## [2026.9.24-2] - 2026-09-24
+
+### Breaking Changes
+
+### Added
+
+- `@earendil-works/pi-ai/utils/tool-name-match` exports `resolveToolNameMatch`, the lenient tool-name matcher shared by the agent loop's tool-call correction and the Anthropic tool-reference repair. It folds case and `-`/`_`, strips an `mcp_`/`mcp__` namespace on either side, and resolves only on a unique match. ([#2111](https://github.com/code-yeongyu/senpi/issues/2111))
+- `compat.supportsConfigurationUpdate` on OpenAI Responses models marks models that accept `configuration_update` input items, and `supportsConfigurationUpdate(model)` reads it. The catalog sets it on the `openai` GPT-5.6 and GPT-6 rows (including `-fast`) and on `chatgpt-subscription` `gpt-6-astra` / `gpt-6-astra-fast`; mid-session effort changes on those models go through the item instead of a top-level `reasoning.effort` change. ([#2094](https://github.com/code-yeongyu/senpi/issues/2094))
+- OpenAI Responses models with the new `supportsAllowedTools` compat flag (set on the GPT-5.6+ OpenAI catalog rows) keep every declared tool in `tools` and restrict the callable subset named by the new `Context.activeToolNames` through `tool_choice: allowed_tools` (`none` when the subset is empty), so removing a tool no longer invalidates the prompt cache. `supportsAllowedToolChoice(model)` reports the flag. ([#2095](https://github.com/code-yeongyu/senpi/issues/2095))
+
+- `warmPromptCache` prewarms native OpenAI Responses GPT-5.6+ models with `prompt_cache_options.prewarm` (system prompt + tools, no conversation), and those requests now send `prompt_cache_options.comparison_response_id` for the previous same-model response and record the returned `prompt_cache_diagnostics` on `AssistantMessage.promptCacheDiagnostics`. On these models (unless `cacheRetention` is `none`) the system prompt is sent as one `input_text` block with `prompt_cache_breakpoint: { mode: "explicit" }`, so a prewarmed or previous prefix is read even when the hosted `web_search_preview` tool is present. ([#2096](https://github.com/code-yeongyu/senpi/issues/2096))
+
+### Changed
+
+### Fixed
+
+- OpenAI Completions and Responses usage parsers count gateway `cache_creation_tokens` as `cacheWrite` when `cache_write_tokens` is absent, so those writes are no longer billed as uncached input. ([#2091](https://github.com/code-yeongyu/senpi/issues/2091))
+
+- OpenAI GPT-5.6+ Responses and Completions requests to `api.openai.com` no longer send a per-session `prompt_cache_key`, so sessions, forks, and task children can reuse the same cached prefix. Pre-5.6 models still send the session key. ([#2097](https://github.com/code-yeongyu/senpi/issues/2097))
+
+- `resolvePromptCacheTtlSeconds()` returns 1800 s for GPT-5.6 and later (GPT-6 Sol/Luna/Astra included) on the OpenAI, Azure OpenAI and ChatGPT-subscription Responses lanes, matching OpenAI's documented minimum 30-minute cache lifetime; earlier OpenAI models and gateways that proxy the same ids keep 300 s. Direct DeepSeek no longer reports a fixed 5-minute TTL: the new `resolvePromptCacheLifetime()` classifies its automatic cache as `best-effort`, next to `ttl` and `none`, and the numeric resolver returns `undefined` for it. ([#2090](https://github.com/code-yeongyu/senpi/issues/2090), [#831](https://github.com/code-yeongyu/senpi/issues/831))
+
+### Removed
+
+## [2026.9.24] - 2026-09-24
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.9.23-5] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Cursor suffix families the 2026-08-18 alias snapshot does not list (`grok-4.7`, `claude-opus-5-5`, `claude-fable-5-1` and its thinking variants, `gemini-3.8-flash`, `muse-spark-1.3`) group into one selectable identity with reasoning levels, derived from the live `GetUsableModels` batch, instead of arriving as flat singletons with reasoning off. The identity offers exactly the levels the server listed (an unlisted level is unsupported and clamps to a listed one), and an explicit level resolves to the exact server-listed variant id instead of silently downgrading to the representative. A derived family never takes an id that is already a static identity, a static alias key, or a raw catalog id; those members stay flat. Stored flat variants regroup on restore, and a stored group, static or derived, keeps its levels and representative whichever side of its flat aliases it was stored on. The context window is unchanged: a family without capability data or an observed server limit still uses the 200k fallback. ([#2038](https://github.com/code-yeongyu/senpi/issues/2038))
+
+### Removed
+
+## [2026.9.23-4] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
+- Text content can carry `audience: "model"` so clients can hide model-only instructions without changing provider text. Provider request regression coverage includes text-only and image-bearing tool results. ([#2041](https://github.com/code-yeongyu/senpi/issues/2041))
+
+### Changed
+
+### Fixed
+
+- The `pi-messages` provider projects tool-result text fields onto the wire instead of forwarding display audience metadata. ([#2041](https://github.com/code-yeongyu/senpi/issues/2041))
+
+### Removed
+
+## [2026.9.23-3] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
 ## [2026.9.23-2] - 2026-09-23
 
 ### Breaking Changes

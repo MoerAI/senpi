@@ -438,6 +438,11 @@ export interface TextSignatureV1 {
 export interface TextContent {
 	type: "text";
 	text: string;
+	/**
+	 * When set, this part is addressed to the model only: renderers and downstream UIs omit it.
+	 * Absent means visible to everyone. Provider adapters send the text unchanged.
+	 */
+	audience?: "model";
 	textSignature?: string; // e.g., for OpenAI responses, message metadata (legacy id string or TextSignatureV1 JSON)
 }
 
@@ -528,6 +533,18 @@ export interface Usage {
 	};
 }
 
+/**
+ * OpenAI Responses `prompt_cache_diagnostics`, returned when the request carried
+ * `prompt_cache_options.comparison_response_id`. `type` is `cache_hit`, `cache_miss`
+ * (with a provider `reason` such as `reasoning_effort_changed`) or `unavailable`.
+ */
+export interface PromptCacheDiagnostics {
+	type: "cache_hit" | "cache_miss" | "unavailable" | (string & {});
+	reason?: string;
+	cacheMissedTokens?: number;
+	comparisonReusableTokens?: number;
+}
+
 export type StopReason = "pending" | "stop" | "length" | "toolUse" | "error" | "aborted" | "deferred";
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -571,6 +588,8 @@ export interface AssistantMessage {
 	/** Exact provider-native effort level used for this response. Absent for legacy or unmanaged responses. */
 	providerThinkingLevel?: string;
 	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
+	/** Provider prompt-cache comparison against the previous response of the same model, when reported. */
+	promptCacheDiagnostics?: PromptCacheDiagnostics;
 	usage: Usage;
 	stopReason: StopReason;
 	stopDetails?: AssistantStopDetails;
@@ -671,6 +690,12 @@ export interface Context {
 	systemPrompt?: string;
 	messages: Message[];
 	tools?: Tool[];
+	/**
+	 * Names from `tools` the model may call on this request; absent means every tool is callable.
+	 * Set only for models whose compat declares `supportsAllowedTools`: the adapter keeps `tools`
+	 * byte-stable and restricts callability through `tool_choice` (senpi#2095).
+	 */
+	activeToolNames?: string[];
 }
 
 /**

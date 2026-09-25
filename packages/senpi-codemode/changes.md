@@ -1,5 +1,109 @@
 # senpi-codemode fork changes
 
+## 2026-09-24 - Eval language errors list the enabled kernels
+
+### What changed
+
+- `packages/senpi-codemode/src/tool/eval-request.ts`: `parseEvalRequest` takes the enabled language list; a missing or unknown `language` fails with `eval run requires language — one of` those tokens, not the full js/py/rb/jl set.
+- `packages/senpi-codemode/src/tool/eval-tool.ts`: execute passes the session's enabled languages into the parser so the teaching error matches the schema the model already sees.
+- Tests: `test/eval-request-language.test.ts` pins a js-only execute path and a py+js parse path. QA: `scripts/qa-e2e-eval.ts` expects `one of "js", "py"` on the default host.
+
+### Why
+
+- The published schema already enumerates only enabled kernels. The teaching error still listed Ruby and Julia, which are off by default, so a model that omitted `language` was told to retry with a kernel that would then fail as unsupported.
+
+### Why an extension could not handle it
+
+- The eval request parser belongs to this package.
+
+### Expected merge conflict zones
+
+- LOW: the fork-only eval parser, its tests, and the QA driver.
+
+## 2026-09-24 - Eval run schema and parser agree on required language/code
+
+### What changed
+
+- `packages/senpi-codemode/src/tool/types.ts`: the `language` union and `code` field descriptions now state "REQUIRED for run" (the language description also explains per-kernel persistent state). Both stay optional in the wire schema because the control actions (`peek`, `stop`, `list`) share it — the same treatment `summary` already had.
+- `packages/senpi-codemode/src/tool/eval-request.ts`: a run with a missing or unknown `language` now fails with `eval run requires language — one of "js", "py", "rb", "jl"`, and a run without `code` fails with `eval run requires code — the cell body to execute, verbatim`, replacing the bare `eval run requires language` / `eval run requires code`.
+- Tests: `test/eval-request-language.test.ts` pins the actionable parse errors, the schema descriptions, and the tool-execute error path. QA: `scripts/qa-e2e-eval.ts` drives the omitted-language call through a real session and asserts the actionable error.
+
+### Why
+
+- The published schema marked `language` (and `code`) optional with no description, so models omitted them and burned a round trip on an opaque TypeError. No default or last-used kernel exists, and py+js are both enabled by default, so guessing a default kernel could run the cell in the wrong interpreter — a surprising failure that still spends a kernel run. An explicit schema contract plus an actionable error is the root fix and matches the existing `summary` treatment.
+
+### Why an extension could not handle it
+
+- The eval tool's schema and request parser belong to this package.
+
+### Expected merge conflict zones
+
+- LOW: the fork-only eval schema/parser, its tests, and the QA driver.
+
+## 2026-09-24 - Python preview ruff timeout follows the formatter budget (#2076 follow-up)
+
+### What changed
+
+- `packages/senpi-codemode/src/tool/display-python.ts` passes the ruff timeout (the formatter budget minus one second) as the formatter script's first argument; `display-python-script.ts` uses it instead of a fixed `timeout=4`.
+- `test/eval-display-python.test.ts`: the fake-ruff tests share a `fakeRuff` helper with a 25 s budget and assert a marker file the fake writes, so a ruff that timed out can no longer pass the docstring-rejection test.
+
+### Why
+
+- The final gate review measured 3-13 s first-run latency for freshly written executables on macOS; the fixed 4 s timeout made the fake-ruff test fail there and let the docstring test pass without ruff running.
+
+### Why an extension could not handle it
+
+- The eval renderer belongs to this package.
+
+### Expected merge conflict zones
+
+- LOW: the Python display modules only.
+
+## 2026-09-24 - Eval preview equivalence guards (#2076 follow-up)
+
+### What changed
+
+- `packages/senpi-codemode/src/tool/display-js-layout.ts`: the long-array break rewrites only the whitespace in each gap, so the parentheses of a parenthesized element (`[(a, 1), (b, 2)]`) stay.
+- `packages/senpi-codemode/src/tool/display-js.ts`: besides the character guard, the preview must re-parse to the same program as the cell (positions, raw spellings, and parenthesization flags ignored; comments compared), otherwise the cell is shown as sent.
+- `packages/senpi-codemode/src/tool/display-python-script.ts`: `same_tokens` becomes `equivalent`: a formatter result is kept only when `ast.dump` of it equals the source's and its string, number, f-string, and comment tokens have the same text. Rejects docstring normalization and `ast.unparse` output that is not valid Python (`1 .real`).
+- `packages/senpi-codemode/src/tool/display-python.ts`: a rejected formatter promise settles as "no formatted cell" instead of an unhandled rejection.
+- Tests: `test/eval-display-fixtures.ts` gains the parenthesized-element array; `test/eval-display-python.test.ts` gains a fake ruff that rewrites a docstring and the `1 .real` cell.
+
+### Why
+
+- A post-merge gate review of #2078 reproduced both cases: the character guard ignored `()` and Python whitespace inside strings, so a preview with a different meaning passed.
+
+### Why an extension could not handle it
+
+- The eval renderer belongs to this package.
+
+### Expected merge conflict zones
+
+- LOW: the display modules only.
+
+## 2026-09-24 - Bun-laid-out JS previews and interpreter-formatted Python previews (#2076)
+
+### What changed
+
+- `packages/senpi-codemode/src/tool/display-code.ts`: `displayCode(code, language, onFormatted?)` dispatches dense cells (a line over 100 characters) per language. JavaScript is laid out only when the renderer runs on Bun (`process.versions.bun` plus a constructible `Bun.Transpiler`); on Node it is shown as sent. Python goes to the user's interpreter in the background. Ruby and Julia are shown as sent. The #2050 Babel line breaker is removed.
+- `packages/senpi-codemode/src/tool/display-js.ts`, `display-js-mask.ts`, `display-js-layout.ts`, `display-js-ast.ts` (new): every literal, template, tagged template, identifier (one placeholder per spelling so labels resolve), private name, and directive is swapped for a placeholder, statement-level comments become placeholder statements, `Bun.Transpiler` lays the masked cell out (unwrapped for module syntax, inside an async function for top-level `return`), and the source text is substituted back with exact occurrence counts. Trailing line comments return to their statement's line, `for` headers print as `for (a; b; c)` / `for (;;)`, and one-line arrays over 60 characters still break one element per line. A comment inside an expression, a Bun parse failure, a count mismatch, or any non-layout character difference shows the cell as sent.
+- `packages/senpi-codemode/src/tool/display-python.ts`, `display-python-script.ts` (new): the interpreter the py kernel detection finds (`python3`, `python`, `py -3`) runs a formatter script with the cell on stdin: ruff (PATH or the `ruff` package, `quote-style = 'preserve'`), then black (`string_normalization=False`), then `ast.unparse` over a cell whose strings, f-strings, and numbers are masked, only when it has no comments. A result that differs from the source beyond layout is discarded. Results are cached; at most two formatter processes run at once, each with a 5 s timeout.
+- `packages/senpi-codemode/src/tool/code-preview.ts` (new, moved out of `render.ts`): `highlightedCode` passes the repaint callback. `render.ts` threads `context.invalidate` as `RenderEnvironment.repaint` for complete call args and results; the no-theme call frame passes it to `displayCode` the same way.
+- `packages/senpi-codemode/AGENTS.md`: the "No Bun-only APIs" invariant now allows them only behind runtime detection with a correct Node path, and records the display-only fidelity rule.
+- Tests: `test/eval-display-code.test.ts` (Node: cells shown as sent), `test/eval-display-code-bun.test.ts` (spawns `bun` for the layout and fidelity battery plus the rendered frame), `test/eval-display-python.test.ts` (real `python3`: ast layout, fallbacks, a fake ruff on PATH, repaint wiring), fixtures in `test/eval-display-fixtures.ts`.
+
+### Why
+
+- The #2050 preview only split lines, so dense cells kept minified spacing. The renderer runs on Bun in the compiled distribution, and Bun ships a printer; a raw `Bun.Transpiler` round trip is not faithful (it rewrites `"a\nb"` into a multi-line template, `0xff` into `255`, emoji into escapes, folds `typeof undefined`, and drops comments and directives), hence the masking. Python has no printer in the host runtime, so the user's own interpreter and formatters are borrowed when present.
+
+### Why an extension could not handle it
+
+- The eval renderer belongs to this package.
+
+### Expected merge conflict zones
+
+- LOW: `packages/senpi-codemode/src/tool/render.ts` imports, `RenderEnvironment`, the call and result `environment` literals, and the no-theme call frame; the display modules are new.
+
 ## 2026-09-23 - Readable preview for dense JS eval cells (#2050)
 
 ### What changed
@@ -1285,3 +1389,24 @@ Detach and settlement ownership lives inside `EvalDetachedCellManager`, and only
 `onCellSettled`. Out-of-process consumers (rpc mode with `extension_events`) now receive the
 live-cell transitions; `test/eval-wake-source.test.ts` pins the rpc case and the wiring test
 filters the settle payload instead of asserting an rpc-channel exact list. (#1943)
+
+
+## 2026-09-23 — Hide eval artifact and truncation renderer warnings
+
+### What changed
+
+`packages/senpi-codemode/src/tool/render.ts`: Remove both renderer-owned artifact/truncation warning paths and omit model-only text from the fallback. Stop pattern-based footer stripping from ordinary output. The existing artifactNotice and formatTruncationWarning helpers do not attach text to model results, so eval model text and grouping stay unchanged.
+
+### Why
+
+Eval bookkeeping should not be duplicated in visible cards or cause ordinary user output to be stripped by resemblance.
+
+### Why an extension could not handle it
+
+These card builders own the rendered details and cannot be corrected by an external extension.
+
+### Expected merge conflict zones
+
+Detailed eval cells and fallback result blocks; no collector, output grouping, or model content changes.
+
+- Covered production paths: `packages/senpi-codemode/src/tool/render.ts`.

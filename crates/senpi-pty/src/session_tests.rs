@@ -27,6 +27,29 @@ fn pty_session_streams_raw_bytes_and_exit_code() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn pty_session_reports_shell_pid_and_process_group_after_exit() {
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&output);
+    let mut session = PtySession::start(
+        PtySessionOptions::new("sh").arg("-c").arg("printf 'PID=%s;' $$"),
+        move |chunk| seen.lock().unwrap().extend_from_slice(chunk),
+    )
+    .unwrap();
+    let pid = session.pid().unwrap();
+    let process_group = session.process_group_id().unwrap();
+
+    session.wait().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&output.lock().unwrap()).as_ref(),
+        format!("PID={pid};")
+    );
+    assert_eq!(process_group, pid as i32);
+    assert_eq!(session.pid(), Some(pid));
+    assert_eq!(session.process_group_id(), Some(process_group));
+}
+
 #[test]
 fn background_wait_does_not_complete_before_reader_drain() {
     let output = Arc::new(Mutex::new(Vec::new()));

@@ -1,5 +1,25 @@
 # TUI delta rendering fork changes
 
+## 2026-09-24 - Fuzzy matching over pre-lowered text (senpi#2087)
+
+### What changed
+
+- `packages/tui/src/fuzzy.ts`: new exported `fuzzyMatchLower(queryLower, textLower)` holds the direct and letter/digit-swap scoring. `fuzzyMatch` lower-cases its inputs and delegates to it, so scoring has one source. `packages/tui/src/index.ts` exports `fuzzyMatchLower` next to `fuzzyMatch`.
+- `packages/tui/test/fuzzy.test.ts`: `fuzzyMatchLower` on lower-cased inputs returns exactly what `fuzzyMatch` returns for mixed-case pairs, swap variants included.
+
+### Why
+
+- `fuzzyMatch` lower-cases the whole text on every call. The coding-agent `/resume` search calls it once per token per session over tens of MB of transcript text, so the same text was lower-cased again on every keystroke.
+
+### Why an extension could not handle it
+
+- The scoring lives in the TUI package. A caller outside it can only reach `fuzzyMatch`, which always lower-cases.
+
+### Expected merge conflict zones
+
+- `packages/tui/src/fuzzy.ts`: the `fuzzyMatch` body, now a delegating wrapper above `fuzzyMatchLower`.
+- `packages/tui/src/index.ts`: the `./fuzzy.ts` export line.
+
 ## 2026-09-23 — Let hosts observe the real stderr destination (senpi#1879)
 
 ### What changed

@@ -17,9 +17,6 @@ export function enabledLanguageList(enabled: EnabledEvalLanguages): EvalLanguage
 	return evalLanguageOrder.filter((language) => enabled[language]);
 }
 
-const LANGUAGE_FIELD_DESCRIPTION =
-	"REQUIRED for run. Choose a kernel explicitly; there is no default. Omit for peek/stop.";
-
 /** The deadlines the schema teaches the model; every number comes from the resolved settings. */
 export interface EvalDeadlineSeconds {
 	readonly runBudgetSeconds: number;
@@ -68,6 +65,12 @@ export type EvalControlInput =
 
 export type EvalToolRequest = EvalToolInput | EvalControlInput;
 
+// Like `summary`, `language` and `code` stay optional in the wire schema because control
+// actions share it; the description teaches the requirement and parseEvalRequest enforces it.
+const LANGUAGE_FIELD_DESCRIPTION =
+	"REQUIRED for run. Kernel that runs the cell; each language keeps its own persistent state across eval calls.";
+const CODE_FIELD_DESCRIPTION = "REQUIRED for run. Cell body, verbatim.";
+
 function evalInputProperties<Language extends TSchema>(languageSchema: Language, deadlines: EvalDeadlineSeconds) {
 	return {
 		action: Type.Optional(
@@ -77,7 +80,7 @@ function evalInputProperties<Language extends TSchema>(languageSchema: Language,
 			}),
 		),
 		language: Type.Optional(languageSchema),
-		code: Type.Optional(Type.String({ description: "Cell body, verbatim." })),
+		code: Type.Optional(Type.String({ description: CODE_FIELD_DESCRIPTION })),
 		summary: Type.Optional(
 			Type.String({
 				description:
@@ -99,13 +102,15 @@ function evalInputProperties<Language extends TSchema>(languageSchema: Language,
 	};
 }
 
+function evalLanguageUnion(languages: readonly EvalLanguage[]) {
+	return Type.Union(
+		languages.map((item) => Type.Literal(item)),
+		{ description: LANGUAGE_FIELD_DESCRIPTION },
+	);
+}
+
 const fullEvalInputSchema = Type.Object(
-	evalInputProperties(
-		Type.Union([Type.Literal("js"), Type.Literal("py"), Type.Literal("rb"), Type.Literal("jl")], {
-			description: LANGUAGE_FIELD_DESCRIPTION,
-		}),
-		defaultEvalDeadlineSeconds,
-	),
+	evalInputProperties(evalLanguageUnion(evalLanguageOrder), defaultEvalDeadlineSeconds),
 );
 
 /** Runtime accepts a discriminated run/control union. */
@@ -117,13 +122,7 @@ export function createEvalInputSchema(
 ): EvalInputSchema {
 	const languages = enabledLanguageList(enabled);
 	if (languages.length === 0) throw new Error("eval requires at least one enabled language");
-	const languageSchema =
-		languages.length === 1
-			? Type.Union([Type.Literal(languages[0])], { description: LANGUAGE_FIELD_DESCRIPTION })
-			: Type.Union(
-					languages.map((item) => Type.Literal(item)),
-					{ description: LANGUAGE_FIELD_DESCRIPTION },
-				);
+	const languageSchema = evalLanguageUnion(languages);
 	return Type.Unsafe<EvalToolRequest>(
 		Type.Object(evalInputProperties(languageSchema, deadlines), {
 			anyOf: [

@@ -6,6 +6,164 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+- `bun add @code-yeongyu/senpi` works again. 2026.9.25 declared five unpublished desktop packages as dependencies, which npm installs from the bundle but bun looks up on the registry and fails; the package no longer ships them until a released feature uses them. ([#2141](https://github.com/code-yeongyu/senpi/issues/2141))
+
+- A turn that keeps repeating is caught again when its text contains `Ask:` outside a handoff block; only the restated request inside a handoff block is ignored. ([#2143](https://github.com/code-yeongyu/senpi/issues/2143))
+### Removed
+
+## [2026.9.25] - 2026-09-25
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- The package now bundles the desktop computer-use engine (`@code-yeongyu/senpi-desktop-engine` with a per-platform `senpi-desktop-engine` executable) and its protocol package. Nothing uses them yet; the `computer` tool that drives them lands in a later release. ([#2129](https://github.com/code-yeongyu/senpi/pull/2129))
+
+### Fixed
+
+- The Cursor CLI lane (`cursor-cli-oauth`) now sends your request together with any hidden messages that follow it in the same turn; the first request of a session was reaching the model as only the hidden plan reminder, and the model replied that the request was empty. ([#2139](https://github.com/code-yeongyu/senpi/issues/2139))
+
+- The repetitive-turns stream rule no longer aborts a handoff block because it restates your request; it compares only the status the block reports, so an agent that repeats the same status is still stopped, and its remediation no longer forbids progress reports. ([#2135](https://github.com/code-yeongyu/senpi/issues/2135))
+
+- The first-turn plan opener now waits for your first request instead of arming on a turn an extension started before you spoke (such as a first-launch onboarding greeting), so your real request still opens with a phased todo list. `before_agent_start` handlers can read `event.trigger` (`"prompt"` or `"extension"`). ([#2137](https://github.com/code-yeongyu/senpi/issues/2137))
+- When every todo closes, the cue in the todo result now says that any other report an instruction asks for (a self-review, a checklist) goes inside the handoff block's For you slot, so a project rule that asks for a report no longer replaces the block. ([#2133](https://github.com/code-yeongyu/senpi/issues/2133))
+
+### Removed
+
+## [2026.9.24-3] - 2026-09-24
+
+### Breaking Changes
+
+- `ctx.getPromptCachePrefixRequest()` resolves `{ status: "ready", request }` or `{ status: "skipped", reason }` instead of the request or `undefined`, and accepts `{ signal }`. ([#2115](https://github.com/code-yeongyu/senpi/issues/2115))
+
+### Added
+
+- When a main-session turn ends text-only (no active goal, no continuation, no question to the user, not print/json) while the todo list still has open tasks, the agent gets one hidden `senpi.todo-owed` followUp naming the Ask/Now/Next anchors; a second one is prefixed "Second and final reminder. ", after which a warning notification fires once and the backstop stays silent until the next accepted user message. Set `todo.turnEndBackstop: false` to disable it. ([#2121](https://github.com/code-yeongyu/senpi/issues/2121))
+- The first work request of a session (not a question) now opens with a phased `todo` init: a hidden reminder asks for it, and on providers that accept a named tool choice (OpenAI Responses, OpenAI Chat Completions, Anthropic models that allow forced tool use with thinking off) the first request also forces the `todo` call. Set `todo.firstTurnPlan` to `"remind"` for the reminder only or `"off"` to disable it. ([#2121](https://github.com/code-yeongyu/senpi/issues/2121))
+- A `todo` result that creates the list, closes a phase, or closes the last task ends with a one-line cue to write the handoff block, so the report lands right where the transition happens instead of depending on a system-prompt rule the model read long ago. ([#2121](https://github.com/code-yeongyu/senpi/issues/2121))
+- Every `todo` tool result, including errors, opens with `Ask:` (the user request the list serves), `Now:` (the task in progress), and `Next:` (the next open task) lines; the tool result view and `/todo` show the Ask too. The first list anchors to the session's first user message and a later `init` to the newest one; the ask survives compaction. ([#2121](https://github.com/code-yeongyu/senpi/issues/2121))
+- Persistent command monitors now receive `SENPI_MONITOR_ID` and a per-monitor `SENPI_MONITOR_STATE_DIR` that survives restarts, and a re-run after a restart also gets `SENPI_MONITOR_RESTORED=1` and `SENPI_MONITOR_DOWNTIME_MS` (an upper bound), so a watch can keep its baseline and still report a change that happened while senpi was down. ([#2108](https://github.com/code-yeongyu/senpi/issues/2108))
+- `pi.on("before_agent_start", handler, { previewSafe: true })` declares a handler side-effect free in a preview. Only such handlers run in the session-start prompt-cache preview. ([#2115](https://github.com/code-yeongyu/senpi/issues/2115))
+
+### Changed
+
+- Every system prompt now carries a `## Handoff` contract in place of the old stay-quiet / never-restate / announcement-language rules: at the start of a turn, each todo phase change, a blocker or plan change, and the final message, the agent first weighs what the user asked for and what they need to know, then states the original ask, the wanted outcome, what the user needs now (ledger N/M done, findings, blockers), the task in progress, and the next task, and executes that next task in the same response. The shared core and the Claude, Kimi, and Grok cores use a labeled block; GPT-5.5 and GPT-5.6 use an outcome-first block; GPT-6 renders it as the `handoff-report` reporting rule. Every core also gains a completion bullet in Hard Limits: never present partial work as complete or deliver a stub, placeholder, or no-op as the feature. Word counts per preset before and after are recorded in `dynamic-prompt/changes.md` and `prompt-preset/changes.md`. ([#2121](https://github.com/code-yeongyu/senpi/issues/2121))
+- The handoff block's first moment is now the todo list's creation, and the routing line no longer counts as a handoff, so weaker models report the plan to the user instead of treating the routing line as the report. Each core's final-summary rule now describes the handoff block's outcome slot instead of competing with it, so the final message is one handoff block with the outcome and its verification inside. ([#2121](https://github.com/code-yeongyu/senpi/issues/2121))
+- The Grok 4.7 preset is tuned against a field trace instead of being a byte copy of Grok 4.6: it identifies as Grok 4.7, defines done as "the deliverable exists and the user can see it working" instead of a self-declared stop condition, routes deliverable-shaped and refactor requests to direct implementation (proposing first only when the change would be large or destructive), and drops the over-work warning that did not match its observed failure of stopping early. The 4.6 byte-equality tests are replaced by sentinel checks. ([#2121](https://github.com/code-yeongyu/senpi/issues/2121))
+
+### Fixed
+
+- Restarting or resuming a session now brings its persistent monitors back reliably: a stale lease left by a crashed or reused process id is reclaimed, an in-process `/resume` no longer reports its own monitors as "attached in another live process", and a session held by another live process takes over automatically when that process exits. ([#2108](https://github.com/code-yeongyu/senpi/issues/2108))
+- A restored command monitor is reported restored only if it is still running 2 seconds after the re-run; one that exits is reported lost with its exit code and first output line, a watcher left running by a crash is stopped before the re-run (only when its identity is confirmed), and each restored watch gets one "restored after up to <downtime> offline" line. ([#2108](https://github.com/code-yeongyu/senpi/issues/2108))
+- The restore summary is one message that names every monitor with its outcome and reason, is shown to the user as well as the model, and waits for a model instead of being dropped when none is selected yet. ([#2108](https://github.com/code-yeongyu/senpi/issues/2108))
+- One-shot `--print`/`--mode json` runs no longer write terminal leases or manifests, an empty manifest is deleted instead of written, stale leases and empty manifests are cleaned up in the background, and a persistent file monitor no longer times out after 5 minutes. ([#2108](https://github.com/code-yeongyu/senpi/issues/2108))
+- The hidden `<environment_context>` block is now the first content block of the user message it precedes instead of a separate user message, so OpenAI Chat Completions requests no longer carry two consecutive user messages that alternation-enforcing chat templates (vLLM Mistral tool template, Gemma 3) reject. Saved sessions, date or directory rollover, and resume behave as before. ([#2118](https://github.com/code-yeongyu/senpi/issues/2118))
+- The session-start prompt-cache prewarm no longer runs `before_agent_start` handlers that never opted in to previews, so an extension that consumes one-shot state there (such as delivering queued notices) no longer loses it before the first turn. While such a handler is registered the prewarm is skipped and a `prompt-cache-prewarm` entry records `phase: "skipped"` with the reason; a prompt that starts its turn while the preview is still composing cancels it. ([#2115](https://github.com/code-yeongyu/senpi/issues/2115))
+
+### Removed
+
+## [2026.9.24-2] - 2026-09-24
+
+### Breaking Changes
+
+### Added
+
+- OpenAI GPT-5.6+ sessions on `api.openai.com` prewarm the prompt cache once at session start without delaying the first turn. The prewarm sends the first turn's own prefix (the system prompt after `before_agent_start` additions and discovered skills, the same tools, reasoning effort, and service tier), so that turn reads the cache; it is skipped when `cacheRetention` is `none`, and the billed cache write is counted in session stats. Extensions see `before_agent_start` with `event.preview: true` during that composition and can read the prefix through `ctx.getPromptCachePrefixRequest()`. ([#2096](https://github.com/code-yeongyu/senpi/issues/2096))
+- The `websearch` builtin supports Kagi (`"provider": "kagi"`) and SERPdive (`"provider": "serpdive"`) search providers; both need an `apiKey`. Ported from pi-websearch 0.4.0. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+- The `rules` builtin discovers rule files in `.pi/rules/` (project) and `~/.pi/rules/` (home), ahead of `.omo/rules/`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+
+- Setting `TIMING=1` in the environment now prints per-phase switch timings in the "Resumed session" status line when `/resume` opens another session. ([#2087](https://github.com/code-yeongyu/senpi/issues/2087))
+
+### Changed
+
+- The system prompt no longer ends with the current date and working directory. Both reach the model in a hidden `<environment_context>` message placed before the first user turn and appended again only when the date or directory changes, so the prompt stays byte-identical across days and directories and provider prompt caches keep hitting it. ([#2093](https://github.com/code-yeongyu/senpi/issues/2093))
+- Dynamic project rules reach the enclosing git repository root: reading a file inside a workspace member (a nested `package.json` or `Cargo.toml`) now also applies repository-level `.github/instructions` rules. Ported from pi-rules 0.2.0. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+- Goal continuation prompts describe the objective as untrusted goal data instead of user-provided data, since the model may have written it with `create_goal`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+- The vendored builtin manifest pins the 2026-09-24 pi-* extension releases and now also records `anthropic-web-search`, `openai-web-search` and `anthropic-bash`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+
+- The `/resume` picker filters sessions in 0.6 to 27 ms per keystroke on a 1,088-session directory, down from 75 to 235 ms. Search text (raw, case-folded, and whitespace-normalized) is computed once per session row at list time and reused across keystrokes; fuzzy matching runs over the pre-lowered form, and session tree path resolution happens once for the whole list. ([#2087](https://github.com/code-yeongyu/senpi/issues/2087))
+
+- The `/resume` picker writes a `.session-summaries.index` file in each sessions directory and reads summaries from it on the next launch instead of streaming every `.jsonl` file individually. On a 1,088-session / 2.46 GB directory, the picker opens in 0.6 to 2.0 s cold instead of 15 to 29 s. The index is append-only with last-write-wins deduplication per session file, compacted atomically when stored bytes exceed twice the live size or 256 MiB; a corrupt or version-mismatched index is silently deleted and rebuilt. The underlying session reader now uses a chunked 1 MiB buffer instead of `readline`, removing an 18x per-line overhead and a correctness gap where `readline` split records at U+2028/U+2029 Unicode line separators. ([#2087](https://github.com/code-yeongyu/senpi/issues/2087))
+
+### Fixed
+
+- A model that calls a tool with a different case, a different or missing `mcp_`/`mcp__` namespace, or a namespace id containing underscores now runs the one registered tool it names instead of getting `Tool ... not found`. Examples: `MCP__fx__Tool_1` or bare `tool_1` for the MCP tool `mcp_fx_tool_1`. ([#2111](https://github.com/code-yeongyu/senpi/issues/2111))
+- A model that capitalizes the gateway namespace on a tool call, such as `Mcp__686f__Eval` for `eval`, now runs that tool instead of getting `Tool Mcp__686f__Eval not found` and wasting a turn. ([#2104](https://github.com/code-yeongyu/senpi/issues/2104))
+- Cache-aware foreground waits for OpenAI GPT-5.6+/GPT-6 sessions use the documented 30-minute prompt-cache lifetime (a 29m 30s budget instead of 4m 30s), and the Goal cache-warm card reports the 30m TTL. Direct DeepSeek sessions no longer wake the Goal every 4m 30s to preserve a fabricated 5-minute TTL: an unconfigured Goal backstop becomes the 59m 30s liveness re-check, an explicit `promptCache.goalBackstopMaxSeconds` other than the default is still honored, and the card says the provider cache is best-effort instead of claiming a TTL or savings. ([#831](https://github.com/code-yeongyu/senpi/issues/831), [#2090](https://github.com/code-yeongyu/senpi/issues/2090))
+- Changing the thinking level mid-session keeps the prompt cache on every OpenAI GPT-5.6 and GPT-6 model, not only GPT-6 Astra: the change is sent as a `configuration_update` item, which also happens again after compaction. ([#2094](https://github.com/code-yeongyu/senpi/issues/2094))
+- On OpenAI GPT-5.6+ models, a tool leaving or rejoining the active set mid-session (ask-user, apply-patch toggles, tool-search promotion, MCP, eval-only filtering) no longer rewrites the provider tool list or the system prompt's tool section, so the cached prompt prefix survives; inactive tools stay declared and are excluded through `allowed_tools`, and a call to one is still refused. Other models keep sending only the active tools. ([#2095](https://github.com/code-yeongyu/senpi/issues/2095))
+- A read of a file inside a skill directory other than its `SKILL.md` - a `references/` document, a script, a template - is labeled by its skill as `<skill>/<path inside the skill>` (for example `read ulw-plan/references/stance-calibration.md`) on the read card and in the `Explored` group, instead of the full install path on the card and the bare file name in the group. A session running inside the skill directory keeps its cwd-relative paths. ([#2082](https://github.com/code-yeongyu/senpi/issues/2082))
+- The `rules` builtin no longer re-injects an `AGENTS.md` / `CLAUDE.md` that pi already loaded into the system prompt when a file read reaches it, uses only the higher-priority root `AGENTS.md` / `CLAUDE.md` for a nested file, keeps only the first home-level single-file rule, resolves symlinked project paths, and `/rules show` without an id reports that an id is required. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+- Todo type guards no longer accept the legacy `cancelled` status without migrating it to `abandoned`. ([#2079](https://github.com/code-yeongyu/senpi/issues/2079))
+
+### Removed
+
+## [2026.9.24] - 2026-09-24
+
+### Breaking Changes
+
+### Added
+
+- RPC and `--mode json` `toolcall_start` / `toolcall_end` records carry `resolvedToolName`, the tool the call will run, so a client can title a gateway-namespaced or recased call (`mcp__<id>__Edit` → `edit`) correctly before it executes. ([#2068](https://github.com/code-yeongyu/senpi/issues/2068))
+
+### Changed
+
+- The `Stop` hook no longer fires when a turn ends while background work that will wake the session is still running - a background subagent task, a DAG run, a terminal monitor, a background bash session, a detached eval cell, or a loop-guard recovery hold. It fires once that work is done: at the end of the turn the work wakes, or right after the work clears if nothing wakes the session. A pending ask-user question still counts as stopped, since the session is waiting on you. Turns with no background work fire `Stop` exactly as before. ([#2077](https://github.com/code-yeongyu/senpi/issues/2077))
+- The builtin herdr reporter keeps a pane `working` while any background wake source is live - DAG runs, background bash sessions, and detached eval cells now count alongside subagents and terminal monitors - and names each kind of live work in the pane message. The pane returns to `idle` when the last source clears, even without another turn. ([#2077](https://github.com/code-yeongyu/senpi/issues/2077))
+- The recommended default model ladder is now Claude Opus 5.5 (medium), Claude Fable 5.1 (xhigh), Kimi K3 (max), GPT-6 Astra (xhigh), GPT-6 Sol (medium), GLM 5.3 (max). When a recommended model is available from several providers, the subscription lane wins (for Claude: the Claude subscription before the Anthropic API, Copilot, and OpenCode), and gateway aggregators such as OpenGateway and OpenRouter are never picked. ([#2074](https://github.com/code-yeongyu/senpi/issues/2074))
+
+### Fixed
+
+### Removed
+
+## [2026.9.23-5] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Truncated `bash` output no longer ends with `[Showing lines … ; earlier output dropped]` in the TUI. The marker still reaches the model unchanged as a model-only text part, and `bash_output` treats its `[N earlier chars dropped]` notice the same way. ([#2063](https://github.com/code-yeongyu/senpi/issues/2063))
+- Cursor legacy variant references for families the static alias table does not list (grok-4.7, claude-opus-5-5, claude-fable-5-1, gemini-3.8-flash, muse-spark-1.3) now resolve onto the runtime-derived identity with their thinking level instead of fuzzy-matching a flat `-fast` model: `--model cursor/grok-4.7:low` selects grok-4.7 at low (previously grok-4.7-xhigh-fast with thinking off), `cursor/grok-4.7-xhigh` (in any letter case) and stored variant ids restore their level, `cursor/grok-4.7-*` globs project the derived identity alongside the fast models, and both Cursor lanes keep the derived level-to-variant-id map across CLI catalog cache reloads. Exact raw models still win over derived aliases. The CLI catalog cache rebuilds its models from the stored `cursor-agent models` listing, so a recorded context limit no longer forces a re-probe, and a cache written before this change probes once; if that probe fails, the cached models are still served instead of the built-in offline list. ([#2038](https://github.com/code-yeongyu/senpi/issues/2038))
+- A tool call whose name senpi auto-corrects (a gateway-namespaced or recased name such as `mcp__<id>__Edit`) now looks like a direct call to the resolved tool: its card uses that tool's renderer live and on resume, and the `[auto-corrected]` notice reaches only the model. ([#2064](https://github.com/code-yeongyu/senpi/issues/2064))
+
+### Removed
+
+## [2026.9.23-4] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
+- A `Project rules` notice for a read inside an `Explored` cell now joins that cell as one `Applied N project rules` line instead of a standalone card that split the cell in two. Stream-rule notices and notices from older sessions stay as their own cards. ([#2057](https://github.com/code-yeongyu/senpi/issues/2057))
+
+### Changed
+
+- Nested AGENTS.md directory-context blocks are model-only text parts too, so their headers and instruction bodies stay out of the TUI while reaching the model unchanged. ([#2041](https://github.com/code-yeongyu/senpi/issues/2041))
+
+- Built-in read, bash, find, ls, grep, webfetch, and injected-rule notices are separate model-only text parts. Interactive tool cards omit them, including grep statistics and renderer-owned truncation warnings, while preserving tool bodies and rule-activation entries. Provider text and session content remain available to the model. ([#2041](https://github.com/code-yeongyu/senpi/issues/2041))
+
+### Fixed
+
+- Loading a skill or recalling a memory no longer disappears into the `Explored` cell as `Read SKILL.md`. Those reads keep their own `[skill] <name>` and `✦ Recalled <label>` cards, so loading two skills shows both names, and the reads around them form separate cells. Ordinary, docs, and `AGENTS.md` reads still group as before. ([#2060](https://github.com/code-yeongyu/senpi/issues/2060))
+
+### Removed
+
+## [2026.9.23-3] - 2026-09-23
+
+### Breaking Changes
+
+### Added
+
 - The interactive TUI shows consecutive `read`, `grep`, `find`, and `ls` calls as one exploration cell, the way Codex does: `• Explored` followed by lines such as `Read a.ts, b.ts`, `Search <pattern> in <dir>`, and `List <dir>`, with no line ranges or output. Reading one file three times now shows its name once instead of three cards. A failed call stays in the cell and is counted as ` · 1 failed`. Press the tool-expand key (default `ctrl+o`) or click the header to see the original cards. Any other tool, assistant text, or your next message ends the cell, and resumed sessions show the same cells. ([#2042](https://github.com/code-yeongyu/senpi/issues/2042))
 
 ### Changed
@@ -13,6 +171,8 @@
 - The GPT-5.6 and GPT-6 system prompts no longer demand a failing test before every behavior change. They now read the tests that already cover the area as the behavior of record, reproduce a bug before fixing it, let the run prove the change, and add a test only where the repository keeps tests for that behavior and a regression would otherwise pass unnoticed - the stance the Claude and Kimi prompts already had. Sessions on those models stop producing tests that only restate a small change. ([#2035](https://github.com/code-yeongyu/senpi/issues/2035))
 
 ### Fixed
+
+- A Goal parked on a live wake source shows one `Cache-warm` card per wait instead of a stack of `iteration 1` cards. A config reload used to re-append the parked wait as a new iteration-1 card, drop its cache line, and restart the backstop clock from the reload, which could push the wake past the prompt-cache TTL the card promised; the reload now keeps the same wait, iteration, cache figures, and ready time. The wait card also turns into the `Cache-warm wake` card when the wait ends instead of stacking a second card, and resumed sessions that already recorded stacked cards show one. Extensions can opt into the same in-place update with the new `replaces` option of `pi.registerEntryRenderer()`. ([#2051](https://github.com/code-yeongyu/senpi/issues/2051))
 
 - Hidden diagnostics no longer duplicate the terminal screen when mouse capture is enabled. Messages saved only to the debug log leave the current frame intact; errors actually printed to the terminal still reset mouse targeting. ([#1879](https://github.com/code-yeongyu/senpi/issues/1879))
 - A `models.json` written before the subscription provider rename is now updated to the new provider ids (`chatgpt-subscription`, `anthropic-subscription`) automatically on the first launch, keeping its comments and formatting and a timestamped backup of the original, instead of printing "models.json uses renamed provider ids" on every launch. ([#2044](https://github.com/code-yeongyu/senpi/issues/2044))

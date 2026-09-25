@@ -955,6 +955,22 @@ export class ModelRuntime implements Models {
 			return wrapStreamWithModelRecovery(inner, model, context.tools ?? []);
 		});
 	}
+	/**
+	 * Resolve auth, headers, `extraBody`, env, and the upstream model id exactly as a
+	 * single-credential `streamSimple` request does, without sending it. The session-start
+	 * prompt-cache prewarm (senpi#2096) builds its request from this so its prefix matches
+	 * the first turn's.
+	 */
+	async prepareSimpleRequest(
+		model: Model<Api>,
+		options?: ModelsSimpleStreamOptions,
+	): Promise<{ model: Model<Api>; options: SimpleStreamOptions }> {
+		const prepared = await this.prepareRequest(model, options);
+		return {
+			model: prepared.model,
+			options: withPayloadRequestMetadata(prepared.options, prepared.model) as SimpleStreamOptions,
+		};
+	}
 	completeSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): Promise<AssistantMessage> {
 		return this.streamSimple(model, context, options).result();
 	}

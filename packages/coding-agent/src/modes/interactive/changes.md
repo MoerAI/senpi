@@ -1,3 +1,139 @@
+## 2026-09-24 - Show switch timings on "Resumed session" under TIMING (senpi#2087)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `rebindCurrentSession` marks `render` and `bindExtensions` in the `switch` timing namespace; `handleResumeSession` appends `| switch timings: ...` to the "Resumed session" status when `formatTimings("switch")` has entries, mirroring the reload status line. Without `TIMING=1` the status text is unchanged.
+
+### Why
+
+- Extension `session_start` handlers and the transcript render are the largest slices of a resume switch; the status line makes the breakdown visible on the real surface without a debugger.
+
+### Why an extension could not handle it
+
+- The rebind sequence and the status line are host-owned.
+
+### Expected merge conflict zones
+
+- LOW: two marks in `rebindCurrentSession` and the status call in `handleResumeSession`.
+
+## 2026-09-24 - Keep /resume search and tree rebuilds off the per-keystroke path (senpi#2087)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/session-selector-search.ts`: each `SessionInfo`'s search text (`id name allMessagesText cwd`) is built once and kept in a module `WeakMap` keyed by the row object, together with its lower-cased form and, on the first phrase token, its whitespace-normalized form. Query tokens are lower-cased or normalized once per `filterAndSortSessions` call, and fuzzy tokens go through pi-tui `fuzzyMatchLower` against the cached lower-cased text. Regex, fuzzy and phrase results, scores and ordering are unchanged; `matchSession` keeps its signature.
+- `packages/coding-agent/src/modes/interactive/components/session-selector-tree.ts` (new): `buildSessionTree` / `flattenSessionTree` and their node types moved out of `session-selector.ts`. `buildSessionTree` takes a `CanonicalPathResolver`; `createCanonicalPathResolver()` memoizes `canonicalizePath` per path.
+- `packages/coding-agent/src/modes/interactive/components/session-selector.ts`: `SessionList` creates one resolver in its constructor and a fresh one in `setSessions`, and uses it for tree rebuilds and `isCurrentSessionPath`, which runs for every rendered row on every frame.
+- Tests: `test/session-selector-search.test.ts` (mixed-case fuzzy tokens; a new row object for the same session is searched by its own text), `test/session-selector-tree.test.ts` (new; the resolver answers exactly what `canonicalizePath` answers), `test/session-selector-path-delete.test.ts` (a replaced session list re-resolves a retargeted symlink alias).
+
+### Why
+
+- With about 1,100 sessions whose transcript text totals tens of MB, every keystroke rebuilt and lower-cased the whole search text once per token: 75-150 ms per fuzzy query, 240-350 ms per quoted phrase, all synchronous inside `handleInput`. Every threaded rebuild also ran `realpathSync.native` twice per session (about 20 ms).
+
+### Why an extension could not handle it
+
+- The `/resume` picker's filtering and tree construction are private to the built-in session selector component. No extension hook reaches them.
+
+### Expected merge conflict zones
+
+- `session-selector-search.ts`: `getSessionSearchText`, `matchSession` and the two scoring loops in `filterAndSortSessions`.
+- `session-selector.ts`: the imports, the removed tree block ahead of `class SessionList`, the `SessionList` constructor, `setSessions`, `filterSessions` and `isCurrentSessionPath`. Upstream edits to `buildSessionTree` / `flattenSessionTree` now land in `session-selector-tree.ts`.
+
+## 2026-09-24 - Label skill-directory reads by skill in the exploration group (senpi#2082)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/exploration-call.ts`: a grouped `read` of a file inside a skill directory is labeled `<skill>/<path inside the skill>` via `getSkillReadPath` (`core/tools/renderers/skill-read-path.ts`) instead of its basename; other reads keep the basename.
+- `packages/coding-agent/test/suite/exploration-semantic-reads.test.ts`: a skill reference outside the cwd shows `Read a.ts, demo/references/guide.md, loose.md` in one group and `read demo/references/guide.md` when expanded; a session running inside the skill directory keeps `Read guide.md` / `read references/guide.md`.
+
+### Why
+
+- A skill reference collapsed to its bare file name in the `Explored` cell, so the user could not tell which skill it came from.
+
+### Why an extension could not handle it
+
+- Exploration labels are computed by the interactive projection from the built-in read renderer's args; an extension has no hook into the group's label.
+
+### Expected merge conflict zones
+
+- The `read` branch of `explorationCall` in `exploration-call.ts`.
+
+## 2026-09-23 - Render a resolved tool-call name as the resolved tool (senpi#2064)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `createToolExecutionComponent` maps the requested name through `session.resolveToolCallName` before choosing the renderer. Every card path (streaming tool call, `tool_execution_start`, late `tool_execution_end`, and `replayAssistantTools`) goes through it, so a `mcp__<id>__Read` call renders, groups and replays as `read`.
+- `packages/coding-agent/test/suite/regressions/issue-2064-tool-name-correction-invisible.test.ts` (new): a real session runs a faux `mcp__686f__Read` call; the start event names `read`, the tool result keeps the notice as model-only text, and both the live and replayed transcripts show `Read sample.ts` with no `mcp__686f__` or `auto-corrected` text, collapsed or expanded.
+
+### Why
+
+- The card used the requested name, which has no renderer: the user saw the raw JSON arguments under `mcp__686f__Edit` and the correction notice, even though the call ran as `edit`.
+
+### Why an extension could not handle it
+
+- Card construction and renderer choice are owned by the interactive transcript.
+
+### Expected merge conflict zones
+
+- LOW: the head of `createToolExecutionComponent`.
+
+## 2026-09-23 - Keep skill and memory reads out of the exploration group (senpi#2060)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/exploration-call.ts`: `explorationCall` asks `getCompactReadClassification` (exported from `core/tools/renderers/read.ts`) about a `read` before grouping it; a `skill` or `memory` classification returns no exploration call, so the card renders on its own and ends the open group. `docs` and `resource` reads still group.
+- `packages/coding-agent/test/suite/exploration-semantic-reads.test.ts` (new): a skill read splits the group and shows `[skill] <name>`; two skills show both names with no `Explored` cell; a registered memory classifier keeps `✦ Recalled <label>`; `AGENTS.md` stays grouped; live and replay text match.
+
+### Why
+
+- Since senpi#2042 every built-in `read` joined the `Explored` cell, including skill loads and memory recalls, which collapsed to `Read SKILL.md` and deduplicated several skills into one line. The compact `[skill]` / `✦ Recalled` cards predate the cell and carry the information the cell drops.
+
+### Why an extension could not handle it
+
+- Group membership is decided by the interactive projection; an extension only registers a classifier and has no view of the transcript's sibling cards.
+
+### Expected merge conflict zones
+
+- The `read` branch of `explorationCall` in `exploration-call.ts`.
+
+## 2026-09-23 - Fold project-rules notices into the exploration group of their call (senpi#2057)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/exploration-transcript-container.ts`: a `rule-activation` card of kind `project-rules` whose `toolCallId` belongs to a call in the open group joins the group instead of closing it.
+- `packages/coding-agent/src/modes/interactive/components/exploration-group.ts`: `setMembers` takes the absorbed rule paths; the collapsed cell adds `Applied N project rules` (distinct paths). Expanding shows the original cards.
+- `packages/coding-agent/src/modes/interactive/components/exploration-rules.ts` (new): `projectRulesOfCall`.
+
+### Why
+
+- One run of reads split into several `Explored` cells with `Project rules` cards between them whenever a read matched a rule.
+
+### Why an extension could not handle it
+
+- The exploration projection is interactive-mode code; entry renderers cannot see sibling cards.
+
+### Expected merge conflict zones
+
+- The projection loop in `exploration-transcript-container.ts` and `setMembers`/`render` in `exploration-group.ts`.
+
+## 2026-09-23 - Replace the previous custom-entry card in place when its renderer asks (senpi#2051)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `addCustomEntryToChat` asks `getEntryRendererOptions` for the entry type and, when `replacedEntryCardIndex` reports a match, swaps the previous card instead of appending. The streaming insertion point is unchanged. Live `entry_appended` and `renderSessionItems` replay share the path.
+- `packages/coding-agent/src/modes/interactive/components/custom-entry.ts`: `CustomEntryComponent.customEntry` getter and the exported `replacedEntryCardIndex(children, insertIndex, entry, options)` helper (only the child directly before the insertion point, same custom type, `replaces` accepts the pair).
+
+### Why
+
+- One Goal wait rendered as a stack of cache-warm cards (scheduled, reload re-arm, wake). The goal extension now opts into in-place replacement through the `replaces` renderer option.
+
+### Why an extension could not handle it
+
+- The transcript container and its insertion logic belong to interactive mode.
+
+### Expected merge conflict zones
+
+- `addCustomEntryToChat` in `interactive-mode.ts` (the streaming splice block) and the bottom of `custom-entry.ts`.
+
 ## 2026-09-23 — Wire visible-stderr observation into the interactive TUI (senpi#1879)
 
 ### What changed
@@ -1434,3 +1570,24 @@ The login command is interactive mode's own command handler; an extension cannot
 
 - MEDIUM: the chat container construction and the assistant branch of `renderSessionItems` in `packages/coding-agent/src/modes/interactive/interactive-mode.ts`.
 - LOW: the added getters in `packages/coding-agent/src/modes/interactive/components/tool-execution.ts` and `packages/coding-agent/src/modes/interactive/components/assistant-message.ts`, and the spinner helper in `packages/coding-agent/src/modes/interactive/tool-progress.ts`.
+
+
+## 2026-09-23 — Filter model-only text at the tool-renderer boundary
+
+### What changed
+
+`packages/coding-agent/src/modes/interactive/components/tool-execution.ts`: Filter marked parts in createRenderState only, before both custom and built-in renderers receive content. Retain the original stored result and all exploration hooks.
+
+### Why
+
+Custom renderers and fallback text joins must observe the same visibility contract without changing session persistence.
+
+### Why an extension could not handle it
+
+The interactive component controls the common render-state boundary for every tool definition.
+
+### Expected merge conflict zones
+
+The result field of createRenderState; exploration-container hooks belong to the sibling lane.
+
+- Covered production paths: `packages/coding-agent/src/modes/interactive/components/tool-execution.ts`.

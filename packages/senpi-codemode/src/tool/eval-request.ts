@@ -1,5 +1,11 @@
 import type { ExtensionContext } from "@code-yeongyu/senpi";
-import { type EvalControlInput, type EvalToolInput, type EvalToolRequest, evalLanguageOrder } from "./types.ts";
+import {
+	type EvalControlInput,
+	type EvalLanguage,
+	type EvalToolInput,
+	type EvalToolRequest,
+	evalLanguageOrder,
+} from "./types.ts";
 
 const NON_INTERACTIVE_MODES = new Set(["print", "json"]);
 
@@ -11,7 +17,10 @@ export function normalizeEvalSummary(value: unknown): string | undefined {
 	return normalized.length === 0 ? undefined : normalized;
 }
 
-export function parseEvalRequest(params: unknown): EvalToolRequest {
+export function parseEvalRequest(
+	params: unknown,
+	enabledLanguages: readonly EvalLanguage[] = evalLanguageOrder,
+): EvalToolRequest {
 	if (!isRecord(params)) throw new TypeError("eval parameters must be an object");
 	if (params.action === "list") return { action: "list" };
 	if (params.action === "peek" || params.action === "stop") {
@@ -21,11 +30,11 @@ export function parseEvalRequest(params: unknown): EvalToolRequest {
 	}
 	if (params.action !== undefined && params.action !== "run")
 		throw new TypeError(`Unknown eval action "${String(params.action)}"`);
-	if (params.language === undefined) throw new TypeError("eval run requires language");
-	if (!isEvalLanguage(params.language)) {
+	if (params.language === undefined) throw new TypeError(evalRunRequiresLanguageMessage(enabledLanguages));
+	if (!isEvalLanguage(params.language))
 		throw new TypeError(`eval run language must be one of: ${evalLanguageOrder.join(", ")}`);
-	}
-	if (typeof params.code !== "string") throw new TypeError("eval run requires code");
+	if (typeof params.code !== "string")
+		throw new TypeError("eval run requires code — the cell body to execute, verbatim");
 	const summary = normalizeEvalSummary(params.summary);
 	if (summary === undefined)
 		throw new TypeError(
@@ -59,4 +68,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isEvalLanguage(value: unknown): value is EvalToolInput["language"] {
 	return value === "py" || value === "js" || value === "rb" || value === "jl";
+}
+
+function evalRunRequiresLanguageMessage(languages: readonly EvalLanguage[]): string {
+	return `eval run requires language — one of ${languages.map((language) => `"${language}"`).join(", ")}`;
 }

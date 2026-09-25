@@ -41,6 +41,8 @@ import {
 	contentText,
 	providerNotConfiguredMessage,
 	SERVER_FALLBACK_ABORTED_DIAGNOSTIC,
+	supportsAllowedToolChoice,
+	supportsConfigurationUpdate,
 	type ThinkingSelection,
 } from "@earendil-works/pi-ai";
 import type {
@@ -130,10 +132,16 @@ import {
 	UserEditError,
 	userTextEquals,
 } from "./edited-user-message.ts";
+import {
+	type EnvironmentContext,
+	environmentContextMessageIfChanged,
+	resolveEnvironmentContext,
+} from "./environment-context.ts";
 import { areExperimentalFeaturesEnabled } from "./experimental.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./extensions/builtin/anthropic-subscription/account-management.ts";
+import { getPromptCachePrewarmUsage } from "./extensions/builtin/cache-keepalive/prewarm-entry.ts";
 import {
 	type ModelUsabilityAdmission,
 	ModelUsabilityBudgetError,
@@ -217,6 +225,7 @@ import { ModelRegistry } from "./model-registry.ts";
 import { type AvailableModelsSource, getModelNarrowingPatterns, resolveModelScope } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { PROMPT_CACHE_SAFE_WAIT_ENV, resolvePromptCacheSafeWaitSeconds } from "./prompt-cache-budget.ts";
+import { PromptCachePrefixBuilds } from "./prompt-cache-prefix-request.ts";
 import { expandPromptTemplateWithMetadata, type PromptTemplate } from "./prompt-templates.ts";
 import { createProviderTimeoutRetryPlan, runBoundedRetryContinuation } from "./provider-timeout-retry.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
@@ -260,6 +269,7 @@ import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import { getSupportedThinkingLevels, supportsMax, supportsXhigh } from "./thinking-levels.ts";
 import { resetTimings, time } from "./timings.ts";
+import { type SessionMessageUpdateEvent, withResolvedToolName } from "./tool-call-display-name.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { composeFilesystemPolicies } from "./tools/filesystem-policy.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
@@ -309,8 +319,9 @@ type AgentSessionAgentEndEvent = Extract<AgentEvent, { type: "agent_end" }> & {
 };
 
 export type AgentSessionEvent =
-	| Exclude<AgentEvent, { type: "agent_end" }>
+	| Exclude<AgentEvent, { type: "agent_end" | "message_update" }>
 	| AgentSessionAgentEndEvent
+	| SessionMessageUpdateEvent
 	| { type: "agent_settled" }
 	| { type: "agent_idle" }
 	| { type: "session_abort" }
@@ -514,6 +525,11 @@ export interface AgentSessionConfig {
 	fallbackNow?: () => number;
 	/** Random source for retry jitter (tests only). */
 	retryRandom?: () => number;
+	/**
+	 * Send cwd and date as an append-only environment-context message before a turn (senpi#2093).
+	 * Default true; test fixtures that pin exact transcripts pass false.
+	 */
+	environmentContext?: boolean;
 	/** Global model narrowing for selectors and startup model choice (from --models / enabledModels) */
 	scopedModels?: Array<{
 		model: Model<any>;
@@ -1027,10 +1043,20 @@ export class AgentSession {
 	private readonly _publishedEvalOnlyHintNames = new Set<string>();
 	/** Active-tool selection as requested by callers, before eval-only filtering. */
 	private _requestedActiveToolNames?: string[];
+	/** Every tool that has been active this session, in first-activation order (senpi#2095). */
+	private readonly _declaredToolNames: string[] = [];
+	/** Tool names the base system prompt was last built from. */
+	private _promptToolNames: readonly string[] = [];
+	/** Whether the last tool declaration used the session-wide declared set. */
+	private _promptDeclaresSessionTools = false;
 	private _allowedToolNames?: Set<string>;
 	private _excludedToolNames?: Set<string>;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
+	// Settles once session_start handlers, default-tool enforcement, and resource discovery
+	// (which rebuilds the base prompt with discovered skills) have run.
+	private _sessionStartSettled: Promise<void> = Promise.resolve();
+	private readonly _promptCachePrefixBuilds = new PromptCachePrefixBuilds();
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
@@ -1048,6 +1074,7 @@ export class AgentSession {
 	private readonly _probeBackScheduler: ProbeBackScheduler;
 	private readonly _fallbackNow: () => number;
 	private readonly _retryRandom: () => number;
+	private readonly _environmentContextEnabled: boolean;
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -1116,6 +1143,7 @@ export class AgentSession {
 		this._selectorCooldowns = new SelectorCooldowns(config.fallbackNow ?? (() => Date.now()));
 		this._fallbackNow = config.fallbackNow ?? (() => Date.now());
 		this._retryRandom = config.retryRandom ?? Math.random;
+		this._environmentContextEnabled = config.environmentContext ?? true;
 		this._retryFallback = new RetryFallbackController({
 			getSettings: () => this.settingsManager.getRetryFallbackSettings(),
 			registry: this._modelRegistry,
@@ -1551,6 +1579,7 @@ export class AgentSession {
 				previousContext = previousSnapshot.context ?? postLateCompactionTurn.context;
 			}
 
+			this._refreshToolDeclarationsForModel();
 			return {
 				...previousSnapshot,
 				context: {
@@ -1558,6 +1587,7 @@ export class AgentSession {
 					messages: previousContext.messages,
 					systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
 					tools: this.agent.state.tools.slice(),
+					declaredTools: this.agent.state.declaredTools?.slice(),
 				},
 				model: this.agent.state.model,
 				thinkingLevel: this.agent.state.thinkingLevel,
@@ -2372,7 +2402,13 @@ export class AgentSession {
 		if (event.type === "agent_end" && this._abortProvenance.takeLateUserJoin()) await this._emitSessionAbort();
 
 		// Notify all listeners
-		this._emit(event.type === "agent_end" ? { ...event, willRetry: agentEndWillRetry } : event);
+		this._emit(
+			event.type === "agent_end"
+				? { ...event, willRetry: agentEndWillRetry }
+				: event.type === "message_update"
+					? withResolvedToolName(event, (name) => this.resolveToolCallName(name))
+					: event,
+		);
 		if (event.type === "agent_end") {
 			if (this._abortProvenance.takeLateUserJoin()) await this._emitSessionAbort();
 		}
@@ -3116,6 +3152,15 @@ export class AgentSession {
 		return this._toolDefinitions.get(name)?.definition;
 	}
 
+	/**
+	 * The tool a call named `requested` runs, by the same rule the agent loop
+	 * applies (exact name, else the unique alias among callable tools), without
+	 * activating anything. Returns `requested` when nothing resolves.
+	 */
+	resolveToolCallName(requested: string): string {
+		return resolveToolNameAlias(requested, this._callableToolNames()) ?? requested;
+	}
+
 	async executeTool<TDetails = unknown>(
 		toolName: string,
 		params: unknown,
@@ -3357,10 +3402,12 @@ export class AgentSession {
 			validToolNames.length !== this.agent.state.tools.length ||
 			validToolNames.some((name, index) => name !== this.agent.state.tools[index]?.name);
 		this.agent.state.tools = tools;
+		for (const name of validToolNames) {
+			if (!this._declaredToolNames.includes(name)) this._declaredToolNames.push(name);
+		}
 
 		// Rebuild base system prompt with new tool set
-		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
-		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+		this._applyToolDeclarations(validToolNames);
 		if (activeToolNamesChanged) {
 			// A tool change emitted while extensions are still binding belongs to the
 			// binding itself, not to a mid-session change. The session was already
@@ -3371,6 +3418,48 @@ export class AgentSession {
 				this._incrementMessageRevision();
 			}
 		}
+	}
+
+	/**
+	 * senpi#2095: a model that accepts `allowed_tools` is declared every tool this session has
+	 * activated, and the prompt's tool section lists that same set, so the active set shrinking or
+	 * re-growing restricts callability through `tool_choice` instead of rewriting the cached prefix.
+	 * Any other model is declared exactly the active tools.
+	 */
+	private _declaresSessionTools(): boolean {
+		const model = this.model;
+		return model !== undefined && supportsAllowedToolChoice(model);
+	}
+
+	private _toolDeclarationNames(activeToolNames: readonly string[]): string[] {
+		if (!this._declaresSessionTools()) return [...activeToolNames];
+		return this._declaredToolNames.filter((name) => this._toolRegistry.has(name));
+	}
+
+	private _applyToolDeclarations(activeToolNames: readonly string[]): void {
+		this._promptDeclaresSessionTools = this._declaresSessionTools();
+		const declaredNames = this._toolDeclarationNames(activeToolNames);
+		const declaresInactiveTools =
+			declaredNames.length !== activeToolNames.length ||
+			declaredNames.some((name, index) => name !== activeToolNames[index]);
+		this.agent.state.declaredTools = declaresInactiveTools
+			? declaredNames.flatMap((name) => this._toolRegistry.get(name) ?? [])
+			: undefined;
+		this._baseSystemPrompt = this._rebuildSystemPrompt(declaredNames);
+		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+	}
+
+	/**
+	 * Re-derive the declaration after a model change. Only a switch into or out of a model that declares
+	 * the session set can move it, and the prompt is rebuilt only when its tool list actually moves.
+	 */
+	private _refreshToolDeclarationsForModel(): void {
+		if (!this._declaresSessionTools() && !this._promptDeclaresSessionTools) return;
+		const declaredNames = this._toolDeclarationNames(this.getActiveToolNames());
+		const unchanged =
+			declaredNames.length === this._promptToolNames.length &&
+			declaredNames.every((name, index) => name === this._promptToolNames[index]);
+		if (!unchanged) this._applyToolDeclarations(this.getActiveToolNames());
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -3509,6 +3598,7 @@ export class AgentSession {
 
 	private _rebuildSystemPrompt(toolNames: string[]): string {
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
+		this._promptToolNames = validToolNames;
 		// An eval-only tool is hidden from the model but still callable as `tool.<name>(...)`,
 		// so its own snippet and guidelines still apply and must survive the withholding.
 		// `selectedTools` stays the model-visible list; only the contributions are widened.
@@ -3976,8 +4066,10 @@ export class AgentSession {
 			// The user's new prompt is sent below, so do not call agent.continue() here.
 			await this._enforceCompactionBeforeProvider(this._findLastAssistantMessage(), false, "pre_prompt");
 
-			// Build messages array (custom message if any, then user message)
+			// Build messages array (environment context if it changed, user message, then custom messages)
 			messages = [];
+			const environmentContext = this._pendingEnvironmentContextMessage();
+			if (environmentContext) messages.push(environmentContext);
 
 			// Add user message
 			const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
@@ -4000,6 +4092,8 @@ export class AgentSession {
 			}
 
 			// Emit before_agent_start extension event
+			this._refreshToolDeclarationsForModel();
+			this._promptCachePrefixBuilds.cancelAll();
 			const result = await this._extensionRunner.emitBeforeAgentStart(
 				expandedText,
 				currentImages,
@@ -4501,7 +4595,8 @@ export class AgentSession {
 				}
 			} else if (options?.triggerTurn) {
 				finishSessionWork ??= this._sessionWorkBarrier.begin();
-				const messages: AgentMessage[] = [appMessage];
+				const environmentContext = this._pendingEnvironmentContextMessage();
+				const messages: AgentMessage[] = environmentContext ? [environmentContext, appMessage] : [appMessage];
 				const queueTriggerForLater = (): void => {
 					if (options.deliverAs === "followUp") {
 						this.agent.followUp(appMessage);
@@ -4512,11 +4607,14 @@ export class AgentSession {
 				this._triggerTurnAdmissionAbortGeneration = userAbortGeneration;
 				try {
 					await this._enforceCompactionBeforeProvider(this._findLastAssistantMessage(), false, "pre_prompt");
+					this._refreshToolDeclarationsForModel();
+					this._promptCachePrefixBuilds.cancelAll();
 					const result = await this._extensionRunner.emitBeforeAgentStart(
 						contentText(appMessage.content, ""),
 						undefined,
 						this._baseSystemPrompt,
 						this._baseSystemPromptOptions,
+						{ trigger: "extension" },
 					);
 					if (userAbortGeneration !== this._userAbortGeneration) {
 						queueTriggerForLater();
@@ -4548,6 +4646,12 @@ export class AgentSession {
 			deferredTurnClaim?.resolve("finished-without-start");
 			finishSessionWork?.();
 		}
+	}
+
+	/** Environment context a new turn must carry: set when cwd or date differs from the latest one visible (senpi#2093). */
+	private _pendingEnvironmentContextMessage(): CustomMessage<EnvironmentContext> | undefined {
+		if (!this._environmentContextEnabled) return undefined;
+		return environmentContextMessageIfChanged(this.agent.state.messages, resolveEnvironmentContext(this._cwd));
 	}
 
 	private _appendCustomMessage(appMessage: CustomMessage): void {
@@ -5209,7 +5313,7 @@ export class AgentSession {
 		const previousReasoningBaseline = this.agent.state.reasoningBaseline;
 		const previousAbortServerSideFallback = this.agent.abortServerSideFallback;
 		this.agent.state.model = model;
-		if (!(model.id === "gpt-6-astra" && (model.provider === "openai" || model.provider === "chatgpt-subscription"))) {
+		if (!supportsConfigurationUpdate(model)) {
 			this.agent.state.reasoningBaseline = undefined;
 		}
 		const scopedMatch = this._scopedModels.find((sm) => modelsAreEqual(sm.model, model));
@@ -5524,11 +5628,7 @@ export class AgentSession {
 		if (isChanging || selectionChanged) {
 			this.sessionManager.appendThinkingLevelChange(effectiveLevel, effectiveSelection);
 			const model = this.model;
-			if (
-				isChanging &&
-				model?.id === "gpt-6-astra" &&
-				(model.provider === "openai" || model.provider === "chatgpt-subscription")
-			) {
+			if (isChanging && model !== undefined && supportsConfigurationUpdate(model)) {
 				this.agent.state.reasoningBaseline ??= previousLevel;
 				this.sessionManager.appendConfigurationUpdate(effectiveLevel);
 				this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
@@ -6317,8 +6417,8 @@ export class AgentSession {
 			const modelAfterCompaction = this.model;
 			if (
 				latestConfigurationEffort !== undefined &&
-				modelAfterCompaction?.id === "gpt-6-astra" &&
-				(modelAfterCompaction.provider === "openai" || modelAfterCompaction.provider === "chatgpt-subscription")
+				modelAfterCompaction !== undefined &&
+				supportsConfigurationUpdate(modelAfterCompaction)
 			) {
 				this.sessionManager.appendConfigurationUpdate(latestConfigurationEffort);
 			}
@@ -7369,6 +7469,7 @@ export class AgentSession {
 
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
 		const finishBindingWork = this._sessionWorkBarrier.begin();
+		const settleSessionStart = this._beginSessionStartSettlement();
 		const bindingPromptReadiness = new Set<Promise<void>>();
 		this._extensionBindingPromptReadiness = bindingPromptReadiness;
 		try {
@@ -7401,8 +7502,17 @@ export class AgentSession {
 				this._extensionBindingPromptReadiness = undefined;
 			}
 			finishBindingWork();
+			void Promise.allSettled(bindingPromptReadiness).then(settleSessionStart);
 		}
 		await Promise.all(bindingPromptReadiness);
+	}
+
+	private _beginSessionStartSettlement(): () => void {
+		let settle!: () => void;
+		this._sessionStartSettled = new Promise<void>((resolve) => {
+			settle = resolve;
+		});
+		return settle;
 	}
 
 	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
@@ -7429,7 +7539,7 @@ export class AgentSession {
 
 		this._resourceLoader.extendResources(extensionPaths);
 		if (skillPaths.length > 0 || promptPaths.length > 0 || themePaths.length > 0) {
-			this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
+			this._baseSystemPrompt = this._rebuildSystemPrompt(this._toolDeclarationNames(this.getActiveToolNames()));
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
 	}
@@ -7734,6 +7844,19 @@ export class AgentSession {
 						runtimeHookSourcePaths: [],
 					},
 				getSystemPromptOptions: () => this._baseSystemPromptOptions,
+				getPromptCachePrefixRequest: (options) =>
+					this._promptCachePrefixBuilds.build(
+						{
+							agent: this.agent,
+							runner: this._extensionRunner,
+							modelRuntime: this._modelRuntime,
+							ready: this._sessionStartSettled,
+							getServiceTier: () => this.effectiveServiceTier,
+							getBaseSystemPrompt: () => this._baseSystemPrompt,
+							getBaseSystemPromptOptions: () => this._baseSystemPromptOptions,
+						},
+						options,
+					),
 			},
 			{
 				registerProvider: (name, config) => {
@@ -8065,13 +8188,18 @@ export class AgentSession {
 			this._extensionShutdownHandler ||
 			this._extensionErrorListener;
 		if (hasBindings) {
-			await options?.beforeSessionStart?.();
-			this.syncPromptCacheSafeWaitEnv();
-			await this._extensionRunner.emit({
-				type: "session_start",
-				reason: "reload",
-			});
-			await this.extendResourcesFromExtensions("reload");
+			const settleSessionStart = this._beginSessionStartSettlement();
+			try {
+				await options?.beforeSessionStart?.();
+				this.syncPromptCacheSafeWaitEnv();
+				await this._extensionRunner.emit({
+					type: "session_start",
+					reason: "reload",
+				});
+				await this.extendResourcesFromExtensions("reload");
+			} finally {
+				settleSessionStart();
+			}
 		}
 		time("lifecycle", "reload");
 		return { cancelled: false };
@@ -9379,6 +9507,8 @@ export class AgentSession {
 			if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
 				addUsageToTotals(usageTotals, entry.usage);
 			}
+			const prewarmUsage = getPromptCachePrewarmUsage(entry);
+			if (prewarmUsage) addUsageToTotals(usageTotals, prewarmUsage);
 			if (entry.type !== "message") continue;
 			totalMessages++;
 			const message = entry.message;

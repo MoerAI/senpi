@@ -42,6 +42,7 @@ export type {
 } from "./api/openai-codex-responses.ts";
 export type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
 export type { OpenAIResponsesOptions } from "./api/openai-responses.ts";
+export { isOpenAIResponsesPromptCacheModel } from "./api/openai-responses-prompt-cache.ts";
 export { convertResponsesMessages } from "./api/openai-responses-shared.ts";
 export type { PiMessagesEvent, PiMessagesOptions, PiMessagesRewriteImpact } from "./api/pi-messages.ts";
 export {
@@ -96,6 +97,7 @@ export * from "./images-models.ts";
 export * from "./legacy-provider-ids.ts";
 export * from "./models.ts";
 export * from "./models-store.ts";
+export { supportsAllowedToolChoice } from "./openai-responses-compat.ts";
 export * from "./providers/faux.ts";
 export * from "./session-resources.ts";
 export {
@@ -128,7 +130,10 @@ export * from "./utils/overflow.ts";
 export {
 	isAnthropicApiBaseUrl,
 	PROMPT_CACHE_TTL_LONG_SECONDS,
+	PROMPT_CACHE_TTL_OPENAI_EXTENDED_SECONDS,
 	PROMPT_CACHE_TTL_SHORT_SECONDS,
+	type PromptCacheLifetime,
+	resolvePromptCacheLifetime,
 	resolvePromptCacheTtlSeconds,
 } from "./utils/prompt-cache-ttl.ts";
 export * from "./utils/provider-failure-description.ts";

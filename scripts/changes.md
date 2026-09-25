@@ -1,3 +1,51 @@
+## 2026-09-25 - The published tarball leaves out never-published workspaces nothing shipped reaches (senpi#2141)
+
+### What changed
+
+- `scripts/registry-packages.mjs`: `isUnpublishedForkPackage(name)` is true for a `@code-yeongyu/` package outside `registryPackageNames` (the publish set), which the registry can never serve.
+- `scripts/unpublished-bundled-workspaces.mjs` (new): `unpublishedBundledWorkspaces(repoRoot, workspaces)` returns those bundled workspaces, measured against the BUILT `packages/coding-agent/dist` (any quoted specifier of the package in a shipped `.js`/`.mjs`/`.cjs`) and against the manifests that ship (the CLI's and every published bundled workspace's `dependencies`/`optionalDependencies`/`peerDependencies`). If anything shipped reaches one, it throws and names the importer or declarer, so a release can never publish an uninstallable CLI.
+- `scripts/prepare-senpi-bundled-workspaces.mjs`: `prepareSenpiBundledWorkspaces` skips those workspaces and removes any stale staged copy, so `stagePublishManifest` never declares them. `assertSenpiPackedWorkspaceFiles` skips their required-file checks and throws when the packed manifest's runtime or bundled dependencies name one.
+- Tests: `unpublished-bundled-workspaces.test.mjs` (the rule, an import from `dist/bundle`, declarations by the CLI and by a published workspace); `prepare-senpi-bundled-workspaces-pack.test.mjs` replaces the "desktop engine loader required" case with the guard and the leave-out case. `prepare-senpi-bundled-workspaces.prepare.test.mjs` replaces "stages the desktop engine's host executable" with the leave-out case (a stale staged copy is removed, nothing desktop is declared) and a staging failure when the built dist imports the engine, and its manifest case no longer expects the desktop names.
+
+### Why
+
+`@code-yeongyu/senpi@2026.9.25` declared the five private desktop workspaces (`2026.9.24-2`) as dependencies because `stagePublishManifest` declares every bundled package. npm installs from the bundle, but bun resolves every declared dependency from the registry even when it is bundled (as in #1632), so `bun add` failed and omo could not adopt the release. Nothing in the shipped `dist/` imports them yet (#2128 PR-0 has no user-visible tool). When the chain ships the engine as an external native sidecar, it joins the publish set and this guard is what forces that step.
+
+### Why an extension could not handle it
+
+This is release tooling.
+
+### Expected merge conflict zones
+
+- The workspace loop of `prepareSenpiBundledWorkspaces` and the check loop of `assertSenpiPackedWorkspaceFiles`.
+- `registryPackageNames` in `scripts/registry-packages.mjs`, when a desktop package joins the publish set.
+
+## 2026-09-24 - The five desktop packages join every enumerating build and publish script (senpi#2128)
+
+### What changed
+
+- `scripts/build-all.mjs`: `BUILD_PHASES` builds `packages/desktop-protocol` and `-prelude` beside tui, `-engine` beside ai, `-service` beside agent, and `-tool` beside sqlite-node, all before coding-agent. `build-all.test.mjs` pins the order and proves each desktop package builds after the workspace packages it depends on.
+- `scripts/prepare-senpi-bundled-workspaces.mjs`: the five desktop packages are bundled workspaces. `-engine` has `nativePrebuild: true`. `nativePrebuildFile(target, packageName)` takes a per-package file pattern (`senpi_pty.<target>.node` for pi-pty, `senpi-desktop-engine[.exe]` for the engine), and `bundledWorkspacePackageChecks` reports each package's own `prebuildFiles`. A missing host prebuild still only warns.
+- `scripts/release-packages.mjs`: `BUNDLED_INTERNAL_WORKSPACES` lists the five desktop manifests. They are private, never published, and stay off the CalVer stamp. `scripts/registry-packages.mjs` is deliberately unchanged, because a registry entry would make `publish.mjs` publish them.
+- `scripts/build-coding-agent-bundle.mjs`: `@code-yeongyu/senpi-desktop-engine` is external and allowed, like `@earendil-works/pi-pty`. `commonBuildOptions` and `validateExternalImports` are exported, and the build runs only when the file is executed directly, so `build-coding-agent-bundle.test.mjs` can bundle a probe with the real options.
+- `scripts/check-entry-graphs.mjs`: the desktop packages are followed as workspace sources and each `.` entry has a budget that forbids agent, ai, tui, coding-agent, and codemode.
+- `scripts/changes-md-policy.mjs`: `CRATES_SOURCE_PATTERN` matches `crates/senpi-desktop-*/` beside `crates/senpi-pty/`.
+- `scripts/local-release.mjs`: builds and packs the desktop packages in dependency order. `scripts/generate-coding-agent-shrinkwrap.mjs`: `@code-yeongyu/senpi-desktop-` is an internal prefix.
+- `scripts/desktop-package-boundaries.test.mjs` (new): enforces the import direction. Codemode imports no desktop package. Coding-agent imports only `-tool` and `-service`. `-engine` may import `-protocol`; `-service` may import `-protocol`, `-engine`, and `-prelude`; `-tool` may import those plus `-service`. `-protocol` and `-prelude` import no workspace package. No desktop package imports agent, ai, or tui, and exactly five desktop packages exist.
+
+### Why
+
+- Desktop computer use (senpi#2128) adds five flat TS packages. Every script that enumerates workspaces has to agree on them before any of them gains behavior, or publish staging and the bundle break late.
+
+### Why an extension could not handle it
+
+- Build, bundle, publish, and changelog tooling runs before any extension loads.
+
+### Expected merge conflict zones
+
+- MEDIUM: `BUILD_PHASES` in `build-all.mjs`, the `bundledWorkspaces` table and `nativePrebuildFile` in `prepare-senpi-bundled-workspaces.mjs`, the external lists and the new `buildBundle` wrapper in `build-coding-agent-bundle.mjs`, and the `packages` list in `local-release.mjs`.
+- LOW: `WORKSPACE`/`BUDGETS` in `check-entry-graphs.mjs`, `BUNDLED_INTERNAL_WORKSPACES`, `CRATES_SOURCE_PATTERN`, and `internalPackagePrefixes`.
+
 ## 2026-09-23 - Claude Code model-support report in the release and nightly gates (senpi#2053)
 
 ### What changed

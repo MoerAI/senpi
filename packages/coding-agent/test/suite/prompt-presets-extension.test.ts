@@ -180,7 +180,7 @@ describe("prompt preset resolver", () => {
 		expect(preset?.prompt).toContain("reconcile every item");
 		// GPT-5.6 tuning: prioritization instead of brevity, tool-loop stopping conditions.
 		expect(preset?.prompt).toContain("fewest useful tool loops");
-		expect(preset?.prompt).toContain("Lead with the conclusion");
+		expect(preset?.prompt).toContain("Final message:");
 		// Execution discipline: every typed directive ships in the rendered core.
 		for (const rule of GPT56_EXECUTION_RULES) {
 			expect(preset?.prompt).toContain(rule.directive);
@@ -430,7 +430,8 @@ describe("prompt preset resolver", () => {
 		expect(activePrompt).toContain("## Working the Task");
 		expect(activePrompt).toContain("## Verification");
 		expect(activePrompt).toContain("## Available Tools");
-		expect(activePrompt).toContain("Current working directory: /repo");
+		// senpi#2093: cwd travels in the environment-context message, not the prompt.
+		expect(activePrompt).not.toContain("Current working directory:");
 	});
 
 	it("allows settings.json to force claude-opus-4-7 regardless of model id", () => {

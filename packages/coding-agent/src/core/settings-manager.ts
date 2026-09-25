@@ -65,6 +65,8 @@ import {
 	type PromptCacheSettings,
 	type ProviderConcurrencySettings,
 	type ThinkingBudgetsSettings,
+	type TodoFirstTurnPlan,
+	type TodoSettings,
 } from "./settings-shapes.ts";
 import {
 	type BranchSummarySettings,
@@ -197,6 +199,7 @@ export interface Settings {
 	images?: ImageSettings;
 	lookAt?: LookAtSettings;
 	askUser?: AskUserSettings;
+	todo?: TodoSettings;
 	recommendedModels?: string[]; // Preferred default model ids, in priority order
 	favoriteModels?: string[]; // Model patterns for Ctrl+P cycling (same format as --models CLI flag)
 	enabledModels?: string[]; // Legacy global model narrowing patterns (same format as --models CLI flag)
@@ -937,6 +940,16 @@ export class SettingsManager {
 			timeoutMinutes: resolveAskUserTimeoutMinutes(configured?.timeoutMinutes),
 			bell: typeof configured?.bell === "boolean" ? configured.bell : true,
 		};
+	}
+
+	getTodoFirstTurnPlan(): TodoFirstTurnPlan {
+		const configured = this.settings.todo?.firstTurnPlan;
+		return configured === "remind" || configured === "off" ? configured : "force";
+	}
+
+	getTodoTurnEndBackstop(): boolean {
+		const configured = this.settings.todo?.turnEndBackstop;
+		return typeof configured === "boolean" ? configured : true;
 	}
 
 	isProjectTrusted(): boolean {

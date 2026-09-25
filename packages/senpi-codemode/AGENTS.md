@@ -42,7 +42,8 @@ test/                            Vitest contracts and the omp parity ledger
   to render output; preserve agent-progress coalescing.
 - Nested tool-call rendering is bounded and rendering-only: no session messages, no extension events, no toggle.
 - Optional interpreters are capability gaps, not installation failures; JavaScript remains available on supported Node versions.
-- Target Node 24+. No Bun-only APIs, `@oh-my-opencode` imports, or `budget`.
+- Target Node 24+. Bun-only APIs appear only behind runtime detection with a correct Node path (the eval code preview uses `Bun.Transpiler` only when the renderer runs on Bun); no `@oh-my-opencode` imports or `budget`.
+- Code previews are display-only: the JS layout keeps every literal, name, and comment text of the cell, Python previews borrow the user's own interpreter (ruff, black, or masked `ast.unparse`), and anything that cannot be shown faithfully is shown as sent.
 
 ## WHERE TO LOOK
 

@@ -1,5 +1,42 @@
 # changes — senpi-monorepo root
 
+## Resolve the desktop packages from source in the root type check (2026-09-24)
+
+### What changed
+
+- `tsconfig.json` `paths` maps `@code-yeongyu/senpi-desktop-{engine,prelude,protocol,service,tool}` to each package's `src/index.ts`, beside the existing workspace entries.
+
+### Why
+
+- The root `tsc --noEmit` in `bun run check` has to resolve the desktop packages (senpi#2128) from source, like every other workspace package. Without the mapping it reads `dist/*.d.ts`, which is missing in a fresh checkout and stale after a source edit.
+
+### Why an extension could not handle it
+
+- The root type check runs on the repository before any senpi extension loads.
+
+### Expected merge conflict zones
+
+- LOW: the `paths` block of `tsconfig.json`, where upstream adds its own workspace entries.
+
+## Add senpi-desktop crate workspace skeletons (2026-09-25)
+
+### What changed
+
+- `Cargo.toml` workspace `members` now includes the ten `crates/senpi-desktop-*` computer-use crates: core, safety, session, backend-fake, backend-atspi, backend-macos, backend-x11, backend-wayland, backend-win32, and engine.
+- `[workspace.dependencies]` pins the desktop native stack copied from oh-my-pi `crates/pi-natives` (image with `bmp`, png, flume, parking_lot, xcap, core-graphics, objc2*, foreign-types, tempfile, libc, x11rb, atspi, ashpd, reis, zbus, xkeysym, windows-sys, enigo, uiautomation) plus serde/serde_json/schemars/thiserror/tokio/clap/ulid/sha2 and a proptest dev pin.
+
+### Why
+
+- Wave 0 freezes the crate graph and exact dependency versions so later computer-use lanes compile against a locked workspace without napi or pipewire.
+
+### Why an extension could not handle it
+
+- Cargo workspace membership and `[workspace.dependencies]` are resolved by the Rust toolchain before any senpi extension loads.
+
+### Expected merge conflict zones
+
+- Root `Cargo.toml` `members` list and the `[workspace.dependencies]` table against any upstream native-crate pin bump.
+
 ## Harness state leaves the tree and cannot be tracked again (2026-09-23)
 
 ### What changed

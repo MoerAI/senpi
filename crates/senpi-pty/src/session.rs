@@ -106,6 +106,7 @@ pub struct PtySession {
     cancelled: Arc<AtomicBool>,
     timed_out: Arc<AtomicBool>,
     user_wrote: Arc<AtomicBool>,
+    pid: Option<u32>,
     process_group: Option<i32>,
     exit: Option<PtyExit>,
 }
@@ -148,7 +149,8 @@ impl PtySession {
             .map_err(|error| PtyError::new(error.to_string()))?;
         let killer = child.clone_killer();
         let timeout_killer = child.clone_killer();
-        let process_group = process_group(&*pair.master).or_else(|| child.process_id().map(|pid| pid as i32));
+        let pid = child.process_id();
+        let process_group = process_group(&*pair.master).or_else(|| pid.map(|pid| pid as i32));
         let finished = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
         let timed_out = Arc::new(AtomicBool::new(false));
@@ -201,9 +203,18 @@ impl PtySession {
             cancelled,
             timed_out,
             user_wrote,
+            pid,
             process_group,
             exit: None,
         })
+    }
+
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
+    pub fn process_group_id(&self) -> Option<i32> {
+        self.process_group
     }
 
     pub fn write(&mut self, bytes: &[u8]) -> PtyResult<()> {

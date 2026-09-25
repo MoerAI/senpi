@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { rewriteOwnedRegistryAliases, stagePublishManifest } from "./prepare-senpi-publish-manifest.mjs";
 import { stagePublishDependencies } from "./prepare-senpi-publish-dependencies.mjs";
 import { pinSenpiPeerDependency } from "./publish-manifest.mjs";
+import { isUnpublishedForkPackage } from "./registry-packages.mjs";
+import { unpublishedBundledWorkspaces } from "./unpublished-bundled-workspaces.mjs";
 export {
 	bundlablePublishPackageNames,
 	isPlatformConstrainedPackage,
@@ -33,8 +35,22 @@ export function nativePrebuildTarget(platform = process.platform, arch = process
 	return target;
 }
 
-export function nativePrebuildFile(target) {
-	return `native/prebuilds/${target}/senpi_pty.${target}.node`;
+// Each native workspace vendors its host prebuild under its own file name: pi-pty a Node addon,
+// the desktop engine a standalone executable.
+const NATIVE_PREBUILD_FILE_NAMES = new Map([
+	["@earendil-works/pi-pty", (target) => `senpi_pty.${target}.node`],
+	[
+		"@code-yeongyu/senpi-desktop-engine",
+		(target) => (target.startsWith("win32-") ? "senpi-desktop-engine.exe" : "senpi-desktop-engine"),
+	],
+]);
+
+export function nativePrebuildFile(target, packageName) {
+	const fileName = NATIVE_PREBUILD_FILE_NAMES.get(packageName);
+	if (!fileName) {
+		throw new Error(`No native prebuild file pattern for ${packageName}`);
+	}
+	return `native/prebuilds/${target}/${fileName(target)}`;
 }
 
 const bundledWorkspaces = [
@@ -90,6 +106,40 @@ const bundledWorkspaces = [
 		sourceOnly: true,
 		requiredFiles: ["package.json", "src/index.ts", "src/kernels/py/prelude.py"],
 	},
+	// Desktop computer use. The engine package locates its executable beside itself, like pi-pty's
+	// addon; a missing host prebuild only leaves desktop control unavailable on that host.
+	{
+		source: "packages/desktop-protocol",
+		packageName: "@code-yeongyu/senpi-desktop-protocol",
+		targetParts: ["@code-yeongyu", "senpi-desktop-protocol"],
+		sourceOnly: false,
+	},
+	{
+		source: "packages/desktop-engine",
+		packageName: "@code-yeongyu/senpi-desktop-engine",
+		targetParts: ["@code-yeongyu", "senpi-desktop-engine"],
+		sourceOnly: false,
+		requiredFiles: ["package.json", "dist/index.js", "native/index.js"],
+		nativePrebuild: true,
+	},
+	{
+		source: "packages/desktop-prelude",
+		packageName: "@code-yeongyu/senpi-desktop-prelude",
+		targetParts: ["@code-yeongyu", "senpi-desktop-prelude"],
+		sourceOnly: false,
+	},
+	{
+		source: "packages/desktop-service",
+		packageName: "@code-yeongyu/senpi-desktop-service",
+		targetParts: ["@code-yeongyu", "senpi-desktop-service"],
+		sourceOnly: false,
+	},
+	{
+		source: "packages/desktop-tool",
+		packageName: "@code-yeongyu/senpi-desktop-tool",
+		targetParts: ["@code-yeongyu", "senpi-desktop-tool"],
+		sourceOnly: false,
+	},
 ];
 const vendoredTypeWorkspaces = [
 	{
@@ -109,17 +159,21 @@ const vendoredTypeWorkspaces = [
 ];
 const internalPackageNames = new Set([...bundledWorkspaces, ...vendoredTypeWorkspaces].map((workspace) => workspace.packageName));
 function requiredFilesForWorkspace(workspace, nativeTargets) {
-	const requiredFiles = [...(workspace.requiredFiles ?? ["package.json", "dist/index.js"])];
-	if (workspace.nativePrebuild) {
-		requiredFiles.push(...nativeTargets.map(nativePrebuildFile));
-	}
-	return requiredFiles;
+	return [
+		...(workspace.requiredFiles ?? ["package.json", "dist/index.js"]),
+		...prebuildFilesForWorkspace(workspace, nativeTargets),
+	];
+}
+
+function prebuildFilesForWorkspace(workspace, nativeTargets) {
+	return workspace.nativePrebuild ? nativeTargets.map((target) => nativePrebuildFile(target, workspace.packageName)) : [];
 }
 
 export function bundledWorkspacePackageChecks(nativeTargets = [nativePrebuildTarget()]) {
 	return bundledWorkspaces.map((workspace) => ({
 		packageName: workspace.packageName,
 		requiredFiles: requiredFilesForWorkspace(workspace, nativeTargets),
+		prebuildFiles: prebuildFilesForWorkspace(workspace, nativeTargets),
 	}));
 }
 
@@ -321,7 +375,6 @@ export function copyPublishDependencies(repoRoot) {
 
 export function assertSenpiPackedWorkspaceFiles(packed, options = {}) {
 	const nativeTargets = options.nativePrebuildTargets ?? [nativePrebuildTarget()];
-	const prebuildFiles = new Set(nativeTargets.map(nativePrebuildFile));
 	const filePaths = new Set((packed.files ?? []).map((file) => file.path));
 	const resolverVisibleVendor = [...filePaths].find(
 		(path) =>
@@ -337,6 +390,14 @@ export function assertSenpiPackedWorkspaceFiles(packed, options = {}) {
 	// Every dependency selected by the staged bundle manifest must be vendored in the
 	// tarball. Platform-specific optional dependencies intentionally stay outside this
 	// list so npm can resolve the matching native package on the consumer machine.
+	const declaredUnpublished = [...(options.bundledDependencies ?? []), ...(options.runtimeDependencies ?? [])].filter(
+		isUnpublishedForkPackage,
+	);
+	if (declaredUnpublished.length > 0) {
+		throw new Error(
+			`senpi package manifest declares packages that are never published, which bun cannot install (senpi#2141): ${[...new Set(declaredUnpublished)].join(", ")}`,
+		);
+	}
 	const missingRuntimeDependencies = [];
 	for (const dependencyName of options.bundledDependencies ?? options.runtimeDependencies ?? []) {
 		const packageJsonPath = `node_modules/${dependencyName}/package.json`;
@@ -362,18 +423,20 @@ export function assertSenpiPackedWorkspaceFiles(packed, options = {}) {
 	}
 	const missing = [];
 
-	for (const { packageName, requiredFiles } of bundledWorkspacePackageChecks(nativeTargets)) {
+	for (const { packageName, requiredFiles, prebuildFiles } of bundledWorkspacePackageChecks(nativeTargets)) {
+		if (isUnpublishedForkPackage(packageName)) continue;
 		const packageRoot = `package/node_modules/${packageName}`;
 		const dryRunPackageRoot = `node_modules/${packageName}`;
 		for (const requiredFile of requiredFiles) {
 			const path = `${packageRoot}/${requiredFile}`;
 			const dryRunPath = `${dryRunPackageRoot}/${requiredFile}`;
 			if (filePaths.has(path) || filePaths.has(dryRunPath)) continue;
-			// The platform native prebuild (.node) is optional — the pty loader falls back
-			// to a child_process pipe when it is absent, so a host without a committed/built
-			// prebuild (e.g. linux-x64 in the npm-publish job) must not fail the pack check.
-			if (prebuildFiles.has(requiredFile)) {
-				console.warn(`Warning: packed ${packageName} has no native prebuild ${requiredFile} (pipe fallback at runtime).`);
+			// The platform native prebuild is optional — the pty loader falls back to a
+			// child_process pipe and the desktop engine reports itself unavailable when it is
+			// absent, so a host without a committed/built prebuild (e.g. linux-x64 in the
+			// npm-publish job) must not fail the pack check.
+			if (prebuildFiles.includes(requiredFile)) {
+				console.warn(`Warning: packed ${packageName} has no native prebuild ${requiredFile} (runtime fallback applies).`);
 				continue;
 			}
 			missing.push(`${path} or ${dryRunPath}`);
@@ -403,8 +466,13 @@ export function assertSenpiPackedWorkspaceFiles(packed, options = {}) {
 export function prepareSenpiBundledWorkspaces(repoRoot = root) {
 	const publishDependencies = copyPublishDependencies(repoRoot);
 	const codingAgentNodeModules = join(repoRoot, "packages/coding-agent/node_modules");
+	const unpublished = unpublishedBundledWorkspaces(repoRoot, bundledWorkspaces);
 
 	for (const workspace of bundledWorkspaces) {
+		if (unpublished.has(workspace.packageName)) {
+			rmSync(join(codingAgentNodeModules, ...workspace.targetParts), { recursive: true, force: true });
+			continue;
+		}
 		const sourceRoot = join(repoRoot, workspace.source);
 		const distPath = join(sourceRoot, "dist");
 		if (!workspace.sourceOnly && !existsSync(distPath)) {
@@ -417,14 +485,14 @@ export function prepareSenpiBundledWorkspaces(repoRoot = root) {
 		// and the published package historically shipped with no prebuilds at all). So a
 		// missing host prebuild must warn, not fail the publish on a runner whose platform
 		// has no committed or built prebuild (e.g. linux-x64 in the npm-publish job).
-		const prebuildFiles = new Set(workspace.nativePrebuild ? [nativePrebuildFile(nativePrebuildTarget())] : []);
+		const prebuildFiles = new Set(prebuildFilesForWorkspace(workspace, [nativePrebuildTarget()]));
 		const requiredFiles = requiredFilesForWorkspace(workspace, [nativePrebuildTarget()]);
 		for (const requiredFile of requiredFiles) {
 			const requiredPath = join(sourceRoot, requiredFile);
 			if (existsSync(requiredPath)) continue;
 			if (prebuildFiles.has(requiredFile)) {
 				console.warn(
-					`Warning: ${workspace.packageName} has no native prebuild at ${requiredFile}; bundling without it (pipe fallback at runtime).`,
+					`Warning: ${workspace.packageName} has no native prebuild at ${requiredFile}; bundling without it (runtime fallback applies).`,
 				);
 				continue;
 			}
