@@ -1,5 +1,23 @@
 # todotools Fork Tracker
 
+## 2026-09-25 - The state barrel stops re-exporting unused Ask helpers (senpi#2143)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/todotools/state.ts` re-exports only `captureListAsk` from `todo-ask.ts`; `ASK_TEXT_LIMIT` and `truncateAskText` had no importer through the barrel.
+
+### Why
+
+Dead re-exports widen the barrel other builtins import.
+
+### Why an extension could not handle it
+
+This is the todotools barrel itself.
+
+### Expected merge conflict zones
+
+- The `./todo-ask.ts` re-export line in `state.ts`.
+
 ## 2026-09-25 - The first-turn opener arms on the user's first request, never on an extension-triggered turn (senpi#2137)
 
 ### What changed

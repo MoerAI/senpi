@@ -1,5 +1,23 @@
 # changes.md — dynamic-prompt
 
+## 2026-09-25 - The brief-update sentence reads as a sentence (senpi#2143)
+
+### What changed
+
+- `packages/coding-agent/src/core/dynamic-prompt/handoff.ts`: the `briefUpdatesBetweenHandoffs` sentence now reads "Between handoffs, a one-line update on what you just found, ending with `Now: [task]. Next: [task].`, helps the user follow along." instead of ending in a stray `.,` with no subject.
+
+### Why
+
+It shipped in the rendered Claude Fable 5.1 prompt as a broken sentence.
+
+### Why an extension could not handle it
+
+This is the shared handoff section.
+
+### Expected merge conflict zones
+
+- `betweenRule` in `buildHandoffSection`.
+
 ## Handoff moments: the routing line is not a handoff (2026-09-24, real-surface QA)
 
 ### What changed

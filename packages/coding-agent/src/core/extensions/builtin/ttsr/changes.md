@@ -1,5 +1,23 @@
 # TTSR Fork Tracker
 
+## 2026-09-25 - The handoff Ask exemption needs a closing status label (senpi#2143)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/ttsr/detectors/repetitive-turns.ts`: `HANDOFF_ASK_CLAUSE` drops its end-of-text branch, so an `Ask:` clause is removed only when `For you:`, `You need:` or `Now:` closes it. `test/ttsr/repetitive-turns.test.ts` adds an unlabeled `Ask:` loop that must still fire on its third turn (RED with the old branch).
+
+### Why
+
+The end-of-text branch removed everything after any `Ask:`, so a stuck turn that merely contained the word normalized to nothing and scored 0 against itself, which hid it from `repetitive-turns` and from `collapse-near-duplicates` (same normalizer). #2136 meant to exempt only the restated request inside a handoff block.
+
+### Why an extension could not handle it
+
+This is the detector's own normalizer.
+
+### Expected merge conflict zones
+
+- `HANDOFF_ASK_CLAUSE` in `detectors/repetitive-turns.ts`.
+
 ## 2026-09-25 - repetitive-turns ignores the restated Ask of a handoff block (senpi#2135)
 
 ### What changed

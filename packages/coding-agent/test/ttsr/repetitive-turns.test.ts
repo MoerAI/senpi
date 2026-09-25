@@ -71,6 +71,19 @@ describe("handoff blocks (senpi#2135)", () => {
 		);
 	});
 
+	it("keeps an Ask: that no status label closes, so a looping turn containing it still repeats (senpi#2143)", () => {
+		// given: a stuck turn that mentions Ask: but is not a handoff block
+		const loop = "Ask: me anything. I am still waiting for the build to finish before I run the parser tests again.";
+		const state = createRepetitiveTurnsState();
+
+		// when
+		const matches = [recordTurnText(state, loop), recordTurnText(state, loop), recordTurnText(state, loop)];
+
+		// then
+		expect(normalizeTurnText(loop)).toContain("still waiting for the build");
+		expect(matches[2]?.rule).toBe(REPETITIVE_TURNS_RULE_NAME);
+	});
+
 	it("still scores two blocks with the same status as near-duplicates", () => {
 		// given: a model re-emitting the same For you / Now / Next under the same Ask
 		const again = `${RESTATED_ASK} For you: source is a three-title loop with no helper yet. Now: Add slugify helper. Next: Wire slugify into index.`;
