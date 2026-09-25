@@ -315,17 +315,11 @@ describe("todo-owed backstop through the real AgentSession", () => {
 			buildTodoOwedReminder(ANCHORS, true),
 		]);
 		expect(harness.faux.state.callCount).toBe(4);
-		expect(notices).toEqual([
-			{
-				message:
-					"Agent stopped with 2 open todo tasks (Now: Write the parser (Build)). Send a message to continue.",
-				type: "warning",
-			},
-		]);
-		expect(events.map((event) => [event.reason, event.chainCount])).toEqual([
-			["delivered", 1],
-			["delivered", 2],
-			["capped", 2],
+		expect(notices.map((notice) => notice.type)).toEqual(["warning"]);
+		expect(events.map((event) => [event.reason, event.chainCount, event.openTasks, event.now])).toEqual([
+			["delivered", 1, 2, "Write the parser (Build)"],
+			["delivered", 2, 2, "Write the parser (Build)"],
+			["capped", 2, 2, "Write the parser (Build)"],
 		]);
 	}, 20_000);
 

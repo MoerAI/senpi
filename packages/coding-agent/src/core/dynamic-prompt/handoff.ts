@@ -18,7 +18,7 @@ export function buildHandoffSection(options: HandoffSectionOptions = {}): string
 		? "The Next you name is executed in this same response with tool calls."
 		: "The Next you name is executed in this same response with tool calls; a Next with nothing after it is a defect.";
 	const betweenRule = options.briefUpdatesBetweenHandoffs
-		? "Between handoffs, one line on what you just found, ending with Now: [task]. Next: [task]., helps the user follow along."
+		? "Between handoffs, a one-line update on what you just found, ending with `Now: [task]. Next: [task].`, helps the user follow along."
 		: "Between handoffs, work without narration.";
 	return `## Handoff
 

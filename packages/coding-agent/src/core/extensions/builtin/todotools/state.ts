@@ -3,7 +3,7 @@
 // Copyright (c) 2025-2026 Can Bölük
 // https://github.com/can1357/oh-my-pi
 
-export { ASK_TEXT_LIMIT, captureListAsk, truncateAskText } from "./todo-ask.ts";
+export { captureListAsk } from "./todo-ask.ts";
 export {
 	type AskNowNext,
 	describeAskNowNext,
