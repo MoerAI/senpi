@@ -1,5 +1,24 @@
 # cursor-cli-oauth extension changes
 
+## 2026-09-25 - The turn prompt keeps the user's request when hidden messages follow it (senpi#2139)
+
+### What changed
+
+- `stream.ts`: `lastUserPrompt` -> exported `turnPrompt`, which joins every user-role message after the last non-user message (the current turn), in order, instead of taking only the last one. With no trailing user message it falls back to the last user message as before.
+- `test/cursor-cli-oauth/stream.test.ts`: a turn of [request, hidden reminder] keeps the request at the head (RED with the old last-message rule); earlier turns are not included.
+
+### Why
+
+- A turn can carry hidden extension messages that reach providers as user messages after the request (the todotools first-turn plan reminder, senpi#2121). The CLI takes one prompt, so sending only the last user message sent the reminder alone: on `cursor-cli-oauth/claude-opus-5` and `gpt-5.6-sol` the model answered that the request was empty and did nothing.
+
+### Why an extension could not handle it
+
+- This is the lane's own prompt assembly.
+
+### Expected merge conflict zones
+
+- `turnPrompt` and its call site in `streamCursorCliOauth`.
+
 ## 2026-09-23 - `normalizeEntries` copies derived variant ids into `cursorReasoning` (senpi#2038)
 
 ### What changed

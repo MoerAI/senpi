@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- The Cursor CLI lane (`cursor-cli-oauth`) now sends your request together with any hidden messages that follow it in the same turn; the first request of a session was reaching the model as only the hidden plan reminder, and the model replied that the request was empty. ([#2139](https://github.com/code-yeongyu/senpi/issues/2139))
+
 - The repetitive-turns stream rule no longer aborts a handoff block because it restates your request; it compares only the status the block reports, so an agent that repeats the same status is still stopped, and its remediation no longer forbids progress reports. ([#2135](https://github.com/code-yeongyu/senpi/issues/2135))
 
 - When every todo closes, the cue in the todo result now says that any other report an instruction asks for (a self-review, a checklist) goes inside the handoff block's For you slot, so a project rule that asks for a report no longer replaces the block. ([#2133](https://github.com/code-yeongyu/senpi/issues/2133))
