@@ -1,5 +1,25 @@
 # senpi-codemode fork changes
 
+## 2026-10-10 - Install Julia globals sizing only on request (Refs senpi#3048)
+
+### What changed
+
+- `packages/senpi-codemode/src/kernels/jl/runner.jl`: load the sizing asset once from the serialized memory-globals handler and resolve newly installed bindings in the latest world.
+- `packages/senpi-codemode/src/kernels/jl/globals.jl`: retain the original sizing constants, type, constructors, traversal and largest-globals implementation verbatim.
+- `packages/senpi-codemode/test/kernels/memory-globals-harness.ts`, `test/kernels/jl/lazy-globals.test.ts` and `test/gate/allowlist.json`: instrument the defining asset and protect zero installed sizing bindings before a below-threshold first result.
+
+### Why
+
+- Below-threshold cells already avoided globals walks, but each fresh interpreter still paid to lower and install the unused sizing implementation.
+
+### Why an extension could not handle it
+
+- Julia binding installation and the read-only diagnostic request belong to the embedded runner.
+
+### Expected merge conflict zones
+
+- Runner sizing definitions and memory-globals dispatch. Host thresholds, ceilings, hysteresis, stop settlement, reply ownership and sizing budgets remain unchanged.
+
 ## 2026-10-10 - Include Julia handles at first use (Refs senpi#3048)
 
 ### What changed
