@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
+
 import { type Attachment, fixture, runConsoleProbe } from "./fixtures/windows-console/run-console-probe.ts";
 
 // Platform contract (omo#7691): a bash-tool command whose node starts its own child (the npm/Firebase/Vitest
 // shape) must not open a visible console window when senpi itself runs without a console. The bash tool hides its
 // direct shell child (src/core/tools/bash.ts windowsHide); these cases measure the processes below it.
 type ChainResult = { readonly grandparent: Attachment; readonly grandchild: Attachment; readonly leaf: Attachment };
-type UpstreamResult = { readonly hidden: boolean; readonly leaf: Attachment };
+type UpstreamResult = { readonly shape: string; readonly leaf: Attachment };
 const FIREBASE_UPSTREAM_ISSUE = "https://github.com/firebase/firebase-tools/issues/11261";
 const TIMEOUT_MS = 90_000;
 
@@ -42,9 +43,9 @@ describe.skipIf(process.platform !== "win32")("bash tool grandchild console wind
 });
 
 // Documents a known upstream window: firebase-tools' detached shell spawn. firebase-tools starts its Pub/Sub
-// emulator with detached + shell: true and no windowsHide (src/emulator/downloadableEmulators.ts _runBinary).
-// DETACHED_PROCESS drops the inherited hidden console, so the program cmd.exe launches allocates a new, visible one.
-// No flag on senpi's own spawn reaches past a grandchild that detaches. Upstream: https://github.com/firebase/firebase-tools/issues/11261
+// emulator with detached + shell: true (src/emulator/downloadableEmulators.ts _runBinary). DETACHED_PROCESS leaves
+// the intermediate cmd.exe without a console, so the program it launches allocates a new, visible one. No flag on
+// senpi's own spawn reaches past a grandchild that detaches. Upstream: FIREBASE_UPSTREAM_ISSUE.
 describe.skipIf(process.platform !== "win32")(
 	"documents a known upstream window: firebase-tools detached shell spawn",
 	() => {
@@ -63,18 +64,22 @@ describe.skipIf(process.platform !== "win32")(
 			TIMEOUT_MS,
 		);
 
-		it(
-			"#given the same spawn options with no senpi involved #when run as-is and with windowsHide #then only windowsHide hides the leaf",
-			async () => {
+		it.each([
+			"today",
+			"today-windowsHide",
+			"shell-not-detached-windowsHide",
+			"direct-detached",
+			"direct-detached-windowsHide",
+			"direct-not-detached-windowsHide",
+		])(
+			"#given firebase-tools' launch options as %s with no senpi involved #when run console-less #then the leaf is measured",
+			async (shape) => {
 				// given / when
-				const today = await runConsoleProbe<UpstreamResult>(fixture("upstream-probe.ts"), []);
-				const fixed = await runConsoleProbe<UpstreamResult>(fixture("upstream-probe.ts"), ["hidden"]);
+				const result = await runConsoleProbe<UpstreamResult>(fixture("upstream-probe.ts"), [shape]);
 
 				// then
-				expect({ today: today.leaf.windowVisible, withWindowsHide: fixed.leaf.windowVisible }).toEqual({
-					today: true,
-					withWindowsHide: false,
-				});
+				expect(result).toMatchObject({ shape, leaf: { windowVisible: expect.any(Boolean) } });
+				if (shape === "today") expect(result.leaf.windowVisible).toBe(true);
 			},
 			TIMEOUT_MS,
 		);

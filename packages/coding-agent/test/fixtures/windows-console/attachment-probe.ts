@@ -10,25 +10,20 @@ if (!Number.isSafeInteger(pid) || pid <= 0) {
 }
 
 const kernel32 = dlopen("kernel32.dll", {
-	FreeConsole: { args: [], returns: FFIType.bool },
-	AttachConsole: { args: [FFIType.u32], returns: FFIType.bool },
+	FreeConsole: { args: [], returns: FFIType.i32 },
+	AttachConsole: { args: [FFIType.u32], returns: FFIType.i32 },
 	GetConsoleWindow: { args: [], returns: FFIType.ptr },
 	GetLastError: { args: [], returns: FFIType.u32 },
 });
 const user32 = dlopen("user32.dll", {
-	IsWindowVisible: { args: [FFIType.ptr], returns: FFIType.bool },
+	IsWindowVisible: { args: [FFIType.ptr], returns: FFIType.i32 },
 });
 
-try {
-	kernel32.symbols.FreeConsole();
-	const attached = Boolean(kernel32.symbols.AttachConsole(pid));
-	const errorCode = Number(kernel32.symbols.GetLastError());
-	const windowHandle = kernel32.symbols.GetConsoleWindow();
-	const windowHandleValue = windowHandle === null ? 0 : Number(windowHandle);
-	const windowVisible = windowHandleValue !== 0 && Boolean(user32.symbols.IsWindowVisible(windowHandle));
-	if (attached) kernel32.symbols.FreeConsole();
-	process.stdout.write(JSON.stringify({ attached, errorCode, windowHandle: windowHandleValue, windowVisible }));
-} finally {
-	user32.close();
-	kernel32.close();
-}
+kernel32.symbols.FreeConsole();
+const attached = kernel32.symbols.AttachConsole(pid) !== 0;
+const errorCode = Number(kernel32.symbols.GetLastError());
+const windowHandle = kernel32.symbols.GetConsoleWindow();
+const windowHandleValue = Number(windowHandle ?? 0);
+const windowVisible = windowHandleValue !== 0 && user32.symbols.IsWindowVisible(windowHandle) !== 0;
+if (attached) kernel32.symbols.FreeConsole();
+process.stdout.write(JSON.stringify({ attached, errorCode, windowHandle: windowHandleValue, windowVisible }));

@@ -494,7 +494,7 @@ jobs:
             const file = r.testResults.find((t) => t.name.replace(/\\/g, "/").endsWith("bash-grandchild-console-windows.test.ts"));
             const ran = file ? file.assertionResults.filter((a) => a.status === "passed" || a.status === "failed").length : 0;
             console.log("bash grandchild console probe cases run=" + ran);
-            if (ran !== 7) process.exit(1);
+            if (ran !== 12) process.exit(1);
           '
           echo "--- raw console probe results ---"
           cat console-probe-results.jsonl || echo "(no results file)"
@@ -841,6 +841,7 @@ jobs:
         claude-executable-windows,
         webview-kernel,
         python-kernel-windows,
+        bash-grandchild-console-windows,
         test-workspaces,
       ]
     if: always()
@@ -877,6 +878,7 @@ jobs:
             echo "- claude-executable-windows: ${{ needs.claude-executable-windows.result }}"
             echo "- webview-kernel: ${{ needs.webview-kernel.result }}"
             echo "- python-kernel-windows: ${{ needs.python-kernel-windows.result }}"
+            echo "- bash-grandchild-console-windows: ${{ needs.bash-grandchild-console-windows.result }}"
             echo "- test-workspaces: ${{ needs.test-workspaces.result }}"
           } >> "$GITHUB_STEP_SUMMARY"
 

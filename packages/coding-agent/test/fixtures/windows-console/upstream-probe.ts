@@ -1,5 +1,5 @@
 // Runs upstream-minimal-repro.cjs directly (no bash tool, no senpi) from a CONSOLE-LESS parent and reports whether
-// the leaf it launches owns a visible console. argv: [hidden]. Prints one JSON line; the test owns the assertion.
+// the leaf it launches owns a visible console. argv: <shape>. Prints one JSON line; the test owns the assertion.
 import { dlopen, FFIType } from "bun:ffi";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -8,17 +8,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const FILE_DEADLINE_MS = 30_000;
-const hidden = process.argv[2] === "hidden";
+const shape = process.argv[2] ?? "today";
 const reproPath = fileURLToPath(new URL("./upstream-minimal-repro.cjs", import.meta.url));
 const attachmentProbePath = fileURLToPath(new URL("./attachment-probe.ts", import.meta.url));
 
 function detachCurrentConsole(): void {
-	const kernel32 = dlopen("kernel32.dll", { FreeConsole: { args: [], returns: FFIType.bool } });
-	try {
-		kernel32.symbols.FreeConsole();
-	} finally {
-		kernel32.close();
-	}
+	dlopen("kernel32.dll", { FreeConsole: { args: [], returns: FFIType.i32 } }).symbols.FreeConsole();
 }
 
 function attachment(pid: number): unknown {
@@ -49,14 +44,14 @@ async function waitForPid(path: string): Promise<number> {
 detachCurrentConsole();
 const dir = mkdtempSync(join(tmpdir(), "senpi-upstream-probe-"));
 const pidFile = join(dir, "leaf.pid");
-const launcher = spawn("node", [reproPath, hidden ? "hidden" : "today", pidFile], {
+const launcher = spawn("node", [reproPath, shape, pidFile], {
 	stdio: "ignore",
 	windowsHide: true,
 });
 let leafPid: number | undefined;
 try {
 	leafPid = await waitForPid(pidFile);
-	process.stdout.write(`${JSON.stringify({ hidden, leaf: attachment(leafPid) })}\n`);
+	process.stdout.write(`${JSON.stringify({ shape, leaf: attachment(leafPid) })}\n`);
 } finally {
 	if (leafPid !== undefined) killTree(leafPid);
 	if (launcher.pid !== undefined) killTree(launcher.pid);

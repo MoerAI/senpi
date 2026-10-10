@@ -21,12 +21,7 @@ const grandparentPath = fileURLToPath(new URL("./grandparent.cjs", import.meta.u
 const attachmentProbePath = fileURLToPath(new URL("./attachment-probe.ts", import.meta.url));
 
 function detachCurrentConsole(): void {
-	const kernel32 = dlopen("kernel32.dll", { FreeConsole: { args: [], returns: FFIType.bool } });
-	try {
-		kernel32.symbols.FreeConsole();
-	} finally {
-		kernel32.close();
-	}
+	dlopen("kernel32.dll", { FreeConsole: { args: [], returns: FFIType.i32 } }).symbols.FreeConsole();
 }
 
 function attachment(pid: number): unknown {
