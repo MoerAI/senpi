@@ -11,6 +11,7 @@ import {
 	supportsMax,
 	supportsXhigh,
 } from "../models.ts";
+import { supportsAllowedToolChoice } from "../openai-responses-compat.ts";
 import { readProviderDiagnostic } from "../provider-diagnostic.ts";
 import type {
 	Api,
@@ -152,7 +153,7 @@ function getCompat(model: Model<"openai-responses">, env?: ProviderEnv): Require
 		supportsConfigurationUpdate: model.compat?.supportsConfigurationUpdate ?? false,
 		supportsMaxOutputTokens: model.compat?.supportsMaxOutputTokens ?? true,
 		supportsForcedToolChoice: model.compat?.supportsForcedToolChoice ?? true,
-		supportsAllowedTools: model.compat?.supportsAllowedTools ?? false,
+		supportsAllowedTools: supportsAllowedToolChoice(model),
 	};
 }
 

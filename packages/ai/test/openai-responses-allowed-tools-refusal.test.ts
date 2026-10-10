@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
 import { clearAllowedToolsChoiceRefusals } from "../src/api/openai-responses-allowed-tools.ts";
 import { getModel } from "../src/compat.ts";
+import { supportsAllowedToolChoice } from "../src/openai-responses-compat.ts";
 import type { AssistantMessage, Model, Tool } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -160,5 +161,30 @@ describe("openai-responses allowed_tools refusal", () => {
 		const next: CapturedPayload[] = [];
 		await runTurn(sol, refusingAllowedTools(next), ["read", "bash"]);
 		expect(choiceType(next[0])).toBe("allowed_tools");
+	});
+});
+
+describe("openai-responses allowed_tools endpoint gate", () => {
+	const sol = getModel("openai", "gpt-6.1-sol");
+	const gateway: Model<"openai-responses"> = { ...sol, baseUrl: "https://gateway.example.com/v1" };
+
+	beforeEach(() => {
+		clearAllowedToolsChoiceRefusals();
+	});
+
+	it("restricts tools through allowed_tools only on the native OpenAI endpoint", () => {
+		expect(sol.compat?.supportsAllowedTools).toBe(true);
+		expect(supportsAllowedToolChoice(sol)).toBe(true);
+		expect(supportsAllowedToolChoice(gateway)).toBe(false);
+	});
+
+	it("never sends allowed_tools to a Responses-compatible gateway", async () => {
+		const sent: CapturedPayload[] = [];
+
+		const message = await runTurn(gateway, refusingAllowedTools(sent), ["read"]);
+
+		expect(message.stopReason).toBe("stop");
+		expect(sent).toHaveLength(1);
+		expect(sent[0]?.tool_choice).toBeUndefined();
 	});
 });
