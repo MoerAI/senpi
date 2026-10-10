@@ -1,5 +1,25 @@
 # senpi-codemode fork changes
 
+## 2026-10-10 - Include Julia handles at first use (Refs senpi#3048)
+
+### What changed
+
+- `packages/senpi-codemode/src/kernels/jl/prelude.jl`: serialize the first handles include under a lock and resolve newly installed bindings in the latest world.
+- `packages/senpi-codemode/src/kernels/jl/runner.jl`: load named handle bindings before evaluation and serialize newly created handles in the latest world.
+- `packages/senpi-codemode/test/kernels/jl/lazy-handles.test.ts` and `test/gate/allowlist.json`: retain the reviewed zero-installation, concurrent first-use, annotation, display, completion and reset regressions.
+
+### Why
+
+- A fresh interpreter otherwise installs handle types and Base extensions before any handle is requested.
+
+### Why an extension could not handle it
+
+- Julia binding installation and world age belong to the embedded runner.
+
+### Expected merge conflict zones
+
+- Prelude handle producer and runner evaluation/result encoding. No handle implementation or wait semantics change.
+
 ## 2026-10-09 - Benchmark CPU includes result serialization (Refs senpi#3048)
 
 ### What changed

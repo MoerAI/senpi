@@ -420,6 +420,19 @@ function senpi_largest_globals(limit::Int)
     end
 end
 
+function senpi_needs_handles(expression)
+    if expression isa Symbol
+        expression in (:handle, :completion, :eval, :include, :getfield, :getglobal, :deserialize) && return true
+        name = string(expression)
+        return startswith(name, "SenpiHandle") || startswith(name, "senpi_handle") ||
+            startswith(name, "senpi_wait") ||
+            (startswith(name, "SENPI_") && (occursin("HANDLE", name) || occursin("WAIT", name)))
+    end
+    expression isa QuoteNode && return senpi_needs_handles(expression.value)
+    expression isa Expr && return any(senpi_needs_handles, expression.args)
+    false
+end
+
 function senpi_run_cell(message)
     cell_id = string(get(message, "cellId", ""))
     code = string(get(message, "code", ""))
@@ -430,12 +443,17 @@ function senpi_run_cell(message)
         if parsed isa Expr && parsed.head === :error
             error(string(parsed.args[1]))
         end
+        # Install bindings before user functions/type annotations capture their world.
+        !SENPI_HANDLES_INCLUDED[] && senpi_needs_handles(parsed) && senpi_ensure_handles()
         value = Core.eval(Main, parsed)
         flush(stdout)
         flush(stderr)
         yield()
         frame = Dict{String, Any}("type" => "result", "cellId" => cell_id, "ok" => true, "durationMs" => round(Int, (time() - started) * 1000))
-        value !== nothing && senpi_should_display_result(parsed) && (frame["valueRepr"] = senpi_json(value))
+        if value !== nothing && senpi_should_display_result(parsed)
+            # Core.eval does not advance this caller's world after a first lazy include.
+            frame["valueRepr"] = SENPI_HANDLES_INCLUDED[] ? Base.invokelatest(senpi_json, value) : senpi_json(value)
+        end
         senpi_emit(frame)
     catch error
         senpi_emit(Dict("type" => "result", "cellId" => cell_id, "ok" => false, "error" => senpi_error(error), "durationMs" => round(Int, (time() - started) * 1000)))
