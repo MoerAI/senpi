@@ -24,7 +24,7 @@
 
 - Polling `senpi host status` no longer restarts a dead owner's two-second host-exit grace. Observe-only reads follow the normal idle policy, while a dropped unclassified peer and activity on an existing connection still reset continuous quiescence ([#3044](https://github.com/code-yeongyu/senpi/issues/3044)).
 
-- Boundary handlers no longer run after their extension runner retires during awaited context previews or handlers, and retired boundary drafts and continuation are discarded ([#3071](https://github.com/code-yeongyu/senpi/pull/3071) by [@MoerAI](https://github.com/MoerAI)).
+- Boundary handlers no longer run after their extension runner retires during awaited context previews or handlers, and retired boundary drafts and continuation are discarded. A handler or boundary rebuild that was already in flight and then fails on the retired runner stands down instead of reporting an extension error ([#3071](https://github.com/code-yeongyu/senpi/pull/3071) by [@MoerAI](https://github.com/MoerAI)).
 
 ### Removed
 

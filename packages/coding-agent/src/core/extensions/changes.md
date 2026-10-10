@@ -2,11 +2,12 @@
 
 ### What changed
 
-- `packages/coding-agent/src/core/extensions/runner.ts`: `emitBoundary` checks the active lease before each handler, after awaited handlers, and before returning a valid result.
+- `packages/coding-agent/src/core/extensions/runner.ts`: `emitBoundary` checks the active lease before each handler, after awaited handlers, in both the handler and boundary-rebuild failure paths, and before returning a valid result. A local `retired()` helper keeps the five stand-down results in sync.
 
 ### Why
 
 - Session disposal or replacement during boundary preview or handler awaits let later obsolete handlers run on a context whose getters correctly reject the retired runner. Obsolete drafts and continuation could also survive retirement.
+- A handler or rebuild that was already in flight when the runner retired then failed on that retired state, and the failure paths reported it, so the stale-context stack still reached the user through `emitError` even though the dispatch itself had already lost its lease.
 
 ### Why an extension could not handle it
 
