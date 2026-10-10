@@ -1,3 +1,22 @@
+## 2026-10-10 - A resource-loader reload no longer drops the extension module generation
+
+### What changed
+
+- `packages/coding-agent/src/core/resource-loader.ts`: `reload()` no longer calls `clearExtensionCache()` when the loader has loaded before. Package resolution still refreshes (`refresh` is unchanged).
+
+### Why
+
+- Since senpi#1948 the module cache invalidates itself: `cachedExtensionFactory()` drops the generation as soon as any source file it compiled changed or disappeared. Clearing it on every reload therefore compiled a new module graph for unchanged sources, and a module registry cannot evict, so each reload left a whole graph resident: about 180 `ModuleRecord`s and 2MB of heap per reload with the builtin set, measured over 30 reloads. With the clear removed the heap grows about 0.08MB per reload.
+- An edited extension is still picked up on reload by the cache's own fingerprint check (`extension-factory-lifecycle.test.ts` "picks up an edited extension on reload").
+
+### Why an extension could not handle it
+
+- The clear is in the core resource loader's reload path.
+
+### Expected merge conflict zones
+
+- The opening of `DefaultResourceLoader.reload()` and the `./extensions/loader.ts` import block in `packages/coding-agent/src/core/resource-loader.ts`.
+
 ## 2026-10-09 - Durable engine self-stop signals (senpi#3007)
 
 ### What changed
