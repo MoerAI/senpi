@@ -6,6 +6,24 @@
 
 ### Added
 
+### Changed
+
+- The runtime snapshot a first launch builds copies the package as npm ships it (the `files` entries of `package.json`, plus `package.json`, README and LICENSE) instead of the whole package directory. Running from a repository checkout no longer copies its sources, tests and scripts: about 1,800 files instead of 11,000 for this package ([#3083](https://github.com/code-yeongyu/senpi/issues/3083)).
+
+### Fixed
+
+- Reloading a session releases the previous extension runner and reuses unchanged module graphs instead of retaining another generation. Edited lazy dependencies now invalidate the graph using the bytes actually compiled, including equal-size edits with preserved timestamps ([#3066](https://github.com/code-yeongyu/senpi/pull/3066) by [@jc01rho](https://github.com/jc01rho), [#3068](https://github.com/code-yeongyu/senpi/issues/3068)).
+
+- Boundary handlers no longer run after their extension runner retires during awaited context previews or handlers, and retired boundary drafts and continuation are discarded. A handler or boundary rebuild that was already in flight and then fails on the retired runner stands down instead of reporting an extension error ([#3071](https://github.com/code-yeongyu/senpi/pull/3071) by [@MoerAI](https://github.com/MoerAI)).
+
+### Removed
+
+## [2026.10.10-12] - 2026-10-10
+
+### Breaking Changes
+
+### Added
+
 - RPC hosts can opt into their ensure caller's lifetime with `owner: "caller"`. After that process exits or is killed, the supervisor stops an idle host after a short grace instead of leaving the shard resident for the normal idle timeout. Surviving peers and active turns keep running; ownership is preserved across reuse and generation handoff. Unowned hosts require no owner filesystem watcher, watch exhaustion falls back to polling, owner identities are timezone-independent, and brief activity resets the grace window ([#3044](https://github.com/code-yeongyu/senpi/issues/3044)).
 
 ### Changed
@@ -13,6 +31,8 @@
 - `senpi host stop` followed by `ensure` now waits for the old generation's host child to exit before starting a replacement ([#3054](https://github.com/code-yeongyu/senpi/issues/3054)).
 
 ### Fixed
+
+- Reloading a session releases the previous extension runner and reuses unchanged module graphs instead of retaining another generation. Edited lazy dependencies now invalidate the graph using the bytes actually compiled, including equal-size edits with preserved timestamps ([#3066](https://github.com/code-yeongyu/senpi/pull/3066) by [@jc01rho](https://github.com/jc01rho), [#3068](https://github.com/code-yeongyu/senpi/issues/3068)).
 
 - RPC supervisors wait for their host child's observed exit and exit record before releasing ownership. A child still unobserved 30 seconds after SIGKILL leaves its generation, pointer and settings intact and produces a non-zero supervisor exit with the child PID in the log. Stop callers allow the full shutdown budget but cancel their deadline on normal exit, and owner-lifetime tests await OS exit events instead of treating pipe EOF as process exit ([#3054](https://github.com/code-yeongyu/senpi/issues/3054)).
 
@@ -23,8 +43,6 @@
 - The model-facing `get_goal` result now identifies stale stops with `continuation.status: "stale_stopped"` and explains that a user message or `/goal resume` resumes the goal. Regression coverage also pins both extension delivery paths after an active goal becomes stale in-session, preserving the committed usage at the stop ([#3053](https://github.com/code-yeongyu/senpi/pull/3053)).
 
 - Polling `senpi host status` no longer restarts a dead owner's two-second host-exit grace. Observe-only reads follow the normal idle policy, while a dropped unclassified peer and activity on an existing connection still reset continuous quiescence ([#3044](https://github.com/code-yeongyu/senpi/issues/3044)).
-
-- Boundary handlers no longer run after their extension runner retires during awaited context previews or handlers, and retired boundary drafts and continuation are discarded. A handler or boundary rebuild that was already in flight and then fails on the retired runner stands down instead of reporting an extension error ([#3071](https://github.com/code-yeongyu/senpi/pull/3071) by [@MoerAI](https://github.com/MoerAI)).
 
 ### Removed
 
