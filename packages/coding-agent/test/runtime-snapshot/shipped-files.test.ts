@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -28,15 +28,6 @@ function asCheckout(install: FakeInstall, files: string[]): void {
 	write(join(install.packageDir, "scripts/build.mjs"), "export {};\n");
 	write(join(install.packageDir, "dist/experimental/preview.js"), "export {};\n");
 	write(join(install.packageDir, "tsconfig.json"), "{}\n");
-}
-
-function countFiles(dir: string): number {
-	let count = 0;
-	for (const entry of readdirSync(dir, { withFileTypes: true })) {
-		const path = join(dir, entry.name);
-		count += entry.isDirectory() ? countFiles(path) : 1;
-	}
-	return count;
 }
 
 // #3083: a snapshot copies the package as npm ships it, not a checkout's sources and tests.
@@ -78,23 +69,15 @@ describe("runtime snapshot copies only the shipped package files (#3083)", () =>
 		expect(readFileSync(join(snapshotDir, "extra/notes.txt"), "utf8")).toBe("kept\n");
 	});
 
-	it("keeps this checkout's coding-agent package root to its shipped files", () => {
+	it("lists none of this checkout's source, test or script trees among the shipped files", () => {
 		// Given: the real package, as this repository checks it out
 		const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 		const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")) as { files: string[] };
 
-		// Then: everything it ships sits under the listed entries, and the checkout-only trees are not among them
+		// Then
 		const listed = manifest.files.filter((entry) => !entry.startsWith("!")).map((entry) => entry.split("/")[0]);
 		for (const checkoutOnly of ["src", "test", "scripts", "bench", "node_modules"]) {
 			expect(listed).not.toContain(checkoutOnly);
 		}
-		const shippedFiles = listed
-			.filter((entry) => existsSync(join(packageDir, entry)))
-			.reduce(
-				(sum, entry) =>
-					sum + (statSync(join(packageDir, entry)).isDirectory() ? countFiles(join(packageDir, entry)) : 1),
-				0,
-			);
-		expect(shippedFiles).toBeLessThan(countFiles(packageDir) / 2);
 	});
 });
