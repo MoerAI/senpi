@@ -10,9 +10,13 @@
 
 ### Changed
 
+- `senpi host stop` followed by `ensure` now waits for the old generation's host child to exit before starting a replacement ([#3054](https://github.com/code-yeongyu/senpi/issues/3054)).
+
 ### Fixed
 
 - Reloading a session releases the previous extension runner and reuses unchanged module graphs instead of retaining another generation. Edited lazy dependencies now invalidate the graph using the bytes actually compiled, including equal-size edits with preserved timestamps ([#3066](https://github.com/code-yeongyu/senpi/pull/3066) by [@jc01rho](https://github.com/jc01rho), [#3068](https://github.com/code-yeongyu/senpi/issues/3068)).
+
+- RPC supervisors wait for their host child's observed exit and exit record before releasing ownership. A child still unobserved 30 seconds after SIGKILL leaves its generation, pointer and settings intact and produces a non-zero supervisor exit with the child PID in the log. Stop callers allow the full shutdown budget but cancel their deadline on normal exit, and owner-lifetime tests await OS exit events instead of treating pipe EOF as process exit ([#3054](https://github.com/code-yeongyu/senpi/issues/3054)).
 
 - Required compaction no longer wedges when the newest retained message is unsafe. Recovery normalizes live values like session persistence, replaces unsafe tool results without breaking their call pairing, and omits unsafe signed turns only from replay. An unchanged terminal no-safe-suffix rejection is attempted once across automatic triggers and session reopen; provider and summarizer failures remain retryable instead of setting that latch. Recovery diagnostics are actionable and the original transcript is preserved ([#3060](https://github.com/code-yeongyu/senpi/issues/3060), [#3061](https://github.com/code-yeongyu/senpi/pull/3061)).
 
