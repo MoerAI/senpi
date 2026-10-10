@@ -1,73 +1,82 @@
-import { spawn } from "node:child_process";
-import { once } from "node:events";
-import { appendFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { type Attachment, fixture, runConsoleProbe } from "./fixtures/windows-console/run-console-probe.ts";
 
-// Platform contract (omo#7691): a bash-tool command that starts node, which starts its own child (the
-// npm/Firebase/Vitest shape), must not open a visible console window when senpi itself runs without a
-// console. The bash tool already hides its direct shell child (src/core/tools/bash.ts windowsHide); this
-// measures the processes that flag cannot reach, one launch shape per case.
-const PROBE_PATH = fileURLToPath(new URL("./fixtures/windows-console/bash-grandchild-probe.ts", import.meta.url));
-const BUN = process.versions.bun ? process.execPath : "bun";
+// Platform contract (omo#7691): a bash-tool command whose node starts its own child (the npm/Firebase/Vitest
+// shape) must not open a visible console window when senpi itself runs without a console. The bash tool hides its
+// direct shell child (src/core/tools/bash.ts windowsHide); these cases measure the processes below it.
+type ChainResult = { readonly grandparent: Attachment; readonly grandchild: Attachment; readonly leaf: Attachment };
+type UpstreamResult = { readonly hidden: boolean; readonly leaf: Attachment };
+const FIREBASE_UPSTREAM_ISSUE = "https://github.com/firebase/firebase-tools/issues/11261";
+const TIMEOUT_MS = 90_000;
 
-type Attachment = { readonly attached: boolean; readonly windowVisible: boolean };
-type ProbeResult = {
-	readonly shape: string;
-	readonly control: boolean;
-	readonly grandparent: Attachment;
-	readonly grandchild: Attachment;
-	readonly leaf: Attachment;
-};
-const RESULTS_FILE = process.env.SENPI_CONSOLE_PROBE_RESULTS;
-
-async function runProbe(shape: string, mode: "bash-tool" | "control"): Promise<ProbeResult> {
-	const probe = spawn(BUN, [PROBE_PATH, shape, ...(mode === "control" ? ["control"] : [])], {
-		stdio: ["ignore", "pipe", "pipe"],
-		windowsHide: true,
-	});
-	let stdout = "";
-	let stderr = "";
-	probe.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-		stdout += chunk;
-	});
-	probe.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-		stderr += chunk;
-	});
-	const [code] = (await once(probe, "close")) as [number | null];
-	if (code !== 0) throw new Error(`probe ${shape} exited ${String(code)}: ${stderr.trim()}`);
-	const result = JSON.parse(stdout.trim()) as ProbeResult;
-	if (RESULTS_FILE) appendFileSync(RESULTS_FILE, `${JSON.stringify(result)}\n`);
-	return result;
-}
+const bashToolChain = (shape: string) => runConsoleProbe<ChainResult>(fixture("bash-grandchild-probe.ts"), [shape]);
 
 describe.skipIf(process.platform !== "win32")("bash tool grandchild console windows (omo#7691)", () => {
-	it.each(["inherit", "detached", "shell", "firebase-java", "firebase-shell"])(
+	it.each(["inherit", "detached", "shell", "firebase-java"])(
 		"#given a console-less senpi #when a bash command's node starts a %s child #then no process opens a visible console",
 		async (shape) => {
 			// given / when
-			const result = await runProbe(shape, "bash-tool");
+			const result = await bashToolChain(shape);
 
 			// then
-			expect({
-				shape,
-				grandparent: result.grandparent,
-				grandchild: result.grandchild,
-				leaf: result.leaf,
-			}).toMatchObject({
+			expect({ shape, ...result }).toMatchObject({
 				grandparent: { windowVisible: false },
 				grandchild: { windowVisible: false },
 				leaf: { windowVisible: false },
 			});
 		},
-		90_000,
+		TIMEOUT_MS,
 	);
 
-	it("#given the same chain spawned WITHOUT windowsHide #when probed #then the probe sees a visible console (control)", async () => {
-		// given / when
-		const result = await runProbe("inherit", "control");
+	it(
+		"#given the same chain spawned WITHOUT windowsHide #when probed #then the probe sees a visible console (control)",
+		async () => {
+			// given / when
+			const result = await runConsoleProbe<ChainResult>(fixture("bash-grandchild-probe.ts"), ["inherit", "control"]);
 
-		// then
-		expect({ grandparent: result.grandparent }).toMatchObject({ grandparent: { windowVisible: true } });
-	}, 90_000);
+			// then
+			expect({ grandparent: result.grandparent }).toMatchObject({ grandparent: { windowVisible: true } });
+		},
+		TIMEOUT_MS,
+	);
 });
+
+// Documents a known upstream window: firebase-tools' detached shell spawn. firebase-tools starts its Pub/Sub
+// emulator with detached + shell: true and no windowsHide (src/emulator/downloadableEmulators.ts _runBinary).
+// DETACHED_PROCESS drops the inherited hidden console, so the program cmd.exe launches allocates a new, visible one.
+// No flag on senpi's own spawn reaches past a grandchild that detaches. Upstream: https://github.com/firebase/firebase-tools/issues/11261
+describe.skipIf(process.platform !== "win32")(
+	"documents a known upstream window: firebase-tools detached shell spawn",
+	() => {
+		it(
+			"#given firebase-tools' Pub/Sub launch under the bash tool #when probed #then its leaf still opens a visible console",
+			async () => {
+				// given / when
+				const result = await bashToolChain("firebase-shell");
+
+				// then
+				expect(
+					result.leaf.windowVisible,
+					`now fixed upstream (${FIREBASE_UPSTREAM_ISSUE}): the firebase-shell leaf no longer opens a window, so update this test to assert windowVisible false`,
+				).toBe(true);
+			},
+			TIMEOUT_MS,
+		);
+
+		it(
+			"#given the same spawn options with no senpi involved #when run as-is and with windowsHide #then only windowsHide hides the leaf",
+			async () => {
+				// given / when
+				const today = await runConsoleProbe<UpstreamResult>(fixture("upstream-probe.ts"), []);
+				const fixed = await runConsoleProbe<UpstreamResult>(fixture("upstream-probe.ts"), ["hidden"]);
+
+				// then
+				expect({ today: today.leaf.windowVisible, withWindowsHide: fixed.leaf.windowVisible }).toEqual({
+					today: true,
+					withWindowsHide: false,
+				});
+			},
+			TIMEOUT_MS,
+		);
+	},
+);

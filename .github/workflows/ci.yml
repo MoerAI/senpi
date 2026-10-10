@@ -494,7 +494,7 @@ jobs:
             const file = r.testResults.find((t) => t.name.replace(/\\/g, "/").endsWith("bash-grandchild-console-windows.test.ts"));
             const ran = file ? file.assertionResults.filter((a) => a.status === "passed" || a.status === "failed").length : 0;
             console.log("bash grandchild console probe cases run=" + ran);
-            if (ran !== 6) process.exit(1);
+            if (ran !== 7) process.exit(1);
           '
           echo "--- raw console probe results ---"
           cat console-probe-results.jsonl || echo "(no results file)"
