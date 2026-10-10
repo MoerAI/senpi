@@ -1,3 +1,21 @@
+## 2026-10-10 - Retired runners stop boundary dispatch (senpi#2785)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/runner.ts`: `emitBoundary` checks the active lease before each handler, after awaited handlers, and before returning a valid result.
+
+### Why
+
+- Session disposal or replacement during boundary preview or handler awaits let later obsolete handlers run on a context whose getters correctly reject the retired runner. Obsolete drafts and continuation could also survive retirement.
+
+### Why an extension could not handle it
+
+- The host dispatcher owns the runner lease and invokes subsequent handlers. An extension cannot prevent another retired handler from being dispatched.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/extensions/runner.ts`: `emitBoundary` dispatch and result validation. Context getter guards and intentional `session_shutdown` dispatch remain unchanged.
+
 ## 2026-10-08 - A required question never tells the model to proceed without an answer (senpi#2949)
 
 ### What changed

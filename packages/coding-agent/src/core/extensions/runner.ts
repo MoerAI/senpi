@@ -1543,6 +1543,7 @@ export class ExtensionRunner {
 
 		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, baseEvent.type)) {
 			for (const handler of handlers) {
+				if (!this.isActive) return { entries: [], continue: false, context, valid: false };
 				const event = {
 					...baseEvent,
 					entries,
@@ -1551,6 +1552,7 @@ export class ExtensionRunner {
 				} as TurnEndEvent | AgentBeforeSettleEvent;
 				try {
 					const handlerResult = (await handler(event, ctx)) as BoundaryResult | undefined;
+					if (!this.isActive) return { entries: [], continue: false, context, valid: false };
 					if (handlerResult?.entries !== undefined) entries = handlerResult.entries;
 					if (handlerResult?.continue !== undefined) shouldContinue = handlerResult.continue;
 				} catch (err) {
@@ -1577,7 +1579,7 @@ export class ExtensionRunner {
 			}
 		}
 
-		return valid
+		return valid && this.isActive
 			? { entries, continue: shouldContinue, context, valid: true }
 			: { entries: [], continue: false, context, valid: false };
 	}
