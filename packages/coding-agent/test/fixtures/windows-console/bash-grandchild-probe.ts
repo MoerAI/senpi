@@ -42,12 +42,12 @@ function killTree(pid: number): void {
 	spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
 }
 
-async function waitForPidFile(path: string): Promise<{ grandparent: number; grandchild: number }> {
+async function waitForFile(path: string): Promise<string> {
 	const deadline = Date.now() + PID_FILE_DEADLINE_MS;
 	while (Date.now() < deadline) {
 		if (existsSync(path)) {
 			const text = readFileSync(path, "utf8").trim();
-			if (text.length > 0) return JSON.parse(text) as { grandparent: number; grandchild: number };
+			if (text.length > 0) return text;
 		}
 		await new Promise((resolve) => setTimeout(resolve, 100));
 	}
@@ -57,8 +57,9 @@ async function waitForPidFile(path: string): Promise<{ grandparent: number; gran
 detachCurrentConsole();
 const dir = mkdtempSync(join(tmpdir(), "senpi-console-probe-"));
 const pidFile = join(dir, "pids.json").replaceAll("\\", "/");
+const leafPidFile = join(dir, "leaf.pid").replaceAll("\\", "/");
 const controller = new AbortController();
-const command = `node '${grandparentPath}' ${shape} '${pidFile}'`;
+const command = `node '${grandparentPath}' ${shape} '${pidFile}' '${leafPidFile}'`;
 const run: Promise<unknown> = control ? spawnWithoutHide(command) : spawnThroughBashTool(command);
 
 function spawnThroughBashTool(cmd: string): Promise<unknown> {
@@ -81,15 +82,17 @@ function spawnWithoutHide(cmd: string): Promise<unknown> {
 		child.once("error", resolve);
 	});
 }
-let pids: { grandparent: number; grandchild: number } | undefined;
+let pids: { grandparent: number; grandchild: number; leaf: number } | undefined;
 try {
-	pids = await waitForPidFile(pidFile);
+	const chain = JSON.parse(await waitForFile(pidFile)) as { grandparent: number; grandchild: number };
+	pids = { ...chain, leaf: Number.parseInt(await waitForFile(leafPidFile), 10) };
 	process.stdout.write(
-		`${JSON.stringify({ shape, control, grandparent: attachment(pids.grandparent), grandchild: attachment(pids.grandchild) })}\n`,
+		`${JSON.stringify({ shape, control, grandparent: attachment(pids.grandparent), grandchild: attachment(pids.grandchild), leaf: attachment(pids.leaf) })}\n`,
 	);
 } finally {
 	controller.abort();
 	if (pids) {
+		killTree(pids.leaf);
 		killTree(pids.grandchild);
 		killTree(pids.grandparent);
 	}

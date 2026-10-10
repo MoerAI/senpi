@@ -17,6 +17,7 @@ type ProbeResult = {
 	readonly control: boolean;
 	readonly grandparent: Attachment;
 	readonly grandchild: Attachment;
+	readonly leaf: Attachment;
 };
 const RESULTS_FILE = process.env.SENPI_CONSOLE_PROBE_RESULTS;
 
@@ -48,9 +49,15 @@ describe.skipIf(process.platform !== "win32")("bash tool grandchild console wind
 			const result = await runProbe(shape, "bash-tool");
 
 			// then
-			expect({ shape, grandparent: result.grandparent, grandchild: result.grandchild }).toMatchObject({
+			expect({
+				shape,
+				grandparent: result.grandparent,
+				grandchild: result.grandchild,
+				leaf: result.leaf,
+			}).toMatchObject({
 				grandparent: { windowVisible: false },
 				grandchild: { windowVisible: false },
+				leaf: { windowVisible: false },
 			});
 		},
 		90_000,
