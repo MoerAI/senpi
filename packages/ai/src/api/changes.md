@@ -2,12 +2,12 @@
 
 ### What changed
 
-- `packages/ai/src/api/openai-responses.ts`: `getCompat` resolves `supportsAllowedTools` through `supportsAllowedToolChoice`, which now also requires the native `api.openai.com` endpoint, so a flagged model behind a Responses-compatible gateway (the `openai` provider pointed at a CLIProxyAPI) is never sent `allowed_tools`; the session and agent loop use the same predicate and send only the active tools there.
-- `packages/ai/src/api/openai-responses.ts`: `applyAllowedToolsChoice` and its helpers moved to the fork-only `openai-responses-allowed-tools.ts`. When a request carrying `tool_choice: allowed_tools` is refused over HTTP (a 400, or the same refusal in-band before any content) or over the WebSocket before any content, the request is sent once more restricted to the allowed tools, with no `allowed_tools`. The model (api, provider, baseUrl, id) is then remembered for the process, so later requests go straight to the restricted shape. A retry that fails too records nothing.
+- `packages/ai/src/api/openai-responses.ts`: `getCompat` resolves `supportsAllowedTools` through `supportsAllowedToolChoice`, which now also requires a native OpenAI API host (`api.openai.com` or a regional `*.api.openai.com`). A flagged model behind a Responses-compatible gateway is never sent `allowed_tools`; the session and the agent loop use the same predicate and send only the active tools there.
+- `packages/ai/src/api/openai-responses.ts`: `applyAllowedToolsChoice` and its helpers moved to the fork-only `openai-responses-allowed-tools.ts`. A request carrying `tool_choice: allowed_tools` that is refused with an HTTP 400, or by a WebSocket error event before any content, is sent once more over HTTP with top-level function and custom tools restricted to the allowed ones and no `tool_choice`. The model (api, provider, baseUrl, id) is then remembered for the process, so later requests go straight to the restricted shape. A retry that fails too records nothing, and outer provider retries resend the restricted request. Tools that transcript items load in place are not filtered.
 
 ### Why
 
-An `openai/gpt-6.1-sol` session whose `openai` provider pointed at a CLIProxyAPI gateway failed every turn with `Invalid value: 'allowed_tools'` (param `tool_choice.type`) until its goal hit the continuation cap. The catalog flags every cache-write-priced `openai` row `supportsAllowedTools`, and nothing recovered when an endpoint rejected the choice.
+An `openai/gpt-6.1-sol` session whose `openai` provider pointed at a Responses-compatible gateway failed every turn with `Invalid value: 'allowed_tools'` (param `tool_choice.type`) until its goal hit the continuation cap. A provider `baseUrl` override keeps the catalog compat, which flags every cache-write-priced `openai` row `supportsAllowedTools`, and nothing recovered when an endpoint rejected the choice.
 
 ### Why an extension could not handle it
 
@@ -15,7 +15,7 @@ An `openai/gpt-6.1-sol` session whose `openai` provider pointed at a CLIProxyAPI
 
 ### Expected merge conflict zones
 
-- The request send block in `stream` (the WebSocket catch and `createRequest`), and the import list.
+- The request send block in `stream` (the WebSocket catch, `createRequest` and the `start` push), and the import list.
 
 ## 2026-10-09 - Restore api-tracker coverage for upstream-modified paths (senpi#3006)
 

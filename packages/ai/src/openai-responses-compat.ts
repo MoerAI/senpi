@@ -44,15 +44,17 @@ export interface OpenAIResponsesCompat {
 	 * Whether the model accepts `tool_choice: { type: "allowed_tools" }`. When set, callers keep every
 	 * declared tool in `tools` and restrict the callable subset through `Context.activeToolNames`, so a
 	 * shrinking tool set does not rewrite the cached prompt prefix. Honored by the `openai-responses`
-	 * adapter, and only on the native `api.openai.com` endpoint: Responses-compatible gateways reject the
-	 * choice (senpi#3080). Default: false.
+	 * adapter, and only on the native OpenAI API hosts (`api.openai.com` and its regional `*.api.openai.com`
+	 * hosts): Responses-compatible gateways reject the choice (senpi#3080), and since a provider `baseUrl`
+	 * override keeps the catalog compat, the flag cannot opt a gateway in. Default: false.
 	 */
 	supportsAllowedTools?: boolean;
 }
 
 function isNativeOpenAIEndpoint(baseUrl: string | undefined): boolean {
 	try {
-		return new URL(baseUrl || "https://api.openai.com/v1").hostname === "api.openai.com";
+		const { hostname } = new URL(baseUrl || "https://api.openai.com/v1");
+		return hostname === "api.openai.com" || hostname.endsWith(".api.openai.com");
 	} catch {
 		return false;
 	}

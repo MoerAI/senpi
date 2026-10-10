@@ -61,6 +61,7 @@ async function runTurn(
 	model: Model<"openai-responses">,
 	fetchStub: typeof fetch,
 	activeToolNames: string[],
+	maxRetries = 0,
 ): Promise<AssistantMessage> {
 	const events = streamOpenAIResponses(
 		model,
@@ -70,7 +71,7 @@ async function runTurn(
 			tools: TOOLS,
 			activeToolNames,
 		}),
-		{ apiKey: "test-key", fetch: fetchStub, maxRetries: 0 },
+		{ apiKey: "test-key", fetch: fetchStub, maxRetries, maxRetryDelayMs: 1 },
 	);
 	for await (const event of events) {
 		if (event.type === "done") return event.message;
@@ -129,6 +130,24 @@ describe("openai-responses allowed_tools refusal", () => {
 		expect(sent[0]?.tool_choice).toBe("none");
 	});
 
+	it("resends the restricted request when an outer provider retry follows", async () => {
+		const sent: CapturedPayload[] = [];
+		let calls = 0;
+		const fetchStub: typeof fetch = async (_input, init) => {
+			const body = JSON.parse(String(init?.body)) as CapturedPayload;
+			sent.push(body);
+			calls += 1;
+			if (choiceType(body) === "allowed_tools") return jsonError(400, ALLOWED_TOOLS_REFUSAL);
+			return calls === 2 ? jsonError(503, { error: { message: "overloaded", type: "server_error" } }) : sse();
+		};
+
+		const message = await runTurn(sol, fetchStub, ["read", "bash"], 1);
+
+		expect(message.stopReason).toBe("stop");
+		expect(sent.map(choiceType)).toEqual(["allowed_tools", undefined, undefined]);
+		expect(toolNames(sent[2] ?? {})).toEqual(["read", "bash"]);
+	});
+
 	it("does not retry an unrelated 400", async () => {
 		const sent: CapturedPayload[] = [];
 		const fetchStub: typeof fetch = async (_input, init) => {
@@ -176,6 +195,8 @@ describe("openai-responses allowed_tools endpoint gate", () => {
 		expect(sol.compat?.supportsAllowedTools).toBe(true);
 		expect(supportsAllowedToolChoice(sol)).toBe(true);
 		expect(supportsAllowedToolChoice(gateway)).toBe(false);
+		expect(supportsAllowedToolChoice({ ...sol, baseUrl: "https://eu.api.openai.com/v1" })).toBe(true);
+		expect(supportsAllowedToolChoice({ ...sol, baseUrl: "https://api.openai.com.gateway.example/v1" })).toBe(false);
 	});
 
 	it("never sends allowed_tools to a Responses-compatible gateway", async () => {

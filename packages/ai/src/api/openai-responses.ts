@@ -356,7 +356,8 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 					stream.end();
 					return;
 				} catch (error) {
-					const refusedAllowedTools = output.content.length === 0 && isAllowedToolsChoiceRefusal(error, params);
+					const refusedAllowedTools =
+						output.content.length === 0 && isAllowedToolsChoiceRefusal(error, params, { beforeContent: true });
 					if (!refusedAllowedTools && (transport === "websocket" || websocketStarted)) {
 						throw error;
 					}
@@ -400,7 +401,8 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 					return result;
 				} catch (error) {
 					if (!isAllowedToolsChoiceRefusal(error, params)) throw error;
-					const result = await sendOnce(restrictToAllowedTools(params));
+					params = restrictToAllowedTools(params);
+					const result = await sendOnce(params);
 					rememberAllowedToolsChoiceRefusal(model);
 					return result;
 				}
@@ -411,7 +413,8 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				signal: options?.signal,
 			});
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
-			stream.push({ type: "start", partial: output });
+			// A WebSocket attempt that fell through after its refusal already pushed `start`.
+			if (!refusedAllowedToolsOverWebSocket) stream.push({ type: "start", partial: output });
 
 			await processResponsesStream(openaiStream, output, stream, model, {
 				onProviderStreamEvent: options?.onProviderStreamEvent,

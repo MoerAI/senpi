@@ -52,18 +52,27 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * A request refusal that rejects `allowed_tools` as a `tool_choice` type, sent to a request that carried
- * one. Observed on openai/gpt-6.1-sol: "Invalid value: 'allowed_tools'. Supported values are: ..."
- * with param `tool_choice.type`.
+ * A refusal of `allowed_tools` as a `tool_choice` type, sent to a request that carried one. Over HTTP it is
+ * a 400; a WebSocket error event before any content carries no status, so the caller vouches for it with
+ * `beforeContent`. Observed on a Responses-compatible gateway: "Invalid value: 'allowed_tools'. Supported
+ * values are: ..." with param `tool_choice.type`.
  */
-export function isAllowedToolsChoiceRefusal(error: unknown, params: { readonly tool_choice?: unknown }): boolean {
-	if (allowedToolsChoice(params) === undefined || !isRequestRefusal(error)) return false;
-	return /\ballowed_tools\b/.test(errorMessage(error));
+export function isAllowedToolsChoiceRefusal(
+	error: unknown,
+	params: { readonly tool_choice?: unknown },
+	options: { readonly beforeContent?: boolean } = {},
+): boolean {
+	if (allowedToolsChoice(params) === undefined) return false;
+	if (!options.beforeContent && !isRequestRefusal(error)) return false;
+	const message = errorMessage(error);
+	return /\ballowed_tools\b/.test(message) && /invalid|unsupported|not\s+supported/i.test(message);
 }
 
 /**
- * The pre-senpi#2095 request shape for an `allowed_tools` request: function and custom tools outside the
- * allowed list leave `tools`, hosted tools stay, and `tool_choice` goes. Any other request is unchanged.
+ * The pre-senpi#2095 request shape for an `allowed_tools` request: top-level function and custom tools
+ * outside the allowed list leave `tools`, hosted tools stay, and `tool_choice` goes. Tools that transcript
+ * items load in place are not filtered; a call to an inactive one is still refused by the session's active
+ * tool set. Any other request is unchanged.
  */
 export function restrictToAllowedTools<TParams extends ResponseCreateParamsStreaming>(params: TParams): TParams {
 	const allowed = allowedToolsChoice(params);
