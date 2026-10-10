@@ -1,3 +1,21 @@
+## 2026-10-10 - An endpoint that refuses allowed_tools gets the active tools instead (senpi#3080)
+
+### What changed
+
+- `packages/ai/src/api/openai-responses.ts`: `applyAllowedToolsChoice` and its helpers moved to the fork-only `openai-responses-allowed-tools.ts`. When a request carrying `tool_choice: allowed_tools` is refused over HTTP (a 400, or the same refusal in-band before any content) or over the WebSocket before any content, the request is sent once more restricted to the allowed tools, with no `allowed_tools`. The model (api, provider, baseUrl, id) is then remembered for the process, so later requests go straight to the restricted shape. A retry that fails too records nothing.
+
+### Why
+
+An `openai/gpt-6.1-sol` session failed every turn with `Invalid value: 'allowed_tools'` (param `tool_choice.type`) until its goal hit the continuation cap. The catalog flags every cache-write-priced `openai` row `supportsAllowedTools`, and nothing recovered when an endpoint rejected the choice.
+
+### Why an extension could not handle it
+
+`tool_choice` is built after `onPayload` returns, and the retry depends on the provider's response, so a `before_provider_request` hook can neither see nor recover the refused request.
+
+### Expected merge conflict zones
+
+- The request send block in `stream` (the WebSocket catch and `createRequest`), and the import list.
+
 ## 2026-10-09 - Restore api-tracker coverage for upstream-modified paths (senpi#3006)
 
 ### What changed

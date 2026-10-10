@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- OpenAI Responses requests no longer fail every turn when the endpoint rejects `tool_choice: allowed_tools` (`Invalid value: 'allowed_tools'`). The request is retried once with only the active tools, and later requests to that model use that shape directly ([#3080](https://github.com/code-yeongyu/senpi/issues/3080)).
+
 ### Removed
 
 ## [2026.10.10-12] - 2026-10-10
