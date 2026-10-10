@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -11,10 +12,19 @@ const PROBE_PATH = fileURLToPath(new URL("./fixtures/windows-console/bash-grandc
 const BUN = process.versions.bun ? process.execPath : "bun";
 
 type Attachment = { readonly attached: boolean; readonly windowVisible: boolean };
-type ProbeResult = { readonly shape: string; readonly grandparent: Attachment; readonly grandchild: Attachment };
+type ProbeResult = {
+	readonly shape: string;
+	readonly control: boolean;
+	readonly grandparent: Attachment;
+	readonly grandchild: Attachment;
+};
+const RESULTS_FILE = process.env.SENPI_CONSOLE_PROBE_RESULTS;
 
-async function runProbe(shape: string): Promise<ProbeResult> {
-	const probe = spawn(BUN, [PROBE_PATH, shape], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+async function runProbe(shape: string, mode: "bash-tool" | "control"): Promise<ProbeResult> {
+	const probe = spawn(BUN, [PROBE_PATH, shape, ...(mode === "control" ? ["control"] : [])], {
+		stdio: ["ignore", "pipe", "pipe"],
+		windowsHide: true,
+	});
 	let stdout = "";
 	let stderr = "";
 	probe.stdout.setEncoding("utf8").on("data", (chunk: string) => {
@@ -26,7 +36,7 @@ async function runProbe(shape: string): Promise<ProbeResult> {
 	const [code] = (await once(probe, "close")) as [number | null];
 	if (code !== 0) throw new Error(`probe ${shape} exited ${String(code)}: ${stderr.trim()}`);
 	const result = JSON.parse(stdout.trim()) as ProbeResult;
-	console.log(`console probe ${JSON.stringify(result)}`);
+	if (RESULTS_FILE) appendFileSync(RESULTS_FILE, `${JSON.stringify(result)}\n`);
 	return result;
 }
 
@@ -35,14 +45,22 @@ describe.skipIf(process.platform !== "win32")("bash tool grandchild console wind
 		"#given a console-less senpi #when a bash command's node starts a %s child #then no process opens a visible console",
 		async (shape) => {
 			// given / when
-			const result = await runProbe(shape);
+			const result = await runProbe(shape, "bash-tool");
 
 			// then
-			expect({
-				grandparentVisible: result.grandparent.windowVisible,
-				grandchildVisible: result.grandchild.windowVisible,
-			}).toEqual({ grandparentVisible: false, grandchildVisible: false });
+			expect({ shape, grandparent: result.grandparent, grandchild: result.grandchild }).toMatchObject({
+				grandparent: { windowVisible: false },
+				grandchild: { windowVisible: false },
+			});
 		},
 		90_000,
 	);
+
+	it("#given the same chain spawned WITHOUT windowsHide #when probed #then the probe sees a visible console (control)", async () => {
+		// given / when
+		const result = await runProbe("inherit", "control");
+
+		// then
+		expect({ grandparent: result.grandparent }).toMatchObject({ grandparent: { windowVisible: true } });
+	}, 90_000);
 });

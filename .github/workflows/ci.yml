@@ -482,6 +482,8 @@ jobs:
         shell: bash
         run: bunx vitest run test/bash-grandchild-console-windows.test.ts --reporter=verbose --reporter=json --outputFile=vitest-console.json
         working-directory: packages/coding-agent
+        env:
+          SENPI_CONSOLE_PROBE_RESULTS: console-probe-results.jsonl
 
       - name: Require the console probe to have executed
         if: always()
@@ -492,8 +494,10 @@ jobs:
             const file = r.testResults.find((t) => t.name.replace(/\\/g, "/").endsWith("bash-grandchild-console-windows.test.ts"));
             const ran = file ? file.assertionResults.filter((a) => a.status === "passed" || a.status === "failed").length : 0;
             console.log("bash grandchild console probe cases run=" + ran);
-            if (ran !== 3) process.exit(1);
+            if (ran !== 4) process.exit(1);
           '
+          echo "--- raw console probe results ---"
+          cat console-probe-results.jsonl || echo "(no results file)"
         working-directory: packages/coding-agent
 
   # senpi#2248: Bun builds Chrome-backed WebViews only on the process main thread, so eval cells
