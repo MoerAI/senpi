@@ -1,3 +1,23 @@
+## 2026-10-10 - Reload validates the bytes actually compiled (senpi#3068)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/bun-extension-importer.ts`: `compiledSources()` reports SHA-256 fingerprints captured from the exact source strings passed to the transpiler, including lazy imports.
+- `packages/coding-agent/src/core/extensions/extension-module-cache.ts`: checks every importer-owned fingerprint before reusing a factory, retiring the whole generation when any source changes or disappears. It no longer assigns disk snapshots to already compiled dependencies.
+
+### Why
+
+- A command can import a dependency after its factory was cached, then that dependency can be edited before reload. Recording its fingerprint at reload time incorrectly blessed the old module with the new file's identity. Content hashes also detect equal-size edits with preserved timestamps, while unchanged reloads still reuse one generation.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/extensions/bun-extension-importer.ts` owns the transpiler input; `packages/coding-agent/src/core/extensions/extension-module-cache.ts` decides whether the host reuses the compiled graph, before the extension factory runs.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/extensions/bun-extension-importer.ts`: source bookkeeping and importer result.
+- `packages/coding-agent/src/core/extensions/extension-module-cache.ts`: importer contract and freshness check.
+
 ## 2026-10-08 - A required question never tells the model to proceed without an answer (senpi#2949)
 
 ### What changed
