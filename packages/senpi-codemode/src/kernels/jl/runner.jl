@@ -295,8 +295,12 @@ const SENPI_GLOBALS_INCLUDED = Ref(false)
 
 function senpi_memory_globals(limit::Int)
     if !SENPI_GLOBALS_INCLUDED[]
-        include(joinpath(@__DIR__, "globals.jl"))
-        SENPI_GLOBALS_INCLUDED[] = true
+        try
+            include(joinpath(@__DIR__, "globals.jl"))
+            SENPI_GLOBALS_INCLUDED[] = true
+        catch
+            return Dict{String, Any}[]
+        end
     end
     Base.invokelatest(() -> senpi_largest_globals(limit))
 end

@@ -1,12 +1,14 @@
 import { execFile, spawn } from "node:child_process";
-import { copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { startBridgeServer } from "../../../src/bridge/http-server.ts";
-import { JuliaKernel } from "../../../src/kernels/jl/kernel.ts";
+import { type BridgeMessage, decodeBridgeFrame } from "../../../src/bridge/protocol.ts";
+import { JuliaKernel, type JuliaKernelStartOptions } from "../../../src/kernels/jl/kernel.ts";
 
 const execute = promisify(execFile);
 const assets = fileURLToPath(new URL("../../../src/kernels/jl/", import.meta.url));
@@ -22,6 +24,7 @@ const record = 'Dict("kind" => "agent", "id" => "st_first", "run_epoch" => 0)';
 async function fixture(run: (root: string) => Promise<void>): Promise<void> {
 	const root = await mkdtemp(join(tmpdir(), "senpi-jl-lazy-handles-"));
 	try {
+		await mkdir(join(root, "cwd"));
 		await Promise.all(["runner.jl", "prelude.jl"].map((name) => copyFile(join(assets, name), join(root, name))));
 		await writeFile(
 			join(root, "handles.jl"),
@@ -46,15 +49,33 @@ async function withKernel(
 	root: string,
 	run: (kernel: JuliaKernel) => Promise<void>,
 	connection = { port: 1, token: "test-only" },
+	options: Pick<JuliaKernelStartOptions, "memory"> & {
+		readonly onFrame?: (message: BridgeMessage) => void;
+	} = {},
 ): Promise<void> {
 	const probe = join(root, "probe.jl");
 	await writeFile(probe, `${counters}\nBase.include(Main, ${JSON.stringify(join(root, "runner.jl"))})\n`);
 	const kernel = JuliaKernel.start({
-		cwd: root,
+		...options,
+		cwd: join(root, "cwd"),
 		sessionId: "lazy-handles",
 		connection,
-		spawn: (command, args, context) =>
-			spawn(command, [...args.slice(0, -1), probe], { ...context, detached: true, stdio: "pipe" }),
+		spawn: (command, args, context) => {
+			const child = spawn(command, ["--threads=2", ...args.slice(0, -1), probe], {
+				...context,
+				detached: true,
+				stdio: "pipe",
+			});
+			if (options.onFrame) {
+				const frames = createInterface({ input: child.stdout });
+				frames.on("line", (line) => {
+					const decoded = decodeBridgeFrame(line);
+					if (decoded.ok) options.onFrame?.(decoded.message);
+				});
+				child.once("exit", () => frames.close());
+			}
+			return child;
+		},
 	});
 	try {
 		await run(kernel);
@@ -70,6 +91,36 @@ async function value(kernel: JuliaKernel, code: string): Promise<unknown> {
 }
 
 describe("Julia lazy handles (Refs senpi#3048)", () => {
+	it.each(["missing", "invalid"])("returns empty globals when the sizing asset is %s", async (asset) => {
+		await fixture(async (root) => {
+			if (asset === "invalid") await writeFile(join(root, "globals.jl"), "function broken(");
+			const frames: string[] = [];
+			const globals: unknown[] = [];
+			await withKernel(
+				root,
+				async (kernel) => {
+					for (const code of ["42", "43"]) {
+						const result = await kernel.run({ cellId: crypto.randomUUID(), code, timeoutMs: 60_000 });
+						expect(result.ok).toBe(true);
+					}
+					expect(globals).toEqual([[], []]);
+					expect(frames).not.toContain("init-failed");
+				},
+				undefined,
+				{
+					memory: {
+						thresholds: { gcWatermarkBytes: 0, noticeBytes: 1, ceilingBytes: 0 },
+						readFootprint: () => ({ bytes: 2 }),
+					},
+					onFrame: (message) => {
+						frames.push(message.type);
+						if (message.type === "memory-globals-result") globals.push(message.globals);
+					},
+				},
+			);
+		});
+	});
+
 	it("installs zero handle declarations before the first result", async () => {
 		await fixture(async (root) => {
 			await withKernel(root, async (kernel) => {
@@ -79,6 +130,23 @@ describe("Julia lazy handles (Refs senpi#3048)", () => {
 						'Dict("includes" => SENPI_TEST_INCLUDES[], "declarations" => SENPI_TEST_DECLARATIONS[])',
 					),
 				).toEqual({ includes: 0, declarations: 0 });
+			});
+		});
+	});
+
+	it.each(["@async", "Threads.@spawn"])("creates the first handle inside %s from an empty cwd", async (taskMacro) => {
+		await fixture(async (root) => {
+			await withKernel(root, async (kernel) => {
+				// #3048: indirect access bypasses pre-eval installation and exercises the task's lazy include.
+				expect(
+					await value(
+						kernel,
+						`f = getproperty(Main, Symbol("han" * "dle"))
+task = ${taskMacro} f(${record})
+view = fetch(task)
+Dict("id" => Base.invokelatest(v -> v["id"], view), "includes" => SENPI_TEST_INCLUDES[])`,
+					),
+				).toEqual({ id: "st_first", includes: 1 });
 			});
 		});
 	});
@@ -116,7 +184,7 @@ Base.println("CONCURRENT_HANDLES_OK")
 `,
 			);
 			const result = await execute("julia", ["--startup-file=no", "--compile=min", "--optimize=0", script], {
-				cwd: dirname(script),
+				cwd: join(root, "cwd"),
 				timeout: 60_000,
 			});
 			expect(result.stdout.trim()).toBe("CONCURRENT_HANDLES_OK");

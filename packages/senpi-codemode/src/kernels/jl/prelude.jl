@@ -237,7 +237,7 @@ const SENPI_HANDLES_INCLUDE_LOCK = ReentrantLock()
 function senpi_ensure_handles()
     lock(SENPI_HANDLES_INCLUDE_LOCK) do
         if !SENPI_HANDLES_INCLUDED[]
-            include("handles.jl")
+            include(joinpath(@__DIR__, "handles.jl"))
             SENPI_HANDLES_INCLUDED[] = true
         end
     end
