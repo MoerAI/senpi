@@ -74,7 +74,10 @@ describe("Julia lazy handles (Refs senpi#3048)", () => {
 		await fixture(async (root) => {
 			await withKernel(root, async (kernel) => {
 				expect(
-					await value(kernel, 'Dict("includes" => SENPI_TEST_INCLUDES[], "declarations" => SENPI_TEST_DECLARATIONS[])'),
+					await value(
+						kernel,
+						'Dict("includes" => SENPI_TEST_INCLUDES[], "declarations" => SENPI_TEST_DECLARATIONS[])',
+					),
 				).toEqual({ includes: 0, declarations: 0 });
 			});
 		});
@@ -124,7 +127,10 @@ Base.println("CONCURRENT_HANDLES_OK")
 		await fixture(async (root) => {
 			await withKernel(root, async (kernel) => {
 				expect(
-					await value(kernel, 'task = @async 42; wait(task); Dict("value" => fetch(task), "includes" => SENPI_TEST_INCLUDES[])'),
+					await value(
+						kernel,
+						'task = @async 42; wait(task); Dict("value" => fetch(task), "includes" => SENPI_TEST_INCLUDES[])',
+					),
 				).toEqual({ value: 42, includes: 0 });
 			});
 		});
@@ -174,7 +180,10 @@ first_view()`,
 				await kernel.reset();
 				expect(await value(kernel, "SENPI_TEST_INCLUDES[]")).toBe(0);
 				expect(
-					await value(kernel, `view = handle(${record}); Dict("id" => view["id"], "includes" => SENPI_TEST_INCLUDES[])`),
+					await value(
+						kernel,
+						`view = handle(${record}); Dict("id" => view["id"], "includes" => SENPI_TEST_INCLUDES[])`,
+					),
 				).toEqual({ id: "st_first", includes: 1 });
 			});
 		});
