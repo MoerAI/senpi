@@ -13,7 +13,8 @@ import { getShellConfig } from "../../../src/utils/shell.ts";
 
 const PID_FILE_DEADLINE_MS = 30_000;
 const shape = process.argv[2] ?? "";
-if (!["inherit", "detached", "shell"].includes(shape)) throw new Error(`unknown shape ${shape}`);
+if (!["inherit", "detached", "shell", "firebase-java", "firebase-shell"].includes(shape))
+	throw new Error(`unknown shape ${shape}`);
 const control = process.argv[3] === "control";
 
 const grandparentPath = fileURLToPath(new URL("./grandparent.cjs", import.meta.url)).replaceAll("\\", "/");

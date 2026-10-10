@@ -41,7 +41,7 @@ async function runProbe(shape: string, mode: "bash-tool" | "control"): Promise<P
 }
 
 describe.skipIf(process.platform !== "win32")("bash tool grandchild console windows (omo#7691)", () => {
-	it.each(["inherit", "detached", "shell"])(
+	it.each(["inherit", "detached", "shell", "firebase-java", "firebase-shell"])(
 		"#given a console-less senpi #when a bash command's node starts a %s child #then no process opens a visible console",
 		async (shape) => {
 			// given / when

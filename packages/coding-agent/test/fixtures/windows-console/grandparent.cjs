@@ -5,10 +5,17 @@ const { writeFileSync } = require("node:fs");
 
 const [shape, pidFile] = process.argv.slice(2);
 const sleeper = "setTimeout(() => {}, 30000)";
+// firebase-java / firebase-shell mirror firebase-tools 15.33.0 lib/emulator/downloadableEmulators.js _runBinary:
+// detached, stdin inherited, stdout/stderr piped, no windowsHide (the shell variant is its Pub/Sub launch).
+const firebaseOptions = { detached: true, stdio: ["inherit", "pipe", "pipe"] };
 const child =
 	shape === "shell"
 		? spawn(`"${process.execPath}" -e "${sleeper}"`, { stdio: "ignore", shell: true })
-		: spawn(process.execPath, ["-e", sleeper], { stdio: "ignore", detached: shape === "detached" });
+		: shape === "firebase-java"
+			? spawn(process.execPath, ["-e", sleeper], firebaseOptions)
+			: shape === "firebase-shell"
+				? spawn(`"${process.execPath}"`, ["-e", `"${sleeper}"`], { ...firebaseOptions, shell: true })
+				: spawn(process.execPath, ["-e", sleeper], { stdio: "ignore", detached: shape === "detached" });
 child.unref();
 writeFileSync(pidFile, JSON.stringify({ grandparent: process.pid, grandchild: child.pid }));
 setTimeout(() => {}, 30000);
