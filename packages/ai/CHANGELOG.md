@@ -12,6 +12,66 @@
 
 ### Fixed
 
+- OpenAI models served through a Responses-compatible gateway (an `openai` provider whose `baseUrl` is not `api.openai.com`) no longer fail every turn with `Invalid value: 'allowed_tools'`. `tool_choice: allowed_tools` is sent only to the native endpoint; elsewhere requests carry only the active tools. If an endpoint still rejects the choice, the request is retried once with only the active tools and later requests to that model use that shape directly ([#3080](https://github.com/code-yeongyu/senpi/issues/3080)).
+
+### Removed
+
+## [2026.10.10-12] - 2026-10-10
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- The bundled model catalog is refreshed from models.dev and the providers' model listings (`huggingface`, `openrouter`, `vercel-ai-gateway`).
+
+### Fixed
+
+### Removed
+
+## [2026.10.10-11] - 2026-10-09
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- The bundled model catalog is refreshed from models.dev and the providers' model listings (`openrouter`) ([#3002](https://github.com/code-yeongyu/senpi/pull/3002)).
+
+### Fixed
+
+- The five nearest `changes.md` trackers #2895 added under `packages/ai/src/{api,auth,auth/oauth,providers,utils}/` now carry forward the parent tracker's coverage of the upstream-modified files beneath them, so `scripts/audit-changes-md.mjs` reports 0 uncovered paths again, with a regression test pinning the exact-nearest-tracker rule ([#3006](https://github.com/code-yeongyu/senpi/issues/3006)).
+
+### Removed
+
+## [2026.10.10-10] - 2026-10-09
+
+### Breaking Changes
+
+### Added
+
+- The ChatGPT Subscription catalog includes `gpt-6.1-sol-ultrafast`, sending upstream `gpt-6.1-sol` with the Ultrafast service tier and default `xhigh` reasoning without a local extension. Both OpenAI adapters estimate Sol and Astra Ultrafast costs at the published 6x Standard rates, including pinned aliases ([#2975](https://github.com/code-yeongyu/senpi/pull/2975) by [@audreyt](https://github.com/audreyt)).
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.10.10-9] - 2026-10-08
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- The bundled model catalog is refreshed from models.dev and the providers' model listings (`openrouter`).
+
+### Fixed
+
 - A provider or route that sets its own `anthropic-beta` header no longer drops the betas a request needs: the configured betas are merged with them. Claude Haiku, Opus and Sonnet 5.5 through such a route no longer fail the first call with `400 messages.1.output_config: Extra inputs are not permitted`, and a request with server-side fallbacks keeps its fallback beta. `anthropic-beta: null` now sends a request that needs no beta (current tool list, top-level effort, no fallbacks) instead of an invalid one ([#2957](https://github.com/code-yeongyu/senpi/issues/2957)).
 
 ### Removed

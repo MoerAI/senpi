@@ -1,3 +1,98 @@
+## 2026-10-11 - A busy prompt throws a typed AgentBusyError (senpi#3073 review)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: the "Agent is already processing. Specify streamingBehavior ..." refusal in `prompt()` throws `AgentBusyError` (new `src/core/agent-busy-error.ts`, `code: "streaming"`) instead of a plain `Error`. The message text is unchanged, so every existing message comparison keeps matching.
+
+### Why
+
+- The RPC host answered a busy `prompt` with message text only, so `senpi host session` could tell "busy" apart from any other failure only by matching English prose. With the typed error, `client-input-handler.ts` puts `errorCode: "streaming"` on the response and clients classify the refusal by its code.
+
+### Why an extension could not handle it
+
+- The refusal is raised inside `AgentSession.prompt()` before any extension hook, and the RPC response is built from the thrown error.
+
+### Expected merge conflict zones
+
+- LOW: the one `throw` in the streaming branch of `AgentSession.prompt()` and one import line in `packages/coding-agent/src/core/agent-session.ts`.
+
+## 2026-10-10 - A resource-loader reload no longer drops the extension module generation
+
+### What changed
+
+- `packages/coding-agent/src/core/resource-loader.ts`: `reload()` no longer calls `clearExtensionCache()` when the loader has loaded before. Package resolution still refreshes (`refresh` is unchanged).
+
+### Why
+
+- Since senpi#1948 the module cache invalidates itself: `cachedExtensionFactory()` drops the generation as soon as any source file it compiled changed or disappeared. Clearing it on every reload therefore compiled a new module graph for unchanged sources, and a module registry cannot evict, so each reload left a whole graph resident: about 180 `ModuleRecord`s and 2MB of heap per reload with the builtin set, measured over 30 reloads. With the clear removed the heap grows about 0.08MB per reload.
+- An edited extension is still picked up on reload by the cache's own fingerprint check (`extension-factory-lifecycle.test.ts` "picks up an edited extension on reload").
+
+### Why an extension could not handle it
+
+- The clear is in the core resource loader's reload path.
+
+### Expected merge conflict zones
+
+- The opening of `DefaultResourceLoader.reload()` and the `./extensions/loader.ts` import block in `packages/coding-agent/src/core/resource-loader.ts`.
+
+## 2026-10-09 - Durable engine self-stop signals (senpi#3007)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: appends `engine-paused` beside engine limits (`cap-per-message` or `cap-per-minute`) and at the final idle boundary after a repetitive-turns corrective turn. Deferred turn claims, active work, and settlement epochs prevent a premature pause while another turn starts. Limit signals retain the existing best-effort write behavior.
+- `packages/coding-agent/src/core/engine-paused.ts`: reads durable branch evidence to identify the latest corrective turn and to avoid duplicate pause entries after an already-recorded self-stop.
+
+### Why
+
+RPC clients otherwise infer pauses from several unrelated entries or from an ambiguous corrective-turn-to-idle sequence.
+
+### Why an extension could not handle it
+
+Only the engine owns cross-source limits and knows whether settlement-deferred turns actually started before the final idle edge.
+
+### Expected merge conflict zones
+
+The final idle boundary, engine-turn admission, and user/start reset bookkeeping in `agent-session.ts`; the helper is fork-owned.
+
+## 2026-10-09 - A session the OmO desktop moved resumes in the folder's new home (senpi#2990)
+
+### What changed
+
+- `packages/coding-agent/src/core/session-manager.ts`: `SessionManager.open` without a cwd override maps the header's cwd through `resolveMovedPath` (the senpi#2898 moved-path resolver) before using it. `findMostRecentSession`, `findById` and `list` (with a session dir) match header cwds through one `sessionCwdMatcher` per call (`core/moved-session-cwd.ts`, new), which also accepts a header cwd whose moved location is the current cwd and resolves each distinct recorded cwd at most once, so `list`'s per-progress-tick re-filter stays linear. `sessionCwdMatches` is gone. The session file is never rewritten.
+- `packages/coding-agent/src/core/resume-target.ts`: `resolveResumeTarget` treats a session whose recorded cwd moved to the current cwd as the directory's own session, so `--resume` opens it without offering a rebind.
+- `packages/coding-agent/src/core/moved-sessions.ts`: a session at a vanished path that the desktop moved to the current cwd is that folder's own session, not a repository-moved one. It is never badged as moved. Moved-here detection needs no git identity: only project dirs whose recorded path a trusted breadcrumb maps to the current folder are listed for it, and only the moved-repository lookup (senpi#2184) reads the identity and lists every vanished dir. A session dir that cannot be read, for any reason, is skipped instead of failing the listing, as `findMostRecentSession` and `listSessionsFromDir` already do: `--continue` reads other folders' dirs before its own, so one broken unrelated dir must never block the user's own session. `listMovedSessions` (the `--continue` rebind offer) leaves such a session out, the new `movedHereSessionToContinue` returns the newest one when it is newer by mtime than the folder's own newest session, and `withMovedSessions` lists it once: in a shared session dir the folder's own list already holds it, so only moved-repository sessions are looked up there, and it is added unbadged in the default per-folder layout, where only the vanished-path lookup reaches it.
+
+### Why
+
+The desktop moves its data home and leaves session headers naming the old location. senpi#2898 resolved a scheduled job's paths, but the headless `senpi -p --session <file>` it spawns took the cwd from the header as stored, found it missing and exited 1 ("Stored session working directory does not exist"), so a job created before the move ended in `failed/`. A cwd maps only when a trusted breadcrumb lists it, and a re-used worktree (its own `.git`) stays where it is, so nothing changes without a desktop move.
+
+### Why an extension could not handle it
+
+The session cwd is decided while the CLI opens the session file, before any extension loads, and the missing-cwd exit happens in `main.ts` right after.
+
+### Expected merge conflict zones
+
+- LOW: the `cwd` line in `SessionManager.open`, and the cwd filters in `findMostRecentSession`, `findById` and `list` (upstream's `sessionCwdMatches` calls) in `session-manager.ts`.
+
+## 2026-10-08 - Foreign session-holder admission evidence (senpi#2951)
+
+### What changed
+
+- `packages/coding-agent/src/core/foreign-session-holders.ts`: asynchronously reads only a regular file's JSONL header when an id is not known, leaving FIFO readers to the session runtime; resolves moved paths and queries `liveSessionHolders` afresh. Excludes this process PID, shared by its session-worker threads; formats terminal-safe, one-line warnings. Advisory CLI lookup errors produce a warning without aborting startup or resume; host admission retains strict lookup errors.
+- `packages/coding-agent/src/core/session-holders.ts`: accepts command-scoped lease probes so publication rechecks reread holder records and check liveness without respawning the same PID identity query. Move-lock callers retain the default fresh probes.
+
+### Why
+
+Daemon path reservations do not describe interactive CLI holders. Live holder leases already provide dead-pid, boot and process-start checks.
+
+### Why an extension could not handle it
+
+Host admission happens before runtime and extension creation.
+
+### Expected merge conflict zones
+
+- Fork-only file; holder queries and header reading.
+
 ## 2026-10-08 - A required compaction inside one long turn splits that turn instead of ending it (senpi#2925)
 
 ### What changed
@@ -15,6 +110,84 @@ The threshold decision, the cut point and the `RequiredCompactionError` throw al
 ### Expected merge conflict zones
 
 - LOW: the `if (inlineReason)` branch of the threshold block in `_checkCompaction`, and the `RequiredCompactionError` class header.
+
+## 2026-10-09 - Accurate turn_end report when the session shuts down mid-turn (senpi#2995)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: `dispose()` sets a private `_disposed` flag. When the `turn_end` boundary cannot resolve the assistant entry after that, it reports "turn_end skipped: the session shut down during this turn, so its last response was not saved", replacing "turn_end could not resolve the persisted assistant entry ID".
+
+### Why
+
+- A signal shutdown (SIGTERM/SIGHUP) disposes the session while a response is still streaming. The aborted response is never persisted, so the boundary cannot resolve its entry. The old text pointed at a persistence bug that did not exist, and sent the senpi#2995 diagnosis the wrong way.
+
+### Why an extension could not handle it
+
+- The `<boundary>` error is emitted by `AgentSession` itself, before any extension handler runs.
+
+### Expected merge conflict zones
+
+- LOW: the `!messageEntryId` branch of `_dispatchTurnEndBoundary` and the first line of `dispose()` in `agent-session.ts`.
+
+## 2026-10-09 - Concurrent log rotation never disables a log sink (senpi#2976)
+
+### What changed
+
+- `packages/coding-agent/src/core/log-file-rotation.ts` (new): `rotateLogIfNeeded(filePath, incomingBytes, maxBytes)` rotates under a `<file>.rotate-lock` created with `wx`, re-checks the size under the lock, treats a lost rename (ENOENT) as done, clears a lock older than 10 s, and exports `LOG_SINK_RETRY_MS`.
+- `packages/coding-agent/src/core/session-log.ts`: `writeLine` rotates through it and sets the mode on the open descriptor.
+- `packages/coding-agent/src/core/retry-fallback/log.ts`: `writeLine` rotates through it and sets the mode on the open descriptor.
+
+### Why
+
+- Several processes share one agent dir (engine host, CLI, desktop host). Rotation was a non-atomic stat, remove `.1`, rename: when two crossed the cap together, the loser's rename threw ENOENT and its sink was disabled for the whole process (config-reload, MCP) or the line was lost (session, fallback), and the remove step could delete a generation another process had just rotated. A two-to-four-process burst dropped hundreds of lines per losing process. Rotation now runs under an exclusive lock file and re-checks the size while holding it, a lost race keeps appending, and a failed sink retries after `LOG_SINK_RETRY_MS` (5 s) instead of staying off. The `chmod` after each append moved onto the open descriptor (`fchmodSync`), since the path may already name a newer file another process created.
+
+### Why an extension could not handle it
+
+- These are the engine's own log writers.
+
+### Expected merge conflict zones
+
+- LOW: the `writeLine` helpers in `session-log.ts` and `retry-fallback/log.ts`.
+
+## 2026-10-09 - The engine-turn pause stays visible when the session file refuses writes (senpi#2967 follow-up)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: `_stopEngineTurn` records its `engine-turn-limit` entry best effort (a refused write is logged as `engine_turn_record_write_failed`), so `engine:turn-limit` and the "Paused" notice still fire, and a refused message's cross-session delivery is still settled. A delivery whose own entry the file refuses is also taken out of the context, since its sender redelivers it. The `engine-turn-start` write logs its refusal instead of dropping it. A user message edited in `/tree` (written directly, not through `message_end`) clears the in-process engine-turn record like a new user message.
+
+### Why
+
+- After #2969 a session file that refuses writes reaches the pause through the in-process count; the unguarded limit-entry write then threw before the event, the notice and the delivery settlement, so the cap held silently and a delivery arriving at it stayed pending, keeping `release_session` busy.
+
+### Why an extension could not handle it
+
+- The pause and its bookkeeping live in the session's `sendCustomMessage` path.
+
+### Expected merge conflict zones
+
+- LOW: `agent-session.ts` `_stopEngineTurn`, `_recordEngineTurnStart`, `_recordRefusedEngineTurnMessage`, and the edited-message write in `_navigateTree`.
+
+## 2026-10-08 - Engine-originated turns are bounded per user message and per minute (senpi#2967)
+
+### What changed
+
+- `packages/coding-agent/src/core/engine-turn-limit.ts` (new): `engineTurnStop(entries, now, limits)` counts the `engine-turn-start` entries since the user's last message and returns a stop when the next engine-originated turn (any extension's `sendMessage` with `triggerTurn` that starts a turn while idle) would exceed `maxPerUserInput` (default 150) or `maxToolFreePerMinute` engine turns in the last 60 s whose reply called no tool (default 12). Only turns after the last user message count, so any user message lifts a pause; `0` turns a limit off.
+- `packages/coding-agent/src/core/agent-session.ts`: `sendCustomMessage` checks it before starting a `triggerTurn` turn and, once the turn is admitted, records an `engine-turn-start` entry. A `.` manual continue and a continue-from-leaf are the user's own requests: they are never limited and count as a user message. On a stop no turn starts but the message is still recorded (eval results, terminal notices and cross-session messages are not re-sent) and a cross-session delivery it carries is settled as persisted or refused. The `engine-turn-start` write is best-effort and never stops a turn; the session also keeps an in-process record of the engine turns it started since the user's last message (cleared by a user message, marked by a tool call), and the larger of the persisted and in-process counts is enforced, so a session file that refuses writes is still bounded within the running process; an `engine-turn-limit` entry is appended (and published as `entry_appended`), `engine:turn-limit` is emitted on the extension bus and the user sees "Paused: ... Send any message to continue." Messages queued while a turn is streaming or a compaction is pending join that running turn and start none.
+- `packages/coding-agent/src/core/settings-manager.ts`: `engineTurns.maxPerUserInput` and `engineTurns.maxToolFreePerMinute` settings with those defaults; `0` disables (`getEngineTurnSettings`). Documented in `docs/settings.md`.
+- `packages/coding-agent/src/core/extensions/runner.ts`: `emitBusEvent(channel, data)` beside `onBusEvent`.
+
+### Why
+
+- One user message drove 66 turns in about 66 s through the ttsr `repetitive-turns` nudge, and 93 requests in 3 s through goal continuation, until the user pressed Stop (senpi#2967). The desktop's server-hosted session reopens the session around every turn, so in-memory guards in the extensions reset; the bound is read from the session itself.
+- The per-minute breaker counts only tool-free engine turns because of measured data: across 604 local sessions with goals (27,650 goal continuations), continuations that called a tool were never closer than 36.8 s apart at p1, and every window with 8 or more tool-free continuations per minute (30 sessions, maximum 14) consisted entirely of `stopReason: error` turns, i.e. runaways.
+
+### Why an extension could not handle it
+
+- Each extension only sees its own turns; the bound has to cover every source and survive extension rebuilds, so it sits where `triggerTurn` starts a turn.
+
+### Expected merge conflict zones
+
+- MEDIUM: `agent-session.ts` `sendCustomMessage` `triggerTurn` branch and its imports; LOW: `settings-manager.ts` `Settings` fields, `runner.ts` bus methods.
 
 ## 2026-10-08 - Runtime diagnostics carry an optional machine code (senpi#2906)
 
@@ -9323,3 +9496,58 @@ The `promptSurface` plumbing in `agent-session.ts`, `agent-session-services.ts` 
 ### Expected merge conflict zones
 
 - LOW: the final `return` of `convertToLlm` and its import in `messages.ts`; in `agent-session.ts`, `PromptOptions` (new `textBlocks`), the `inputResult.action === "transform"` branch and the `userContent` line in `prompt()`, the `_queueSteer` / `_queueFollowUp` / `_enqueuePreparedInput` signatures and content line, the text-part loop plus `prompt()` call in `sendUserMessage`, and the `text` line of `getUserMessagesForForking`.
+
+## 2026-10-08 - Recognize GPT-6.1 Sol as a documented Ultrafast model (senpi#2975)
+
+### What changed
+
+- `packages/coding-agent/src/core/ultrafast-lanes.ts`: the documented model set includes `gpt-6-astra` and `gpt-6.1-sol`, so the native Sol Ultrafast alias does not emit an unsupported-tier warning after the service-tier extension resolves its upstream id. Other models and non-first-party providers retain their warnings.
+
+### Why
+
+- The current subscription catalog advertises Ultrafast for both models; the previous Astra-only notice was misleading for Sol.
+
+### Why an extension could not handle it
+
+- Model resolution and the builtin service-tier extension share this core warning policy.
+
+### Expected merge conflict zones
+
+- LOW: the documented model set and warning text in `packages/coding-agent/src/core/ultrafast-lanes.ts`.
+## 2026-10-10 - Replay-safe retained recovery and durable rejection admission (senpi#3060)
+
+### What changed
+
+- `packages/coding-agent/src/core/session-manager.ts`: a deterministic checkpoint's `retainedMessagePolicy` applies JSON-normalized safe replacements to retained model context, carrying entry provenance onto copies. The policy survives later checkpoints and reopen, without rewriting source entries or applying to messages after the recovery boundary.
+- `packages/coding-agent/src/core/agent-session.ts`: pre-prompt and automatic compaction consult the persisted identical-recovery rejection latch before emitting an attempt. Manual compaction remains an explicit retry.
+
+### Why
+
+An unsafe newest result poisoned every retained suffix. Repeated automatic admission retried an unchanged impossible recovery, including after session reopen.
+
+### Why an extension could not handle it
+
+`packages/coding-agent/src/core/session-manager.ts` owns canonical replay, resume, and compaction admission projections. `packages/coding-agent/src/core/agent-session.ts` emits automatic attempt events before extension hooks run; both must honor the same durable policy.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/session-manager.ts`: `projectSession` provenance mapping.
+- `packages/coding-agent/src/core/agent-session.ts`: `_runPrePromptCompaction` and `_runAutoCompaction` admission.
+
+## 2026-10-10 - Share actual compaction admission with terminal rejection classification (senpi#3061)
+
+### What changed
+
+- `packages/coding-agent/src/core/agent-session.ts`: `_wouldCompactionOverflow` delegates the existing projection, Cursor history admission and effective-reserve calculation to `wouldCompactionOverflow` in the compaction builtin's rejection helper.
+
+### Why
+
+- `packages/coding-agent/src/core/agent-session.ts`: a generated summary that core would accept must not be vetoed by the deterministic fallback's more conservative envelope estimator. The same calculation now gates both acceptance and terminal no-safe-suffix classification.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/agent-session.ts` owns final acceptance. Sharing its existing calculation avoids a second, divergent implementation in the builtin.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/agent-session.ts`: rejection-helper import and `_wouldCompactionOverflow` delegation.

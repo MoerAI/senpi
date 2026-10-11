@@ -96,6 +96,7 @@ import { resolvePath } from "../utils/paths.ts";
 import { sleep } from "../utils/sleep.ts";
 import { normalizeToolResultImages } from "../utils/tool-result-images.ts";
 import { AgentAbortProvenance, type AgentAbortSource } from "./agent-abort-provenance.ts";
+import { AgentBusyError } from "./agent-busy-error.ts";
 import { AgentSettledDelivery, type DeferredAgentSettledAction, DeferredTurnClaim } from "./agent-settled-delivery.ts";
 import { resolveAssistantUsageScope } from "./assistant-usage-scope.ts";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.ts";
@@ -155,6 +156,16 @@ import {
 	UserEditError,
 	userTextEquals,
 } from "./edited-user-message.ts";
+import { ENGINE_PAUSED_ENTRY_TYPE, enginePauseSinceLastTurn, settledRepetitiveTurnPause } from "./engine-paused.ts";
+import {
+	ENGINE_TURN_LIMIT_ENTRY_TYPE,
+	ENGINE_TURN_LIMIT_EVENT,
+	ENGINE_TURN_START_ENTRY_TYPE,
+	type EngineTurnStartRecord,
+	engineTurnLimitNotice,
+	engineTurnStop,
+	isUserDirectedTurn,
+} from "./engine-turn-limit.ts";
 import {
 	type EnvironmentContext,
 	environmentContextMessageIfChanged,
@@ -172,11 +183,11 @@ import {
 	type ModelUsabilityBudgetProjection,
 	projectModelUsabilityBudget,
 } from "./extensions/builtin/compaction/model-usability-budget.ts";
+import { resolveEffectiveReserveTokens, shouldTriggerCompaction } from "./extensions/builtin/compaction/policy.ts";
 import {
-	resolveEffectiveReserveTokens,
-	resolveReserveTokens,
-	shouldTriggerCompaction,
-} from "./extensions/builtin/compaction/policy.ts";
+	isAutomaticCompactionBlocked,
+	wouldCompactionOverflow,
+} from "./extensions/builtin/compaction/rejected-recovery.ts";
 import {
 	createResumeCompactionRequirement,
 	type ResumeCompactionRequirement,
@@ -301,7 +312,6 @@ import { computeSessionFailureReport, type SessionFailureReport } from "./sessio
 import { createSessionLogger, type SessionLogger } from "./session-log.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionProjection } from "./session-manager.ts";
 import {
-	buildSessionContext,
 	CURRENT_SESSION_VERSION,
 	getLatestCompactionEntry,
 	type SessionHeader,
@@ -381,6 +391,10 @@ const DEFERRED_RETRY_QUEUE_OWNERS = new WeakSet<object>();
 // ============================================================================
 // Skill Invocation Formatting and Parsing (see ./skill-invocation.ts)
 // ============================================================================
+
+/** The turn_end boundary report for a turn still unwinding after dispose() (senpi#2995). */
+export const TURN_END_SKIPPED_AFTER_SHUTDOWN =
+	"turn_end skipped: the session shut down during this turn, so its last response was not saved";
 
 export {
 	formatSkillInvocationPrompt,
@@ -1083,6 +1097,8 @@ export class AgentSession {
 	private _sessionStartDispatching = false;
 	/** User-abort generation at the start of an idle trigger turn's awaited admission hooks. */
 	private _triggerTurnAdmissionAbortGeneration: number | undefined;
+	private _engineTurnStarts: EngineTurnStartRecord[] = [];
+	private _engineTurnPauseRecorded = false;
 	private _nextInputId = 0;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
@@ -1224,6 +1240,8 @@ export class AgentSession {
 	/** Assistant turns whose `turn_end` boundary committed entries, so the next request must re-read agent state. */
 	private readonly _boundaryRefreshedTurns = new WeakSet<object>();
 	private _lastActivityOutcome: AgentActivityOutcome = "completed";
+	/** Set when dispose() starts; a turn still unwinding after it cannot resolve persisted entries (senpi#2995). */
+	private _disposed = false;
 	private _isBeforeSettle = false;
 	private _abortDuringBeforeSettle = false;
 
@@ -1910,7 +1928,10 @@ export class AgentSession {
 			this._extensionRunner.emitError({
 				extensionPath: "<boundary>",
 				event: "turn_end",
-				error: "turn_end could not resolve the persisted assistant entry ID",
+				// After dispose() the aborted response is never persisted, so a missing entry there is the shutdown.
+				error: this._disposed
+					? TURN_END_SKIPPED_AFTER_SHUTDOWN
+					: "turn_end could not resolve the persisted assistant entry ID",
 			});
 			return false;
 		}
@@ -2631,6 +2652,23 @@ export class AgentSession {
 		}
 		if (settlementEpoch !== this._settlementEpoch) return;
 		if (this._isAgentRunActive || this._sessionWorkBarrier.hasActiveWork) return;
+		if (settledRepetitiveTurnPause(this.sessionManager.getBranch())) {
+			try {
+				this._emitEntryAppended(
+					this.sessionManager.appendCustomEntry(ENGINE_PAUSED_ENTRY_TYPE, {
+						reason: "repetition",
+						rule: "repetitive-turns",
+						customType: "ttsr-injection",
+						at: Date.now(),
+					}),
+				);
+			} catch (error) {
+				this._sessionLogger.warn("engine_turn_record_write_failed", {
+					entry: ENGINE_PAUSED_ENTRY_TYPE,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
 		this.releaseSettledSessionMemory();
 		this._emit({ type: "agent_idle" });
 	}
@@ -3173,6 +3211,7 @@ export class AgentSession {
 
 		// Handle session persistence
 		if (event.type === "message_end") {
+			this._observeEngineTurnMessage(event.message);
 			let entryId: string | undefined;
 			try {
 				// Check if this is a custom message from extensions
@@ -3831,6 +3870,7 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._disposed = true;
 		for (const dispose of this._toolContextDisposers) dispose();
 		try {
 			this._probeBackScheduler.cancel("dispose");
@@ -4925,7 +4965,7 @@ export class AgentSession {
 			// If streaming, queue via steer() or followUp() based on option
 			if (this.isStreaming) {
 				if (!options?.streamingBehavior) {
-					throw new Error(
+					throw new AgentBusyError(
 						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 					);
 				}
@@ -5628,6 +5668,8 @@ export class AgentSession {
 				} else {
 					this.agent.steer(appMessage);
 				}
+			} else if (options?.triggerTurn && this._stopEngineTurn(message.customType)) {
+				this._recordRefusedEngineTurnMessage(appMessage);
 			} else if (options?.triggerTurn) {
 				finishSessionWork ??= this._sessionWorkBarrier.begin();
 				const environmentContext = this._pendingEnvironmentContextMessage();
@@ -5674,6 +5716,7 @@ export class AgentSession {
 				} finally {
 					this._triggerTurnAdmissionAbortGeneration = undefined;
 				}
+				if (!isUserDirectedTurn(message.customType)) this._recordEngineTurnStart(message.customType);
 				await this._promptAgent(messages, deferredTurnClaim);
 			} else if (this.isStreaming) {
 				this._pendingCustomMessages.push(appMessage);
@@ -5684,6 +5727,103 @@ export class AgentSession {
 			deferredTurnClaim?.resolve("finished-without-start");
 			finishSessionWork?.();
 		}
+	}
+
+	/**
+	 * The engine-turn bound's bookkeeping must never stop a turn: a session file that refuses the write (read-only,
+	 * full disk) only loses the count, as the turn's own persistence reports the failure (senpi#2967).
+	 */
+	private _recordEngineTurnStart(customType: string): void {
+		this._engineTurnPauseRecorded = false;
+		this._engineTurnStarts.push({ at: Date.now(), toolUsed: false });
+		try {
+			this._emitEntryAppended(this.sessionManager.appendCustomEntry(ENGINE_TURN_START_ENTRY_TYPE, { customType }));
+		} catch (error) {
+			this._sessionLogger.warn("engine_turn_record_write_failed", {
+				entry: ENGINE_TURN_START_ENTRY_TYPE,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	/**
+	 * A refused engine turn still records its message and settles a cross-session delivery it carries. A delivery
+	 * whose entry the file refuses leaves the context too: its sender redelivers it, and it must not appear twice.
+	 */
+	private _recordRefusedEngineTurnMessage(appMessage: CustomMessage): void {
+		try {
+			this._appendCustomMessage(appMessage);
+			this.externalAdmission.observePersisted(appMessage);
+		} catch (error) {
+			if (deliveryIdOf(appMessage) !== undefined) {
+				const index = this.agent.state.messages.lastIndexOf(appMessage);
+				if (index >= 0) this.agent.state.messages.splice(index, 1);
+			}
+			this.externalAdmission.observeRefused(appMessage, error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	/** Keeps this process's engine-turn record: a user message clears it, a tool call marks the running engine turn. */
+	private _observeEngineTurnMessage(message: AgentMessage): void {
+		if (message.role === "user" || (message.role === "custom" && isUserDirectedTurn(message.customType))) {
+			this._engineTurnStarts = [];
+			this._engineTurnPauseRecorded = false;
+			return;
+		}
+		const running = this._engineTurnStarts.at(-1);
+		if (
+			running !== undefined &&
+			message.role === "assistant" &&
+			message.content.some((block) => block.type === "toolCall")
+		) {
+			running.toolUsed = true;
+		}
+	}
+
+	/**
+	 * An engine-originated turn (an extension's `sendMessage` with `triggerTurn`, from any source) that would
+	 * exceed the engine-wide bound is not started: the message is still recorded, and the stop is recorded (best
+	 * effort), emitted and shown, so a session file that refuses writes still pauses visibly (senpi#2967).
+	 */
+	private _stopEngineTurn(customType: string): boolean {
+		if (isUserDirectedTurn(customType)) return false;
+		const stop = engineTurnStop(
+			this.sessionManager.getEntries(),
+			Date.now(),
+			this.settingsManager.getEngineTurnSettings(),
+			this._engineTurnStarts,
+		);
+		if (stop === null) return false;
+		const details = { customType, ...stop, at: Date.now() };
+		if (!this._engineTurnPauseRecorded && !enginePauseSinceLastTurn(this.sessionManager.getBranch())) {
+			this._engineTurnPauseRecorded = true;
+			try {
+				this._emitEntryAppended(
+					this.sessionManager.appendCustomEntry(ENGINE_PAUSED_ENTRY_TYPE, {
+						reason: stop.reason === "per-user-input" ? "cap-per-message" : "cap-per-minute",
+						customType,
+						count: stop.reason === "per-user-input" ? stop.sinceUserInput : stop.toolFreeInWindow,
+						at: details.at,
+					}),
+				);
+			} catch (error) {
+				this._sessionLogger.warn("engine_turn_record_write_failed", {
+					entry: ENGINE_PAUSED_ENTRY_TYPE,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		try {
+			this._emitEntryAppended(this.sessionManager.appendCustomEntry(ENGINE_TURN_LIMIT_ENTRY_TYPE, details));
+		} catch (error) {
+			this._sessionLogger.warn("engine_turn_record_write_failed", {
+				entry: ENGINE_TURN_LIMIT_ENTRY_TYPE,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		this._extensionRunner.emitBusEvent(ENGINE_TURN_LIMIT_EVENT, details);
+		this._extensionRunner.getUIContext().notify(engineTurnLimitNotice(stop), "warning");
+		return true;
 	}
 
 	/** Environment context a new turn must carry: set when cwd or date differs from the latest one visible (senpi#2093). */
@@ -7699,41 +7839,13 @@ export class AgentSession {
 		fromExtension: boolean,
 		model: Model<Api>,
 	): Promise<boolean> {
-		const currentLeaf = pathEntries[pathEntries.length - 1];
-		if (!currentLeaf) return false;
-
-		const simulatedCompactionEntry: CompactionEntry = {
-			type: "compaction",
-			id: `simulated-${randomUUID()}`,
-			parentId: currentLeaf.id,
-			timestamp: new Date().toISOString(),
-			summary: compactionResult.summary,
-			firstKeptEntryId: compactionResult.firstKeptEntryId,
-			tokensBefore: compactionResult.tokensBefore,
-			details: compactionResult.details,
-			fromHook: fromExtension,
-		};
-
-		let simulatedMessages = buildSessionContext(
-			[...pathEntries, simulatedCompactionEntry],
-			simulatedCompactionEntry.id,
-		).messages;
-		// Size the same retained context that will be admitted to Cursor. Persisted JSONL
-		// remains verbatim, but the in-memory request representation is bounded first.
-		if (model.provider === "cursor" || model.provider === "cursor-cli-oauth") {
-			simulatedMessages =
-				admitCursorHistory({
-					messages: simulatedMessages,
-					budgetBytes: cursorAdmissionBudgetBytes(model.contextWindow),
-				}).messages ?? simulatedMessages;
-		}
-		const contextTokens = estimateMessagesTokens(filterContextExcludedMessages(simulatedMessages));
-		const settings = this._getCompactionSettings();
-		const reserveTokens =
-			settings.reserveScalingEnabled === false
-				? settings.reserveTokens
-				: resolveReserveTokens(model.contextWindow, settings.reserveTokens);
-		return contextTokens > model.contextWindow - reserveTokens;
+		return wouldCompactionOverflow(
+			pathEntries,
+			compactionResult,
+			fromExtension,
+			model,
+			this._getCompactionSettings(),
+		);
 	}
 
 	/**
@@ -8362,6 +8474,9 @@ export class AgentSession {
 		// The flag reports THIS attempt's "nothing to compact" outcome only; a value left by an earlier attempt
 		// must not make a caller treat a cancelled or rejected compaction as too small (senpi#2925 review).
 		this._compactionSkippedTooSmall = false;
+		if (isAutomaticCompactionBlocked(this.sessionManager.getBranch(), this.model, this._getCompactionSettings())) {
+			return false;
+		}
 		// An earlier external-owner rejection never answers for a rejected request
 		// awaiting its retry: whether the owner can recover it depends on the request
 		// that failed, so ask again. A completed turn keeps the sticky delegation (#1174).
@@ -8612,6 +8727,9 @@ export class AgentSession {
 		willRetry: boolean,
 		options: { keepRecentTokensOverride?: number } = {},
 	): Promise<boolean> {
+		if (isAutomaticCompactionBlocked(this.sessionManager.getBranch(), this.model, this._getCompactionSettings())) {
+			return false;
+		}
 		if (!(reason === "overflow" && willRetry) && this._isCompactionDelegated()) return false;
 		const { keepRecentTokensOverride } = options;
 		// Model identity is captured before the auth await below: a model switch during
@@ -10910,6 +11028,7 @@ export class AgentSession {
 			}
 
 			const editedEntryId = replacement ? this.sessionManager.appendMessage(replacement) : undefined;
+			if (replacement) this._observeEngineTurnMessage(replacement);
 
 			// Attach label to target entry when not summarizing (no summary entry to label)
 			if (label && !summaryText) {

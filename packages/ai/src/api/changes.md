@@ -1,3 +1,76 @@
+## 2026-10-10 - allowed_tools only on the native OpenAI endpoint, with a refusal fallback (senpi#3080)
+
+### What changed
+
+- `packages/ai/src/api/openai-responses.ts`: `getCompat` resolves `supportsAllowedTools` through `supportsAllowedToolChoice`, which now also requires a native OpenAI API host (`api.openai.com` or a regional `*.api.openai.com`). A flagged model behind a Responses-compatible gateway is never sent `allowed_tools`; the session and the agent loop use the same predicate and send only the active tools there.
+- `packages/ai/src/api/openai-responses.ts`: `applyAllowedToolsChoice` and its helpers moved to the fork-only `openai-responses-allowed-tools.ts`. A request carrying `tool_choice: allowed_tools` that is refused with an HTTP 400, or by a WebSocket error event before any content, is sent once more over HTTP with top-level function and custom tools restricted to the allowed ones and no `tool_choice`. The model (api, provider, baseUrl, id) is then remembered for the process, so later requests go straight to the restricted shape. A retry that fails too records nothing, and outer provider retries resend the restricted request. Tools that transcript items load in place are not filtered.
+
+### Why
+
+An `openai/gpt-6.1-sol` session whose `openai` provider pointed at a Responses-compatible gateway failed every turn with `Invalid value: 'allowed_tools'` (param `tool_choice.type`) until its goal hit the continuation cap. A provider `baseUrl` override keeps the catalog compat, which flags every cache-write-priced `openai` row `supportsAllowedTools`, and nothing recovered when an endpoint rejected the choice.
+
+### Why an extension could not handle it
+
+`tool_choice` is built after `onPayload` returns, and the retry depends on the provider's response, so a `before_provider_request` hook can neither see nor recover the refused request.
+
+### Expected merge conflict zones
+
+- The request send block in `stream` (the WebSocket catch, `createRequest` and the `start` push), and the import list.
+
+## 2026-10-09 - Restore api-tracker coverage for upstream-modified paths (senpi#3006)
+
+### What changed
+
+- `packages/ai/src/api/azure-openai-responses.ts`: [OI]-family adapter divergence (option normalization, extraBody and reasoning ladders) carried through the v0.99.1 sync.
+- `packages/ai/src/api/cloudflare.ts`: Cloudflare base-URL routing on the v0.99.1 core.
+- `packages/ai/src/api/constrained-sampling.ts`: `constrainedSampling: false` honored as an explicit opt-out, distinct from absent, in the strict-JSON and grammar resolvers.
+- `packages/ai/src/api/github-copilot-headers.ts`: Copilot refusal explanation and one re-exchange of a token GitHub refuses (senpi#2297).
+- `packages/ai/src/api/google-generative-ai.ts`, `packages/ai/src/api/google-shared.ts`, `packages/ai/src/api/google-vertex.ts`: Google adapter re-divergence (FinishReason exhaustiveness, same-role message folding) carried through the v0.99.1 sync.
+- `packages/ai/src/api/openai-completions.ts`: forced tool_choice fallback, in-band refusal retry, reasoning_details replay, endpoint-advertised reasoning efforts, and gateway prompt-cache parsing.
+- `packages/ai/src/api/openai-prompt-cache.ts`: [OI] adds `applyChatGptSubscriptionCacheAffinityHeaders`, which sets the session-id, thread-id and x-client-request-id headers from the session id for prompt-cache affinity.
+- `packages/ai/src/api/openai-responses-shared.ts`: Astra Ultrafast tier, prefix prewarm with prompt_cache_diagnostics, nested WebSocket error surfacing, and the completion-phase watchdog.
+- `packages/ai/src/api/openai-responses.lazy.ts`: lazy Responses loader prewarmed with the GPT-5.6+ prefix (senpi#2096).
+- `packages/ai/src/api/openrouter-images.ts`: OpenRouter images on the v6 model surface.
+- `packages/ai/src/api/pi-messages.ts`: model-only text audience without changing provider payloads.
+- `packages/ai/src/api/simple-options.ts`: context-exhausted refusal, not a shrink to one token.
+- `packages/ai/src/api/transform-messages.ts`: cross-provider message transform contract preserving redacted thinking on same-model transforms.
+
+These files were covered by the parent tracker until senpi#2895 added this nearer tracker without listing them, hiding them from the audit's exact-nearest-tracker rule.
+
+### Why
+
+The repository audit requires every upstream-modified production path to be named by an entry in its exact nearest changes.md tracker. senpi#2895 introduced this tracker and named only the files it touched, so the 15 pre-existing upstream-modified files beneath it lost the coverage the parent tracker had provided and were reported uncovered.
+
+### Why an extension could not handle it
+
+changes.md coverage is fork-owned documentation metadata; no extension or runtime hook can supply it.
+
+### Expected merge conflict zones
+
+- The context-room clamp in `packages/ai/src/api/simple-options.ts` (max-token clamping moved to `context-room.ts` and re-exported), against upstream changes to the token-budget options; and the cache-affinity header helper in `packages/ai/src/api/openai-prompt-cache.ts`, against upstream changes to the prompt-cache header set.
+- The forced-`tool_choice` fallback and `reasoning_details` replay logic in `packages/ai/src/api/openai-completions.ts`, against upstream Completions changes.
+- The Responses shared helpers (tool placement, prefix prewarm, completion-phase watchdog) in `packages/ai/src/api/openai-responses-shared.ts`, against upstream Responses changes.
+- The Google conversion/thinking-level logic in `packages/ai/src/api/google-shared.ts`, `packages/ai/src/api/google-generative-ai.ts`, and `packages/ai/src/api/google-vertex.ts`, against upstream Google adapter changes.
+- The cross-provider message coercion in `packages/ai/src/api/transform-messages.ts`, against upstream message-shape changes.
+
+## 2026-10-08 - Sol Ultrafast uses published sixfold pricing (senpi#2975)
+
+### What changed
+
+- `packages/ai/src/api/openai-responses.ts` and `packages/ai/src/api/openai-codex-responses.ts`: Ultrafast estimated costs apply the published 6x Standard multiplier to GPT-6.1 Sol as well as GPT-6 Astra. The pricing lookup uses `upstreamModelId ?? id`, covering pinned aliases while leaving the wire request unchanged.
+
+### Why
+
+- [OpenAI's pricing page](https://developers.openai.com/api/docs/pricing) now lists Sol Ultrafast at $12/$0.60/$15/$60 per million input/cached-input/cache-write/output tokens, and $24/$1.20/$30/$90 for long context. Both tables are 6x Standard. Matching only the catalog id undercounted the native alias by sixfold.
+
+### Why an extension could not handle it
+
+- Both adapters calculate streamed usage costs internally after response processing.
+
+### Expected merge conflict zones
+
+- LOW: `getServiceTierCostMultiplier` and `applyServiceTierPricing` in both adapters.
+
 ## 2026-10-08 - A configured anthropic-beta header is merged with the betas the request body needs (senpi#2957)
 
 ### What changed

@@ -1,5 +1,133 @@
 # goal Extension Changes
 
+## 2026-10-09 - Cover live stale stops and explain them to the model (senpi#3053)
+
+### What changed
+
+- `packages/coding-agent/test/suite/regressions/3026-stale-goal-accounting.test.ts`: active work accrues through the real extension, stale admission fires during that session, and subsequent `sendUserMessage` and `sendMessage({ triggerTurn: true })` turns retain the committed tokens/time. Both cases pass unchanged production at ca49caf25f and fail if `syncContinuationGoal` no longer clears the stopped accounting window.
+- `packages/coding-agent/src/core/extensions/builtin/goal/format.ts`: model tool JSON includes a `continuation` object for stale-stopped goals, with stable `status: "stale_stopped"` and a neutral explanation of stale progress and user-message or `/goal resume` recovery. Human-readable status formatting remains separate.
+- `packages/coding-agent/src/core/extensions/builtin/goal/types.ts`: declares the model-facing continuation object without changing persisted state, UI snapshots, or app-server protocol.
+- `packages/coding-agent/test/suite/regressions/3026-stale-goal-model-output.test.ts`: inspects the registered `get_goal` result's parsed status token and structured message, with active, paused, and completed controls. It does not pin explanation prose.
+
+### Why
+
+The earlier accounting tests started with a goal already stopped on disk and did not guard retirement of an existing live window. The model's paused snapshot also lacked an explicit stale-stop cause and recovery explanation.
+
+### Why an extension could not handle it
+
+The builtin owns live accounting synchronization and the goal tool response consumed by the model.
+
+### Expected merge conflict zones
+
+`format.ts` model response construction, `types.ts` response shape, and the two regression files. Keep UI labels, paused snapshots, persistent active-plus-marker state, and the accounting guards intact.
+
+## 2026-10-09 - Pin stopped accounting and show paused-style stale status (senpi#3026)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/goal/index.ts`: documents the lead's don't-count rule at accounting admission. Stale-stopped non-user-input turns remain excluded; active turns still accrue their assistant tokens and time. The existing one-shot stale-stop/reopen notice and no-auto-restart behavior remain intact.
+- `packages/coding-agent/src/core/extensions/builtin/goal/types.ts`: adds a shared display-status projection and the optional stop checkpoint to tool snapshots; the stored status and accounting fields do not change.
+- `packages/coding-agent/src/core/extensions/builtin/goal/ui.ts`: stale-stopped goals use the paused rendering branch and read `Goal stopped: no progress (send a message or /goal resume)` without a pursuit timer.
+- `packages/coding-agent/src/core/extensions/builtin/goal/format.ts`: `/goal` labels the stop; tool snapshots project paused status and preserve the checkpoint for client/rendering consumers.
+- `packages/coding-agent/src/core/extensions/builtin/goal/renderers.ts`: stopped cards use the paused glyph/color and recovery label through details and JSON fallback. Normal goal cards and committed usage totals remain unchanged.
+- `packages/coding-agent/test/suite/regressions/3026-stale-goal-accounting.test.ts`: real extension `sendUserMessage` and trigger-turn delivery tests pin current behavior in both directions; opening a stale window in a mutant fails both stopped cases.
+- `packages/coding-agent/test/suite/regressions/3026-stale-goal-status.test.ts`: failing-first coverage for the footer, `/goal`, light/dark cards, JSON snapshots, and app-server projection.
+
+### Why
+
+The lead decided that a stopped goal does not accrue background-turn usage and must look stopped, not actively pursued. A stale-stop marker previously froze usage while every display still said active or pursuing.
+
+### Why an extension could not handle it
+
+The builtin owns accounting admission, goal-tool snapshots, and the footer/card rendering paths.
+
+### Expected merge conflict zones
+
+`index.ts` accounting admission; `types.ts` tool snapshot shape; `format.ts`, `ui.ts`, and `renderers.ts` status formatting. Preserve internal active-plus-marker state and accepted-input/resume recovery. The historical notice entry below predates the lead's accounting decision.
+
+## 2026-10-09 - Explain stale goal recovery at stop and reopen (senpi#3026)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/goal/lifecycle-helpers.ts`: a claimed stale denial emits one informational recovery notice before best-effort stop publication; repeated denial probes do not repeat it.
+- `packages/coding-agent/src/core/extensions/builtin/goal/index.ts`: startup and resume show the same notice for a stale-stopped active goal. Extension reload and rendering do not show it, and reopening never restarts the goal.
+- `packages/coding-agent/test/suite/regressions/3026-stale-goal-notice.test.ts`: covers stop deduplication, startup/resume, reload and state controls, and two separate reopens.
+- `packages/coding-agent/docs/session-format.md`: documents the recovery notice and client elapsed-time calculation from committed time plus the last usage checkpoint.
+
+### Why
+
+Stale stops persisted without telling the user how to continue. Usage-accounting policy remains unchanged pending the lead's product decision.
+
+### Why an extension could not handle it
+
+The builtin owns the locked stale-stop claim and session-open admission.
+
+### Expected merge conflict zones
+
+`lifecycle-helpers.ts` denial side effects and `index.ts` session-start handler. Keep notice emission outside rendering and reload paths, retain locked-claim deduplication, and preserve no-auto-restart admission.
+
+## 2026-10-09 - Failed stop publication cannot skip lifecycle cleanup (senpi#3014)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/goal/lifecycle-helpers.ts`: independently catch and warn on both additive stop-entry appends, including the engine-pause history lookup, then return the persisted stop decision. Capture the session logger before the asynchronous claim so reporting a retired-context failure does not read that context again.
+- Lifecycle regressions drive stale and cap denials through the real agent-end handler, its UI/timer synchronization, the todo backstop and shutdown. A failed first append still attempts the second entry.
+
+### Why
+
+An append failure escaped after the goal file was stopped, skipping the caller's cleanup. A stale goal accrued another 600 seconds at shutdown, and blocking guards skipped UI synchronization and the todo backstop.
+
+### Why an extension could not handle it
+
+The builtin owns the persisted stop decision and must return it even when additive publication fails.
+
+### Expected merge conflict zones
+
+`lifecycle-helpers.ts` denial publication and logger import. Preserve independent best-effort writes and the return of the persisted goal.
+
+## 2026-10-09 - Guard side effects precede additive stop publication (senpi#3007, senpi#3014)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/goal/lifecycle-helpers.ts`: after claiming and persisting a blocking denial, deliver the existing warning and `goal_continuation_guard_tripped` event before appending the additive stop entries.
+- The delayed-monitor cap regression now checks the blocked reason, guard payload and stopped-entry payload together, including a missing entry writer and a writer whose publication throws after append.
+
+### Why
+
+The new append ran before the existing guard side effects. A missing writer in the delayed-monitor fixture, or a failing entry publication in a real session, threw after the goal was blocked but prevented the guard notification and event.
+
+### Why an extension could not handle it
+
+The builtin's shared denial handler owns both the guard side effects and the additive stop entries.
+
+### Expected merge conflict zones
+
+`lifecycle-helpers.ts` denial handling. Preserve the locked claim and publish the existing guard side effects before the additive entry writes.
+
+## 2026-10-09 - Durable continuation stop decisions and frozen stale accounting (senpi#3007)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/goal/lifecycle-helpers.ts`: every active-goal guard denial except eligibility/single-flight appends `goal-continuation-stopped` after a durable stop claim, with `engine-paused` for stale (`goal-stale`) and output repetition (`goal-repeat`).
+- `packages/coding-agent/src/core/extensions/builtin/goal/continuation.ts`: a claimed stop is ineligible on session-start until reset, so reopening or rebuilding the extension cannot silently restart a stale goal. A later real turn can still trip a blocking guard.
+- `packages/coding-agent/src/core/extensions/builtin/goal/store.ts`: claims a denial under the goal-file lock, closes the stale measurement tail, advances the measurement checkpoint when usage is committed, and resets the claim on accepted input, explicit resume, or continuation delivery. Blocking guards retain the existing status-transition counter reset.
+- `packages/coding-agent/src/core/extensions/builtin/goal/types.ts` and `packages/coding-agent/src/core/extensions/builtin/goal/persistence.ts`: optional sanitized `continuationStoppedAt` persists the claim across retries and reopen.
+- `packages/coding-agent/src/core/extensions/builtin/goal/index.ts` and `packages/coding-agent/src/core/extensions/builtin/goal/elapsed-ticker.ts`: stopped active goals retire live accounting and freeze elapsed time; the queue path synchronizes a changed goal even when its status remains active.
+- `packages/coding-agent/src/core/extensions/builtin/goal/direct-input-lifecycle.ts`: accepted input starts accounting again after resetting the stopped goal.
+- `packages/coding-agent/src/core/extensions/builtin/goal/monitor-continuation.ts`: a stale or overflow denial on the accepted-user-turn path reaches the same denial handler instead of returning silently.
+
+### Why
+
+Stale continuation denials left active goals with an open measurement window and no durable signal, so idle clients displayed an ever-growing pursuit timer.
+
+### Why an extension could not handle it
+
+This builtin owns admission, persisted goal state, and its accounting window.
+
+### Expected merge conflict zones
+
+Goal store mutations, denial admission, direct-input reset, and accounting/UI synchronization. Preserve the locked claim and measurement checkpoint together to avoid duplicate entries or elapsed double-counting.
+
 ## 2026-10-06 - A GPT-6 Astra receiver gets the goal contract without the completion audit (senpi#2796)
 
 ### What changed
