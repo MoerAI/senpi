@@ -896,6 +896,11 @@ export class ExtensionRunner {
 		return this.eventBus.on(channel, handler);
 	}
 
+	/** Publish a session-originated signal on the shared bus, for extensions and hosts that observe it. */
+	emitBusEvent(channel: string, data: unknown): void {
+		this.eventBus.emit(channel, data);
+	}
+
 	/** Get extension-declared MCP servers (first declaration per name wins). */
 	getRegisteredMcpServers(): readonly RegisteredMcpServerDeclaration[] {
 		const serversByName = new Map<string, RegisteredMcpServerDeclaration>();
@@ -1535,9 +1540,11 @@ export class ExtensionRunner {
 		let shouldContinue = false;
 		let context = await buildContext(entries);
 		let valid = true;
+		const retired = (): BoundaryDispatchResult => ({ entries: [], continue: false, context, valid: false });
 
 		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, baseEvent.type)) {
 			for (const handler of handlers) {
+				if (!this.isActive) return retired();
 				const event = {
 					...baseEvent,
 					entries,
@@ -1546,9 +1553,11 @@ export class ExtensionRunner {
 				} as TurnEndEvent | AgentBeforeSettleEvent;
 				try {
 					const handlerResult = (await handler(event, ctx)) as BoundaryResult | undefined;
+					if (!this.isActive) return retired();
 					if (handlerResult?.entries !== undefined) entries = handlerResult.entries;
 					if (handlerResult?.continue !== undefined) shouldContinue = handlerResult.continue;
 				} catch (err) {
+					if (!this.isActive) return retired();
 					this.emitError({
 						extensionPath: ext.path,
 						event: baseEvent.type,
@@ -1561,6 +1570,7 @@ export class ExtensionRunner {
 					context = await buildContext(entries);
 					valid = true;
 				} catch (err) {
+					if (!this.isActive) return retired();
 					valid = false;
 					this.emitError({
 						extensionPath: ext.path,
@@ -1572,9 +1582,7 @@ export class ExtensionRunner {
 			}
 		}
 
-		return valid
-			? { entries, continue: shouldContinue, context, valid: true }
-			: { entries: [], continue: false, context, valid: false };
+		return valid && this.isActive ? { entries, continue: shouldContinue, context, valid: true } : retired();
 	}
 
 	private isSessionBeforeEvent(event: RunnerEmitEvent): event is SessionBeforeEvent {

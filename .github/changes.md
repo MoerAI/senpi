@@ -1,3 +1,93 @@
+## 2026-10-10 - A failing WebView suite prints its vitest output (senpi#3092)
+
+### What changed
+
+- `.github/workflows/ci.yml`: the `Run eval kernel WebView suites (Bun)` step captures the background suite's exit status with `wait "$suite" || status=$?` instead of a bare `wait` followed by `status=$?`, then prints the vitest output and exits with that status.
+
+### Why
+
+- `.github/workflows/ci.yml`: the step runs under `bash -eo pipefail` (GitHub `shell: bash` default), so a failing `wait` ended the step before `cat "$out"`. A failing suite showed no test output at all (seen on PR #3091), only the hang path printed it.
+
+### Why an extension could not handle it
+
+- `.github/workflows/ci.yml`: CI step scripting is repository configuration.
+
+### Expected merge conflict zones
+
+- `.github/workflows/ci.yml`: the WebView step's `run` script in the eval-kernel WebView job.
+
+## 2026-10-10 - Bash-tool grandchildren stay console-free on Windows, and a known upstream window is documented (omo#7691)
+
+### What changed
+
+- `.github/workflows/ci.yml`: a new job, `bash-grandchild-console-windows` (`Bash grandchild consoles (Windows)`), runs `test/bash-grandchild-console-windows.test.ts` on `windows-latest` with the JSON reporter. A following step fails unless all 12 cases ran, and prints the raw console-probe measurements. The required `Check and test` fan-in includes the job.
+
+### Why
+
+- `.github/workflows/ci.yml`: omo#7691 reported focus-stealing console windows from bash-tool commands. The suite proves on a real Windows runner that a bash command's node and its children stay console-free in every common launch shape, with a no-windowsHide control that must show a window. It also documents firebase-tools' detached shell spawn (firebase/firebase-tools#11261), which opens a window that no flag on senpi's spawn can reach. Only a Windows runner can measure console windows.
+
+### Why an extension could not handle it
+
+- `.github/workflows/ci.yml`: runner selection and required-status fan-in are repository CI configuration.
+
+### Expected merge conflict zones
+
+- `.github/workflows/ci.yml`: job definitions, the `check-and-test.needs` array and its summary list.
+
+## 2026-10-10 - POSIX supervisor exit tests run on Linux and macOS (senpi#3054)
+
+### What changed
+
+- `.github/workflows/ci.yml`: the `rpc-owner-lifetime` matrix runs the owner-lifetime, owner-review, child-exit, missing-compiler and legacy-drain regressions on `ubuntu-latest` and `macos-latest`. A compiler preflight fails explicitly when `cc` is absent; tests compile the native exit waiter on demand. The required `Check and test` fan-in includes this matrix. Windows is excluded from this POSIX job.
+
+### Why
+
+- `.github/workflows/ci.yml`: the normal coding-agent shards cover Linux only. The kqueue branch also needs macOS coverage, and a missing C compiler must fail rather than silently skipping exit observation.
+
+### Why an extension could not handle it
+
+- `.github/workflows/ci.yml`: runner selection, compiler availability and required-status fan-in are repository CI configuration.
+
+### Expected merge conflict zones
+
+- `.github/workflows/ci.yml`: job definitions, the `check-and-test.needs` array and its summary list.
+
+## 2026-10-09 - The changelog gate audits the whole tree against the upstream pin (senpi#3006)
+
+### What changed
+
+- `.github/workflows/changelog-gate.yml`: a new step, "Audit changes.md coverage against the upstream pin", runs `node scripts/audit-changes-md.mjs` after the per-PR gate in the same job. The job already checks out the PR head with `fetch-depth: 0`, so the pinned upstream commit is present; the audit exits 1 when any upstream-owned production path is uncovered by its exact nearest changes.md tracker.
+
+### Why
+
+The per-PR gate (`scripts/check-pr-changelog.mjs`) sees only the PR's own diff, so it cannot catch a newly added nearest changes.md tracker that shadows coverage a parent tracker already provided — the senpi#2895 shape that left 43 paths uncovered (senpi#3006). The repository-wide audit sees exactly that state; running it on every pull request keeps the next shadowing tracker from merging.
+
+### Why an extension could not handle it
+
+CI job composition is repository workflow configuration.
+
+### Expected merge conflict zones
+
+- LOW: the changelog-gate steps list, if upstream ever grows an equivalent job.
+
+## 2026-10-08 - Every main commit gets its own CI run, never cancelled or replaced by a later merge (senpi#2960)
+
+### What changed
+
+- `.github/workflows/ci.yml`: the concurrency group is `ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}` (was `ci-${{ github.ref }}`), and `cancel-in-progress` is `${{ github.event_name == 'pull_request' }}` (was `true`). A pull request keeps one group per ref, so a newer push or restack still cancels the run it supersedes. Each `main` push gets a group of its own, so its run starts at once and is never cancelled, queued or replaced by a later merge. `scripts/ci-concurrency.test.mjs` evaluates the group and the cancel flag for two `main` commits and two pushes to one pull request.
+
+### Why
+
+Since senpi#2945 the release's test evidence is the release commit's green "Check and test" run. With one group for `main`, a merge during a release cancelled that run, or, with cancel-in-progress off, left it waiting behind the previous run and let a later merge replace it before it started. Either way the release lost its evidence and timed out; two merges in one window made the release miss its 40-minute window twice.
+
+### Why an extension could not handle it
+
+The CI concurrency policy is repository workflow configuration.
+
+### Expected merge conflict zones
+
+- The `concurrency:` block at the top of `ci.yml`.
+
 ## 2026-10-05 - The process-mode kernel suite runs on Linux and macOS (codemode plan node 17)
 
 ### What changed

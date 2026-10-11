@@ -1,3 +1,57 @@
+## 2026-10-10 - The runtime snapshot copies the shipped package files only (#3083)
+
+### What changed
+
+- `packages/coding-agent/src/runtime-snapshot/layout.ts` (fork-only): `materializeRuntimeSnapshot` plans the package root with `planPackageRoot`, which copies the entries of the package's `files` field (honouring its `!` exclusions, including nested ones such as `!dist/experimental`) plus the files npm always ships (`package.json`, `README*`, `LICENSE*`). A package without `files` is still copied whole. The dependency closure is unchanged.
+
+### Why
+
+From a repository checkout the snapshot copied the package's sources, tests and scripts too: 11,080 files and 508 MB for `packages/coding-agent`. That made the bundle smoke tests' cold start take 2.9 s on CI with Bun 1.4.2 and exceed the 5 s test timeout with Bun 1.4.3 (#3078). A published install already holds only the `files` entries, so it is unaffected.
+
+### Why an extension could not handle it
+
+The snapshot is built before any extension loads, by the launcher that decides where the session runs from.
+
+### Expected merge conflict zones
+
+- None upstream: `runtime-snapshot/` is fork-only.
+
+## 2026-10-09 - `--session <id>` opens a session recorded under a folder the OmO desktop moved here (senpi#2990)
+
+### What changed
+
+- `packages/coding-agent/src/main.ts`: in `createSessionManager`, a `--session <id>` match found in another project (the `global` branch) whose non-empty recorded cwd `resolveMovedPath` maps to the current cwd opens directly instead of offering or printing the cross-project rebind/fork choice. `--continue` without a session dir first asks `movedHereSessionToContinue` (`core/moved-sessions.ts`) for a session the OmO desktop moved here that is newer, by file mtime, than the folder's own newest, so the session used last wins as it already does with a shared session dir. That lookup reads no git identity and lists only dirs whose recorded path moved here. The moved-repository rebind offer, which does both, still runs only when the folder has neither. `SessionManager.open` then maps the cwd; the file is not rewritten.
+
+### Why
+
+After the desktop moves its data home, a session recorded in the old folder sits in that folder's default session dir, so `--session <id>` from the new folder only finds it in the global search. It is the same folder's session, and rebinding or forking it would rewrite or copy a file the desktop expects to stay as it is.
+
+### Why an extension could not handle it
+
+Session selection runs in `main.ts` before any extension loads.
+
+### Expected merge conflict zones
+
+- LOW: the start of the `case "global"` block under `if (parsed.session)` and the `if (parsed.continue)` block in `createSessionManager`.
+
+## 2026-10-08 - Interactive startup warns about live session holders (senpi#2951)
+
+### What changed
+
+- `packages/coding-agent/src/main.ts`: prints the interactive holder warning after runtime creation publishes the CLI's own hold. Existing `--name` validation and persistence stay at their original post-selection location.
+
+### Why
+
+Opening the same JSONL in a CLI and a host silently admitted two writers.
+
+### Why an extension could not handle it
+
+The warning belongs to CLI startup and must work with extensions disabled.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/main.ts`: imports and the block after runtime creation.
+
 ## 2026-10-08 - JSON print mode exits non-zero when the run ran out of context (senpi#2925)
 
 ### What changed
@@ -33,6 +87,28 @@ Session options are built before any extension loads, and the RPC host's open pa
 ### Expected merge conflict zones
 
 - LOW: the `resolved.error` push in `buildSessionOptions`'s `--model` branch.
+
+## 2026-10-08 - Print-then-exit CLI paths deliver all of their output before exiting (senpi#2937)
+
+### What changed
+
+- `packages/coding-agent/src/cli/print-then-exit.ts` (new): `printThenExit(print, code)` runs the printing function with stdout collected (`console.log` and `process.stdout.write`), writes the collected text as one chunk, waits for that write's own callback and for stderr, then exits. `exitAfterOutput(output, code)` is the same wait for a command that already printed. The wait is bounded (`OUTPUT_DELIVERY_LIMIT_MS`, 30 s, unref'd timer) and an EPIPE from a reader that closed the pipe ends it at once. Output that is already redirected (json mode routes `console.log` to stderr) is not collected.
+- `packages/coding-agent/src/main.ts`: `--list-models`, `--version`, `--export`, `--list-tips` and both `--help` branches (plain and the one reached with `--mode`/`-p`) use `printThenExit`; the package, host and schedule commands, which stream their own output, end with `exitAfterOutput`. `host` writes its one line with `writeSync`, so it is complete on both runtimes; package and `schedule` output still streams through `process.stdout`, so under Bun output past the pipe buffer can still be dropped for a reader that falls behind (senpi#2947).
+- `packages/coding-agent/src/cli.ts`: the `--version` and help fast paths use the same helper.
+
+### Why
+
+- Under Node a write to a pipe is asynchronous: `process.exit()` right after printing dropped what a slow reader had not taken (0 of 20,000 lines to a reader 1.5 s late) and still exited 0; a consumer of `--list-models` received 541 of 1,843 rows.
+- Under Bun `console.log` output queued behind an earlier `process.stdout` write is discarded at exit, and neither a write callback, `Bun.stdout` flush, nor a natural exit recovers it: `senpi --list-models` delivered 0 to 138 KB of 224,697 bytes, exit 0. A single write whose callback is awaited is the shape both runtimes deliver in full (senpi#2937).
+- A `drain`-based wait would hang when the queued tail never crossed the high-water mark; the write callback does not depend on it.
+
+### Why an extension could not handle it
+
+- These are CLI entry paths that run before or without any extension.
+
+### Expected merge conflict zones
+
+- LOW: `main.ts` and `cli.ts` at each early-exit branch named above, and their import blocks.
 
 ## 2026-10-08 - Brand-dir copy-forward reserved-entry match folds case on darwin and win32 (senpi#2898 review L6)
 

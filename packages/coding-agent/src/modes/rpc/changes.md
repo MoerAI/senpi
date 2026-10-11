@@ -1,3 +1,175 @@
+## 2026-10-11 - Typed error codes for `set_model`, `get_entries` and a busy `prompt` (senpi#3073 review)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/rpc-types.ts`: adds `RPC_ERROR_MODEL_NOT_FOUND = "model_not_found"` to the RPC error-code constants and the `RpcErrorCode` union.
+- Fork-only consumers: `connection-handler.ts` sets `errorCode: "model_not_found"` on a `set_model` refusal and `errorCode: "not_found"` (the existing `RPC_ERROR_ENTRY_NOT_FOUND`) on a `get_entries` refusal for an unknown `since` cursor; `client-input-handler.ts` sets `errorCode: "streaming"` when `prompt` is refused because a turn is running (`AgentBusyError`, `src/core/changes.md`, same date). The `error` text of all three is unchanged.
+
+### Why
+
+- `senpi host session` classified these three refusals by matching their English messages. The review of senpi#3081 rejected parsing message text, so the host now types them and the CLI classifies by `errorCode` alone.
+
+### Why an extension could not handle it
+
+- These are the RPC host's own responses to wire commands; the code set lives in the shared RPC types.
+
+### Expected merge conflict zones
+
+- LOW: one new constant beside `RPC_ERROR_ENTRY_NOT_FOUND` and one union member in `packages/coding-agent/src/modes/rpc/rpc-types.ts`.
+
+## 2026-10-10 - `rpc-client.ts` additions for the `senpi host session` CLI (senpi#3073)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/rpc-client.ts`: two additive, default-preserving changes feeding the new `senpi host session` CLI surface (`packages/coding-agent/src/cli/changes.md`, same date). `abortStrict(): Promise<void>` sends `{ type: "abort" }` through `getData()` so a failed or lost-transport abort is reported instead of swallowed, unlike the existing `abort()`. `listSessions(options?: { observe?: boolean; include_workers?: boolean })` forwards both already-defined wire fields onto the `list_sessions` command instead of always sending the bare command, so a caller can mark a read `observe: true` and never count as host occupancy. Neither change alters the behavior of an existing call site that passes no arguments.
+
+### Why
+
+Every session operation the new `senpi host session` CLI needs already exists on the RPC wire (`.omo/plans/host-session-cli-gap.md`); the client's existing `abort()`/`listSessions()` methods could not report a refused abort or request an observe-only listing, so the CLI's `abort` and `list` subcommands needed these two additive methods rather than a wire change.
+
+### Why an extension could not handle it
+
+`RpcClient` is the host's typed client library; an extension runs inside a session and has no path to add methods to the client another process uses to drive that session from outside.
+
+### Expected merge conflict zones
+
+- LOW: `abortStrict()` is a new method beside the existing `abort()`; `listSessions()` gains an optional parameter forwarded onto the existing `list_sessions` request object. An upstream change to either method's body is the only expected conflict.
+
+## 2026-10-10 - Retained child identity and shutdown recovery (senpi#3054 review)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-scratch.ts`: record the host child's OS start time in UTC with a C-locale probe, beside its PID. An unreadable identity is recorded as unknown and diagnosed.
+- `packages/coding-agent/src/modes/rpc/host-stalled-evidence.ts`: compare parsed start-time milliseconds using the shared process-start tolerance. A gone PID or proved start-time mismatch releases the guard; unreadable live identities keep the generation guarded and emit a diagnostic.
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-shutdown.ts`: errors before child signalling still attempt SIGTERM, then SIGKILL and observed exit. Watcher/client cleanup errors take the same recovery path; a fired post-SIGKILL breaker is not restarted. Failures keep ownership metadata and exit non-zero.
+- `packages/coding-agent/src/modes/rpc/host-reservations.ts`: the session-path holder lookup compares a recorded child start time with the live probe as parsed milliseconds instead of raw text, so a UTC-tagged `host-child.pid` still identifies the live child as a holder.
+
+### Why
+
+A reused child PID could keep a dead supervisor's generation wedged indefinitely. Fallible stop metadata or pre-stop cleanup could also make the supervisor exit without ever signalling its child.
+
+### Why an extension could not handle it
+
+The supervisor and generation readers operate outside session extension lifetimes and own process identity, shutdown and registration release.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-scratch.ts`: child identity recording.
+- `packages/coding-agent/src/modes/rpc/host-stalled-evidence.ts`: retained-child identity guard.
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-shutdown.ts`: shutdown failure recovery and escalation ordering.
+- `packages/coding-agent/src/modes/rpc/host-reservations.ts`: `holderPids` start-time comparison.
+
+## 2026-10-10 - Reap host children before supervisor exit (senpi#3054)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-shutdown.ts`: stop the child before fallible socket cleanup, wait on its actual exit event after SIGKILL with a 30-second circuit breaker, and await the exit record before releasing the generation. Breaker failure logs the child PID, preserves ownership metadata and exits non-zero. The Windows handle-close fallback starts only after child reaping.
+- `packages/coding-agent/src/modes/rpc/host-stop-intent.ts` (the shared child TERM/KILL bounds live beside the stop intent, keeping the supervisor import graph within its budget) and `packages/coding-agent/src/modes/rpc/host-ensure-stop.ts`: share the child TERM/KILL bounds and let stop/replace callers and their lock budgets outlast the stalled-child grace plus exit breaker. Cancel caller wait timers on observed exit so a successful stop cannot leave a referenced 95-second timer keeping its caller resident.
+- `packages/coding-agent/src/modes/rpc/host-stop.ts`: signal delivery no longer releases the registration pointer or boot settings; the supervisor releases them only after its child exited.
+- `packages/coding-agent/src/modes/rpc/host-daemon-registration.ts`, `packages/coding-agent/src/modes/rpc/host-generations.ts`, `packages/coding-agent/src/modes/rpc/host-gc-evidence.ts` and `packages/coding-agent/src/modes/rpc/host-ensure.ts`: preserve a generation whose supervisor died but whose recorded host child is still live; report it as live, refuse replacement/clearing and prevent pruning/GC.
+- `packages/coding-agent/test/suite/regressions/3044-rpc-owner-lifetime.test.ts`: observe non-child supervisor exit with kqueue NOTE_EXIT on macOS and pidfd poll on Linux through a small native waiter process. Own children use their exit events; remembered PID assertions still reject live hosts.
+- `packages/coding-agent/test/suite/regressions/3054-supervisor-child-exit.test.ts` and its fixture drive the real supervisor with a SIGTERM-resistant socket child. Fixture-only clock and observation/signal gates cover SIGKILL reaping, delayed observation and a still-live child at the breaker without a production test seam. Cleanup wait budgets follow the production budget; the existing stop test now expects the supervisor to retain ownership.
+- `packages/coding-agent/src/modes/rpc/host-legacy.ts` and `packages/coding-agent/src/modes/rpc/host-ensure.ts`: legacy retirement retains its independent 10-second refusal bound instead of inheriting the supervised-child shutdown budget.
+
+### Why
+
+The final two-second child wait returned a boolean the supervisor ignored. It could release ownership and exit before observing/reaping its host, while the owner-lifetime test separately mistook stdout EOF for completed supervisor exit.
+The caller's uncancelled deadline also kept the event loop alive after a successful stop; the larger breaker budget must not turn normal teardown into a delayed quit.
+`packages/coding-agent/src/modes/rpc/host-ensure.ts` and `packages/coding-agent/src/modes/rpc/host-legacy.ts` keep legacy flat-pid retirement at its separate 10-second default: that direct drain has no supervised-child circuit breaker to wait out.
+
+### Why an extension could not handle it
+
+The detached supervisor owns process reaping and registration release outside session extension lifetimes.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-shutdown.ts`: shutdown ordering and stop escalation.
+- `packages/coding-agent/src/modes/rpc/host-ensure-stop.ts`: stop and lock budgets.
+- `packages/coding-agent/src/modes/rpc/host-legacy.ts`: the legacy drain's independent default timeout.
+- `packages/coding-agent/src/modes/rpc/host-stop.ts`: registration release after signal.
+- `packages/coding-agent/src/modes/rpc/host-daemon-registration.ts`, `packages/coding-agent/src/modes/rpc/host-generations.ts`, `packages/coding-agent/src/modes/rpc/host-gc-evidence.ts` and `packages/coding-agent/src/modes/rpc/host-ensure.ts`: retained live-child ownership guards.
+
+## 2026-10-09 - Observe-only reads preserve owner grace (senpi#3044 follow-up)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/host-client-occupancy.ts`: release reports an unclassified peer only once, before discarding its classification. Observers and attached clients never report an unknown admission.
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-proxy.ts`: defer the owner-grace admission reset until an unclassified peer disconnects. Classified attachments still reset through activity refresh; observing status reads and `warm` never reset the grace.
+- `packages/coding-agent/docs/rpc.md`: document the idle-policy classification and conservative treatment of dropped unclassified peers.
+- `packages/coding-agent/test/suite/regressions/3045-owner-review.test.ts`: real-supervisor controlled-clock cases independently cover an unclassified dropped connect, activity on a pre-existing observer, and repeated status reads inside the two-second grace.
+
+### Why
+
+Resetting on every accepted socket let frequent status polling keep a dead owner's host resident. The original between-tick test also could not distinguish admission resets from activity refresh resets.
+
+### Why an extension could not handle it
+
+The detached supervisor classifies public sockets and owns the quiescence window before any session extension runs.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/host-client-occupancy.ts`: release classification.
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-proxy.ts`: admission and detach callbacks.
+
+## 2026-10-09 - Owner lifetime review corrections (senpi#3045)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-activity.ts`: only a bound owner opens a filesystem watcher; synchronous watch failure and later watcher errors degrade to record polling. Polling discovers an owner claimed on an initially unowned host. Pipe-less OS probes back off from 1 s to a 5 s cap, resetting on owner replacement.
+- `packages/coding-agent/src/modes/rpc/host-daemon-state.ts`: capture and probe request UTC/C-locale identities and compare parsed milliseconds with the shared process-start tolerance rather than timestamp text. Pipe-binding equality remains exact, so that tolerance cannot merge replacement owners.
+- `packages/coding-agent/src/modes/rpc/host-lifecycle.ts` and `packages/coding-agent/src/modes/rpc/host-lifecycle-proxy.ts`: admission, attached-peer activity, observed runs and observer loss reset owner grace immediately, including activity entirely between lifecycle ticks. The ticker's in-flight flag is initialized before registration.
+- `packages/coding-agent/src/modes/rpc/AGENTS.md` and `packages/coding-agent/docs/rpc.md`: correct I3's owner-record cross-writer exception and document watch degradation, continuous grace and bounded polling cadence.
+- Real-supervisor controlled-clock tests reject zero grace and handoff-drain mutants, assert `owner_gone` plus complete generation/registration cleanup, reproduce ENOSPC startup and between-tick activity, and bound OS probe counts. Cross-timezone tests use the real process reader.
+
+### Why
+
+The initial owner implementation could abort an unowned host on watch exhaustion, classify a live owner as dead after a timezone change, miss brief activity, and spawn a process query every second indefinitely.
+
+### Why an extension could not handle it
+
+The detached supervisor owns the lifetime pipe, registration observation, peer accounting and shutdown decision.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-activity.ts`: owner watcher, activity callbacks and probe scheduler.
+- `packages/coding-agent/src/modes/rpc/host-daemon-state.ts`: owner identity capture and comparison.
+- `packages/coding-agent/src/modes/rpc/host-lifecycle.ts` and `packages/coding-agent/src/modes/rpc/host-lifecycle-proxy.ts`: activity callback wiring and ticker setup.
+
+## 2026-10-08 - Live foreign holders refuse host admission (senpi#2951)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/session-command-router.ts`: checks a requested path before open or attach and again after the runtime publishes its hold, rolling back a raced open before attachment or success. Delegates all session-binding delivery to the shared guard and propagates typed refusal data.
+- `packages/coding-agent/src/modes/rpc/session-held.ts`: guards every command except an explicit read/control allowlist, before acknowledgment or binding delivery, using the current runtime or authoritative worker snapshot. Checks fresh leases at both current and target paths, resolving daemon identities only when a foreign-looking lease exists and at most once per command, including the open publication recheck. Allows extension-UI answers and progress to finish an admitted turn.
+- Holder identity validation reads procfs without spawning on Linux. Other platforms take one lazy table snapshot (1 s on macOS, 5 s on Windows) and use the existing per-pid probe only on snapshot failure or missing identities. Distinct PID observations are cached across current, target and publication checks, then discarded; fresh leases and PID liveness are checked at every boundary.
+- Unknown observed or claimed start times never establish daemon-family membership. The parser and 3 s identity tolerance are shared with terminal leases through the existing daemon process-reader leaf, preserving the supervisor module budget.
+- Stored Korean lstart timestamps and the Japanese weekday/month-day lstart format are parsed in the same local timezone as C-locale lstart. A parsed mismatch proves PID reuse, so a stale legacy record no longer blocks replacement and never authorizes a signal to the unrelated process.
+- `packages/coding-agent/src/modes/rpc/host-legacy.ts`: a truly unparseable live legacy identity remains unknown and refuses retirement. Both ensure and stop emit `legacy_host_identity_unknown` to stderr with the fixed record kind and PID, without copying the stored value or adding full paths.
+- `packages/coding-agent/src/modes/rpc/host-daemon-registration.ts` and `packages/coding-agent/src/modes/rpc/host-reservations.ts`: unprovable live generation pidfiles and unknown claims preserved for liveness emit the same event with record kinds `host.pid` and `session-path-claim`. The existing `host-supervisor-log.ts` writer deduplicates all three kinds once per (record, PID) per process, without writing a persistent marker or changing refusal authority.
+- Cached identity comparisons keep the supervisor import graph unchanged. Worker terminal failure records wait for bounded claim release and registry removal, just as successful close records do.
+- A refused racing attach detaches only the attachment it added; it does not close an existing retained session or abort its admitted work. A refused newly created session is still closed.
+- `packages/coding-agent/src/modes/rpc/host-reservations.ts` and `packages/coding-agent/src/modes/rpc/session-registry.ts`: derive live same-daemon PID identities from endpoint claims and generation child records. Reuse command-scoped OS start observations from lease validation, deduplicate candidates and never probe this host's PID. The publication recheck rereads leases and checks liveness, reusing only PID start observations within that command; no identity cache survives into the next command. The holder guard excludes matching identities so legacy `session_path_in_use` retries and superseded-claim reclamation remain authoritative.
+- `packages/coding-agent/src/modes/rpc/multi-session-host.ts`, `packages/coding-agent/src/modes/rpc/worker-session-registry.ts`, `packages/coding-agent/src/modes/rpc/worker-session-claims.ts` and `packages/coding-agent/src/modes/rpc/session-worker-client.ts`: share endpoint reservations across runtime selections; claims precede worker write grants, follow file switches and become detached only once retained work settles. Native exit releases all claims within the close grace before freeing the entry.
+- `packages/coding-agent/src/modes/rpc/session-registry-types.ts`: adds `session_held` to `RpcSessionRegistryError`.
+- `packages/coding-agent/src/modes/rpc/rpc-types.ts`: declares `RPC_ERROR_SESSION_HELD` and includes it in `RpcErrorCode`.
+- `packages/coding-agent/src/modes/rpc/rpc-mode.ts`: documents the typed holder refusal and its safe data shape.
+- `packages/coding-agent/src/modes/rpc/custom-capability.ts` and `packages/coding-agent/src/modes/rpc/host-capabilities.ts`: declare and advertise the host capability `session_held` from the shared router's inventory in both runtimes.
+- `packages/coding-agent/src/modes/rpc/connection-handler.ts`: prevents classic client flags from advertising `session_held`, because that binding does not run the shared holder guard.
+
+### Why
+
+Host reservations omit CLI holders. Fresh lease checks clear naturally after exit and exclude this host's own worker-thread PID and its live daemon family. Already-admitted turns finish and persist their results if a holder arrives mid-turn; new writing RPCs are refused. SessionManager's append API is synchronous, whereas fresh PID/start-time checks are asynchronous; turning every append into asynchronous admission would change that SDK contract and risk losing results of already-executed tools.
+
+The conservative trade-off applies only to genuinely unknown formats: if such a legacy record's PID has been reused by an unrelated live process, retirement stays refused until that PID exits or the identity is established. This prevents a second writer and an unproven signal. The refusal is logged, creates no persistent marker, and rereads the record and process on every caller restart; after PID exit it is absent rather than stuck. Known ko/ja formats no longer take this degraded path.
+
+### Why an extension could not handle it
+
+Open admission and host routing run outside the session's extension lifecycle.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/session-command-router.ts`: open and session dispatch. `packages/coding-agent/src/modes/rpc/session-registry-types.ts` and `packages/coding-agent/src/modes/rpc/rpc-types.ts`: typed error lists. `packages/coding-agent/src/modes/rpc/rpc-mode.ts`: error-code comment. `packages/coding-agent/src/modes/rpc/connection-handler.ts`: classic protocol capabilities. The reservation, worker, capability and admission helpers are fork-only.
+
 ## 2026-10-08 - open_session runs on the model it names, or fails (senpi#2906)
 
 ### What changed
@@ -3026,6 +3198,25 @@ cannot be connected to at all takes the stop-and-start path.
 
 # changes
 
+## 2026-10-08 - RPC host launches share the runtime argument filter (senpi#2599)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/host-exec-argv.ts`: moved the existing filter to `src/utils/runtime-exec-argv.ts`.
+- `packages/coding-agent/src/modes/rpc/host-launch.ts` and `packages/coding-agent/src/modes/rpc/host-lifecycle-launch.ts`: import that shared filter with unchanged host launch behavior.
+
+### Why
+
+Other native script launchers need the same entry-mode boundary, and keeping a second filter would let Node and Bun behavior drift.
+
+### Why an extension could not handle it
+
+The host supervisor and child are spawned before either process loads extensions.
+
+### Expected merge conflict zones
+
+- LOW: host launch imports and runtime argv construction.
+
 ## 2026-09-14 - Publish RPC close only after registry removal (#1656)
 
 ### What changed
@@ -5318,3 +5509,33 @@ The `select` / `input` lines of `createExtensionUIContext` in `connection-handle
 ### Expected merge conflict zones
 
 - LOW: `createDaemonDirectories` in `host-daemon-paths.ts`, the head of `writeHostRegistration`, and the `watchInbox` call in `HostSessionControl.register`. All three files are fork-only.
+
+## 2026-10-09 - Explicit caller lifetime for RPC host shards (senpi#3044)
+
+### What changed
+
+- `packages/coding-agent/src/modes/rpc/host-ensure-types.ts`: additive `owner: "caller"` option on the already-public `EnsureHostOptions`.
+- `packages/coding-agent/src/modes/rpc/host-ensure-start.ts` and `packages/coding-agent/src/modes/rpc/host-lifecycle-launch.ts`: fresh detached supervisors inherit an owner-lifetime pipe; its write end is retained but unref'd in the caller, independently of its attach hold.
+- `packages/coding-agent/src/modes/rpc/host-daemon-state.ts` and `packages/coding-agent/src/modes/rpc/host-ensure.ts`: per-generation atomic owner records and endpoint-locked claims; another live or unknown owner is refused, while confirmed-dead owners can be replaced without replacing the host.
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-activity.ts` and `packages/coding-agent/src/modes/rpc/host-lifecycle.ts`: EOF authorizes a two-second continuous-quiescence window, checked at the existing lifecycle cadence. Attached and unclassified peers, active runs, and an unhealthy activity observer prevent owner-death exit. Rebinding a live supervisor uses PID plus OS start identity because an already-running process cannot inherit a new fd; failed identity probes are unknown, never death.
+- `packages/coding-agent/src/modes/rpc/host-successor.ts`: successors inherit ownership, with a fresh pipe when the launching process is the owner and OS-identity observation otherwise. Windows starts inherit a pipe; Windows generation handoff remains unsupported.
+- `packages/coding-agent/docs/rpc.md`: public integration, platform paths, grace and shutdown bounds, ownership conflict policy, and the narrowly authorized owner-record cross-writer.
+
+### Why
+
+A task shard was deliberately detached but had no caller-lifetime contract, so quitting its root TUI left a zero-peer host resident until the ordinary fifteen-minute idle timeout. Parent PID alone neither identifies the root session tree nor survives PID reuse.
+
+### Why an extension could not handle it
+
+An extension cannot observe its own SIGKILL. The detached supervisor must hold the kernel lifetime binding and combine it with its authoritative peer and turn observations.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/rpc/host-ensure-types.ts`: ensure option fields.
+- `packages/coding-agent/src/modes/rpc/host-ensure-start.ts`: boot settings and detached spawn.
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-launch.ts`: supervisor argv and inherited stdio.
+- `packages/coding-agent/src/modes/rpc/host-daemon-state.ts`: generation state read/write helpers.
+- `packages/coding-agent/src/modes/rpc/host-ensure.ts`: held reuse and upgrade decisions.
+- `packages/coding-agent/src/modes/rpc/host-lifecycle-activity.ts`: activity observation and owner watch.
+- `packages/coding-agent/src/modes/rpc/host-lifecycle.ts`: lifecycle ticker and watcher teardown.
+- `packages/coding-agent/src/modes/rpc/host-successor.ts`: successor boot settings and spawn.

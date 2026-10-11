@@ -301,6 +301,25 @@ Use `customType` to identify your extension's entries on reload. Interactive mod
 
 [Virtual model](virtual-models.md) router state is stored as custom entries with `customType` `pi.virtual-model-state` and `data` `{ provider, modelId, state }`.
 
+#### Goal and engine self-stop entries
+
+These custom entries are persisted in the session and delivered to RPC clients as `entry_appended`. They do not enter model context. Existing `engine-turn-limit`, `ttsr-loop-stopped`, and notices remain unchanged.
+
+- `goal-continuation-stopped`: `data` is `{ goalId: string, reason: "stale" | "repetition" | "cap" | "unattended" | "length-exhausted" | "context-overflow", consecutiveContinuations: number, unattendedContinuations: number, at: number }`. Every active-goal denial except `not-eligible` and `single-flight` records one decision, not one entry per evaluation probe. Blocking guards still block; stale leaves the goal active but commits the remaining measured time and closes its measurement window. An accepted user message or `/goal resume` resets the stop and continuation streak and opens accounting again. The stop entry remains historical; a subsequent continuation can stop again.
+- `engine-paused`: `data` is `{ reason: "repetition" | "goal-repeat" | "cap-per-message" | "cap-per-minute" | "goal-stale", rule?: string, customType?: string, count?: number, at: number }`. The engine limit maps `per-user-input` to `cap-per-message` (`count` is `sinceUserInput`) and `tool-free-rate` to `cap-per-minute` (`count` is `toolFreeInWindow`). TTSR uses `repetition` and names the rule when it refuses another correction or its one-shot repetitive-turns correction reaches final idle without another turn starting. Goal output repetition uses `goal-repeat`; stale uses `goal-stale`, with the consecutive-continuation count and `customType: "goal-continuation"`.
+
+`at` is Unix epoch milliseconds. Consumers can use these entries instead of parsing notice wording, and replay them from session history after reopen.
+
+Stale-stopped goals stay stopped when reopened. A notice at the stale stop and on each session open tells the user to send a message or run `/goal resume` to continue; rendering and extension reloads do not repeat the notice.
+
+Goal usage measures work while the goal's accounting window is open. Non-user-input turns, including extension `sendUserMessage` and `sendMessage({ triggerTurn: true })` deliveries, add neither tokens nor time to a stale-stopped goal, just as later turns do not accrue usage for a user-paused or completed goal. The same turns count assistant input/output tokens and elapsed time while the goal is active with an open window. Usage is display-only; it does not impose a budget limit.
+
+The footer shows `Goal stopped: no progress (send a message or /goal resume)` without a pursuit timer, and `/goal` identifies the stop while retaining committed usage totals. The persisted goal keeps `status: "active"` plus `continuationStoppedAt` so accepted input and `/goal resume` retain their existing behavior. Goal-tool snapshots instead report `status: "paused"` and include `continuationStoppedAt` for the stopped label; their cards use the paused glyph and styling. App-server `ThreadGoal.status` also reports `paused`, using its existing schema. Active, user-paused, blocked, and completed goals otherwise retain their displays.
+
+In the persisted goal state, `lastStartedAt` is the last usage checkpoint, in Unix epoch seconds, not the start of the entire run. Clients displaying live elapsed time use committed `timeUsedSeconds` plus the nonnegative time since `lastStartedAt`. When `lastStartedAt` is absent, including after a stale stop, display only committed `timeUsedSeconds`.
+
+Model-facing goal tool JSON additionally includes `continuation: { status: "stale_stopped", message: string }` for a stale-stopped goal. The message explains that progress was stale and the goal resumes when the user sends a message or runs `/goal resume`. This object is absent for ordinary active, user-paused, and completed goals; it is not part of the stored goal, UI snapshot, or app-server schema.
+
 ### CustomMessageEntry
 
 Extension-injected messages that DO participate in LLM context.

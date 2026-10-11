@@ -92,7 +92,7 @@ import { resolveChangelogSource } from "../../core/changelog-source.ts";
 import { collectEntriesForBranchSummary } from "../../core/compaction/branch-summarization.ts";
 import { findExtensionStackMatches } from "../../core/crash-log.ts";
 import { AssistantEditError, assistantTextEquals } from "../../core/edited-assistant-message.ts";
-import { formatUserMessage } from "../../core/extensions/builtin/ask-user/format.ts";
+import { askUserAnswerDisplayText, formatUserMessage } from "../../core/extensions/builtin/ask-user/format.ts";
 import { askUserRenderers } from "../../core/extensions/builtin/ask-user/render.ts";
 import type {
 	AutocompleteProviderFactory,
@@ -111,6 +111,7 @@ import type {
 import { buildNoticeBox, type NoticeLine, type NoticeSpec } from "../../core/extensions/notice/index.ts";
 import type { QuestionRequest, QuestionResponse, SystemPromptChangeEvent } from "../../core/extensions/types.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
+import { sessionHolderWarning } from "../../core/foreign-session-holders.ts";
 import { appendUncaughtCrashLog, appendUnhandledRejectionLog } from "../../core/hidden-stdout-log.ts";
 import { buildHighReasoningWarning } from "../../core/high-reasoning-warning.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
@@ -303,7 +304,7 @@ import { buildFavoriteCycleStatusMessage } from "./tips/favorite-messages.ts";
 import { recordTipShown } from "./tips/history-writer.ts";
 import { TIP_DEFINITIONS } from "./tips/registry.ts";
 import { appendStartupHeader } from "./tips/startup-header.ts";
-import { resolveStartupTipLine } from "./tips/startup-tip.ts";
+import { resolveStartupTips } from "./tips/startup-tips.ts";
 import { appendTipLine } from "./tips/tip-line.ts";
 import { resolveWorkingTipLine, WorkingTipCache, type WorkingTipLine } from "./tips/working-tip.ts";
 import { buildTmuxSetupWarning } from "./tmux-setup.ts";
@@ -1718,20 +1719,16 @@ export class InteractiveMode {
 					"dim",
 					`Press ${keyText("app.tools.expand")} to show full startup help${showDetails ? " and loaded resources" : ""}.`,
 				);
-			const startupTip = resolveStartupTipLine({
-				tipsEnabled: this.settingsManager.getTipsEnabled(),
-				// Header-only quiet startup keeps the header but not the startup details, tips included.
-				quietStartup: this.settingsManager.getQuietStartup() !== false,
-				history: this.settingsManager.getTipsHistory(),
+			const startupTips = resolveStartupTips({
+				settings: this.settingsManager,
 				now: Date.now(),
-				definitions: TIP_DEFINITIONS,
-				keys: keyText,
+				modelReasoning: () => this.session.state.model?.reasoning === true,
 				hasCommand: (command) => this.hasRegisteredCommand(command),
+				keys: keyText,
+				displayKeys: keyDisplayText,
 			});
-			if (startupTip) {
-				this.recordShownTip(startupTip.tipId);
-			}
-			const tipLine = startupTip ? theme.fg("dim", startupTip.line) : undefined;
+			for (const tipId of startupTips?.tipIds ?? []) this.sessionShownTipIds.add(tipId);
+			const tipLine = startupTips ? theme.fg("dim", startupTips.text) : undefined;
 			const onboarding = () =>
 				theme.fg("dim", `Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.`);
 			this.builtInHeader = new ExpandableText(
@@ -4155,7 +4152,12 @@ export class InteractiveMode {
 			// Ordinary cancellation/abort stays silent in the builtin. Only this
 			// explicit command acknowledges dismissal, including on host bridges.
 			await this.session.sendUserMessage(
-				formatUserMessage(response, state.request.requestId, state.request.questions),
+				formatUserMessage(
+					response,
+					state.request.requestId,
+					state.request.questions,
+					state.request.required === true,
+				),
 				{
 					deliverAs: this.session.isStreaming ? "steer" : "followUp",
 				},
@@ -6093,7 +6095,7 @@ export class InteractiveMode {
 			case "system":
 				break;
 			case "user": {
-				const textContent = this.getUserMessageText(message);
+				const textContent = askUserAnswerDisplayText(message.content) ?? this.getUserMessageText(message);
 				if (textContent) {
 					if (this.chatContainer.children.length > 0) {
 						this.chatContainer.addChild(new Spacer(1));
@@ -8773,6 +8775,11 @@ export class InteractiveMode {
 			if (result.cancelled) {
 				return result;
 			}
+			const warning = await sessionHolderWarning(
+				this.sessionManager.getSessionFile(),
+				this.sessionManager.getSessionId(),
+			);
+			if (warning !== undefined) this.showWarning(warning);
 			const switchTimings = formatTimings("switch");
 			this.showStatus(
 				switchTimings === undefined ? "Resumed session" : `Resumed session | switch timings: ${switchTimings}`,
@@ -8793,6 +8800,11 @@ export class InteractiveMode {
 				if (result.cancelled) {
 					return result;
 				}
+				const warning = await sessionHolderWarning(
+					this.sessionManager.getSessionFile(),
+					this.sessionManager.getSessionId(),
+				);
+				if (warning !== undefined) this.showWarning(warning);
 				this.showStatus("Resumed session in current cwd");
 				return result;
 			}

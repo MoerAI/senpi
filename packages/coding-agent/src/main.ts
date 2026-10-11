@@ -46,7 +46,9 @@ import { writeHelpFlagsCache } from "./cli/help-flags-cache.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { isModelsDiscoverCommand, runModelsDiscoverCommand } from "./cli/models-command.ts";
+import { exitAfterOutput, printThenExit } from "./cli/print-then-exit.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
+import { prepareSessionOpening } from "./cli/session-opening.ts";
 import {
 	createStartupLoadingIndicator,
 	pauseIndicatorDuringPrompts,
@@ -76,6 +78,7 @@ import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { envValue } from "./core/brand.ts";
 import { type CredentialAccountSummary, summarizeCredentialAccounts } from "./core/credential-accounts.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
+import { resolveMovedPath } from "./core/extensions/builtin/moved-path-guard/resolve.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { installMemoryReportSignal } from "./core/memory-report/memory-report-write.ts";
@@ -86,7 +89,7 @@ import {
 	type ScopedModel,
 } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
-import { markMovedSessions, withMovedSessions } from "./core/moved-sessions.ts";
+import { markMovedSessions, movedHereSessionToContinue, withMovedSessions } from "./core/moved-sessions.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { recordProcessLifetime } from "./core/process-crash-record.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
@@ -574,6 +577,9 @@ export async function createSessionManager(
 				return openSessionOrExit(resolved.path, sessionDir);
 
 			case "global": {
+				// Recorded under a folder the OmO desktop moved here: this folder's own session (senpi#2990).
+				if (resolved.cwd !== "" && resolvePath(resolveMovedPath(resolved.cwd)) === resolvePath(cwd))
+					return openSessionOrExit(resolved.path, sessionDir);
 				// The confirmation blocks on readline, which only an interactive session can
 				// answer. Print, JSON, RPC, and app-server runs reach here with a TTY attached
 				// too (`-p` from a terminal), where the question hangs the process or resolves
@@ -638,10 +644,14 @@ export async function createSessionManager(
 	}
 
 	if (parsed.continue) {
+		// A shared session dir matches sessions the OmO desktop moved here in continueRecent. In the default per-folder
+		// layout they sit in the old folder's dir: continue the newest of those and the folder's own, in place (senpi#2990).
+		const movedHere = sessionDir === undefined ? await movedHereSessionToContinue(cwd) : undefined;
+		if (movedHere !== undefined) return SessionManager.open(movedHere, sessionDir);
 		const recent = SessionManager.continueRecent(cwd, sessionDir);
 		const recentFile = recent.getSessionFile();
 		if (recentFile !== undefined && existsSync(recentFile)) return recent;
-		const moved = await movedSessionToContinue({
+		const movedChoice = await movedSessionToContinue({
 			cwd,
 			...(sessionDir === undefined ? {} : { sessionDir }),
 			interactive: appMode === "interactive",
@@ -649,7 +659,7 @@ export async function createSessionManager(
 			out: (line) => console.log(line),
 			err: (line) => console.error(line),
 		});
-		return moved === undefined ? recent : rebindSessionOrExit(moved, cwd, sessionDir);
+		return movedChoice === undefined ? recent : rebindSessionOrExit(movedChoice, cwd, sessionDir);
 	}
 
 	if (parsed.sessionId) {
@@ -1127,7 +1137,7 @@ export async function main(args: string[], options?: MainOptions) {
 			// https://github.com/nodejs/node/issues/56645
 			return;
 		}
-		process.exit(exitCode);
+		await exitAfterOutput("", exitCode);
 		return;
 	}
 
@@ -1143,13 +1153,13 @@ export async function main(args: string[], options?: MainOptions) {
 	// exits here rather than falling through into argument parsing and the interactive path.
 	const hostExitCode = await dispatchHostCommand(args);
 	if (hostExitCode !== undefined) {
-		process.exit(hostExitCode);
+		await exitAfterOutput("", hostExitCode);
 	}
 
 	// Durable scheduled prompts: fired out of process, so a job scheduled by an exited --print run still runs.
 	const scheduleExitCode = await dispatchScheduleCommand(args);
 	if (scheduleExitCode !== undefined) {
-		process.exit(scheduleExitCode);
+		await exitAfterOutput("", scheduleExitCode);
 	}
 
 	const parsed = parseArgs(args);
@@ -1165,8 +1175,7 @@ export async function main(args: string[], options?: MainOptions) {
 	time("parseArgs");
 
 	if (parsed.version) {
-		console.log(DISPLAY_VERSION);
-		process.exit(0);
+		await printThenExit(() => console.log(DISPLAY_VERSION), 0);
 	}
 
 	if (parsed.export) {
@@ -1179,8 +1188,7 @@ export async function main(args: string[], options?: MainOptions) {
 			console.error(chalk.red(`Error: ${message}`));
 			process.exit(1);
 		}
-		console.log(`Exported to: ${result}`);
-		process.exit(0);
+		await printThenExit(() => console.log(`Exported to: ${result}`), 0);
 	}
 
 	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
@@ -1231,16 +1239,16 @@ export async function main(args: string[], options?: MainOptions) {
 			noExtensions: parsed.noExtensions === true,
 			...(extensionFactories ? { extensionFactories } : {}),
 		});
-		printHelp(flags);
 		writeHelpFlagsCache({ scope, flags, extensionPaths });
-		printTimings();
-		process.exit(0);
+		await printThenExit(() => {
+			printHelp(flags);
+			printTimings();
+		}, 0);
 	}
 
 	if (parsed.listTips) {
 		const { listTips } = await import("./cli/list-tips.ts");
-		listTips();
-		process.exit(0);
+		await printThenExit(listTips, 0);
 	}
 
 	if (parsed.listModels !== undefined) {
@@ -1268,8 +1276,7 @@ export async function main(args: string[], options?: MainOptions) {
 			...collectAuthDiagnostics(services.authStorage, "model listing"),
 		]);
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
-		await listModels(services.modelRuntime, searchPattern);
-		process.exit(0);
+		await printThenExit(() => listModels(services.modelRuntime, searchPattern), 0);
 	}
 
 	// Experimental first-time setup: theme choice and analytics opt-in.
@@ -1409,6 +1416,7 @@ export async function main(args: string[], options?: MainOptions) {
 		startupLoadingIndicator.stop();
 	});
 	time("createAgentSessionRuntime");
+	await prepareSessionOpening(sessionManager, appMode);
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRuntime, resourceLoader } = services;
 	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
@@ -1418,8 +1426,7 @@ export async function main(args: string[], options?: MainOptions) {
 	const loadedExtensions = resourceLoader.getExtensions().extensions;
 	const extensionFlags = loadedExtensions.flatMap((extension) => Array.from(extension.flags.values()));
 	if (parsed.help) {
-		printHelp(extensionFlags);
-		process.exit(0);
+		await printThenExit(() => printHelp(extensionFlags), 0);
 	}
 	time("extensionFlags");
 	// Every full launch refreshes what `--help` reads, so the fast path stays warm without a help

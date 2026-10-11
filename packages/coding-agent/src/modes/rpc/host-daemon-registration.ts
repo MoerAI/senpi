@@ -26,9 +26,13 @@ import { rename, rm } from "node:fs/promises";
 import type { EngineOrdinal } from "../../core/engine-build-identity.ts";
 import {
 	type DaemonPidFile,
+	ProcessIdentityUnreadableError,
 	parseDaemonPidFile,
+	processIsLive,
 	processMatchesPidFile,
+	processStartTimeMs,
 	readProcessStartTime,
+	sameProcessStartMs,
 } from "../app-server/daemon/process.ts";
 import {
 	createGenerationDirectory,
@@ -40,6 +44,8 @@ import {
 } from "./host-daemon-paths.ts";
 import { isRecord, parseJson, readFileOrUndefined, writeStateFile } from "./host-daemon-state.ts";
 import { pruneDeadGenerations } from "./host-generations.ts";
+import { hostChildAlive } from "./host-stalled-evidence.ts";
+import { logUnknownHostIdentity } from "./host-supervisor-log.ts";
 
 /** Who wrote a registration: the process identity a later stop must match to be allowed. */
 export interface HostPidFileWriter {
@@ -151,6 +157,8 @@ export async function writeGenerationRecord(
 export async function clearHostRegistration(paths: HostDaemonPaths): Promise<void> {
 	const pointer = parseJson(await readFileOrUndefined(paths.pointerFile));
 	if (typeof pointer?.instance_id === "string") {
+		if (await hostChildAlive(generationPaths(paths, pointer.instance_id)))
+			throw new Error(`refusing to clear generation ${pointer.instance_id} with a live host child`);
 		await rm(generationPaths(paths, pointer.instance_id).dir, { recursive: true, force: true });
 	}
 	await rm(paths.settingsFile, { force: true });
@@ -174,6 +182,7 @@ export async function releaseGeneration(
 	owner: { readonly instanceId: string; readonly pid: number; readonly superseded?: boolean },
 ): Promise<void> {
 	const generation = generationPaths(paths, owner.instanceId);
+	if (await hostChildAlive(generation)) return;
 	const record = parseDaemonPidFile((await readFileOrUndefined(generation.pidFile)) ?? "");
 	if (record !== undefined && record.pid !== owner.pid) return;
 	if (owner.superseded === true) {
@@ -211,12 +220,18 @@ export async function provenOwner(
 	socket: string,
 ): Promise<{ pid: number; processStartTime: string; instanceId: string } | undefined> {
 	const record = registered?.record;
-	if (!record || record.processStartTime === null) return undefined;
+	if (!record) return undefined;
 	if (registered?.socket !== undefined && !sameEndpoint(registered.socket, socket)) return undefined;
+	if (record.processStartTime === null) {
+		if (processIsLive(record.pid)) logUnknownHostIdentity("host.pid", record.pid);
+		return undefined;
+	}
 	const identity = { pid: record.pid, processStartTime: record.processStartTime };
-	return (await processMatchesPidFile(identity, readProcessStartTime).catch(() => false))
-		? { ...identity, instanceId: registered.instanceId }
-		: undefined;
+	const proven = await processMatchesPidFile(identity, readProcessStartTime).catch((error: unknown) => {
+		if (error instanceof ProcessIdentityUnreadableError) logUnknownHostIdentity("host.pid", identity.pid);
+		return false;
+	});
+	return proven ? { ...identity, instanceId: registered.instanceId } : undefined;
 }
 
 /**
@@ -235,7 +250,10 @@ export async function writtenByThisProcess(
 				() => null,
 			)
 		: await thisProcessStartTime();
-	return writer.startTime === startTime;
+	return sameProcessStartMs(
+		processStartTimeMs(writer.startTime),
+		startTime === null ? undefined : processStartTimeMs(startTime),
+	);
 }
 
 let selfStartTime: Promise<string | null> | undefined;
