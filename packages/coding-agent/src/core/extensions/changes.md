@@ -1,3 +1,21 @@
+## 2026-10-12 - Retired runners stop reporting non-boundary dispatch failures (senpi#3149)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/runner.ts`: a private `reportDispatchError` drops a report while the runner is retired and otherwise forwards it to `emitError`. Every report from non-boundary event dispatch goes through it: the handler failures in `dispatchEmit`, `emitModelSelect`, `emitMessageEnd`, `emitToolResult`, `emitUserBash`, `emitBeforeProviderRequest`, `emitBeforeProviderHeaders`, `emitBeforeAgentStart`, `emitResourcesDiscover` and `emitInput`, the `message_end` role check, and the reports `emitContext` hands to `dispatchContextMessages`. `emitError` itself and the direct reports that call it (a command's failure, skill expansion, `sendMessage`, the `session_shutdown` handler budget) are unchanged.
+
+### Why
+
+- After a session was replaced, reloaded or disposed, later non-boundary dispatch on the retired runner still reported its handlers' stale-context failures as `Extension error (...)` lines, for example from the builtin hooks, compaction, goal and loop extensions. The boundary steps already stand down after retirement (senpi#2785, senpi#3071, senpi#3101); these reports were the remaining leftovers.
+
+### Why an extension could not handle it
+
+- The runner catches handler failures and reports them to every error listener. An extension cannot tell its own late dispatch from an active one before the runner reports it, and it cannot stop another extension's report.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/extensions/runner.ts`: the new `reportDispatchError` next to `emitError`, and the error report in each non-boundary emit method's catch block.
+
 ## 2026-10-11 - Typed missing extension RPC handler (senpi#3072 review)
 
 ### What changed
