@@ -21,7 +21,7 @@ Snapshot materialization precedes extension loading. An extension cannot reduce 
 
 ### What changed
 
-- `packages/coding-agent/src/cli.ts`: `requiresIsolatedProcess()` decides on `runtimeExecArgv()` (`utils/runtime-exec-argv.ts`), and `spawnFullCli()` forwards that sanitized argv instead of the raw `process.execArgv`. Loaders, memory flags and inspector options still reach the child; an eval, print, input-type or interactive entry mode does not. The unbundled re-launch now also sets `SENPI_CLI_ISOLATED_CHILD`, the recursion guard the bundled re-launch already had.
+- `packages/coding-agent/src/cli.ts`: `requiresIsolatedProcess()` decides on `runtimeExecArgv()` (`utils/runtime-exec-argv.ts`), and `spawnFullCli()` forwards that sanitized argv instead of the raw `process.execArgv`. Loaders, memory flags and inspector options still reach the child; an eval, print, input-type or interactive entry mode does not.
 
 ### Why
 
@@ -33,7 +33,7 @@ Snapshot materialization precedes extension loading. An extension cannot reduce 
 
 ### Expected merge conflict zones
 
-- `packages/coding-agent/src/cli.ts`: the `runtimeExecArgv` import, `requiresIsolatedProcess()`, and the argv and environment of the `spawnFullCli()` child.
+- `packages/coding-agent/src/cli.ts`: the `runtimeExecArgv` import, `requiresIsolatedProcess()`, and the argv of the `spawnFullCli()` child.
 
 ## 2026-10-10 - The runtime snapshot copies the shipped package files only (#3083)
 

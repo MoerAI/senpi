@@ -60,12 +60,16 @@ for (const [kind, entry] of Object.entries(entries)) {
 				callerCount: number;
 				receipt: { kind: string; execArgv: string[] } | null;
 				launchError: string | null;
+				isolatedChildMarkers: Array<string | null>;
 				childrenSettled: boolean;
 			};
 			expect(result.launchError).toBeNull();
 			expect(result.callerCount).toBe(1);
 			expect(result.receipt?.kind).toBe("target-entry");
 			expect(result.receipt?.execArgv).toEqual(["--import", loader, "--max-old-space-size=4096"]);
+			// Only the bundled self-reexec reads the recursion marker; an unbundled cli-main child would leak it to
+			// everything the agent spawns.
+			expect(result.isolatedChildMarkers).toEqual([kind === "bundled" ? "1" : null]);
 			expect(result.childrenSettled).toBe(true);
 			expect(exitCode).toBe(0);
 		} finally {

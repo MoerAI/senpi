@@ -19,8 +19,11 @@ if (process.env.SENPI_ARGV_REPRO_PARENT_PID) {
 	const target = fileURLToPath(new URL("./2599-eval-child-entry.mjs", import.meta.url));
 	const originalSpawn = childProcess.spawn;
 	const ready = Promise.withResolvers();
+	const expired = Promise.withResolvers();
 	const children = [];
-	const deadline = setTimeout(() => ready.reject(new Error("No child execution receipt")), 60_000);
+	const exits = [];
+	const markers = [];
+	const deadline = setTimeout(() => expired.reject(new Error("No child execution receipt")), 60_000);
 	childProcess.spawn = (command, args, options) => {
 		const index = args.findIndex((arg) => arg === cliEntry || /(?:^|[/\\])cli-main\.(?:ts|js)$/.test(arg));
 		if (index < 0) return originalSpawn(command, args, options);
@@ -29,6 +32,8 @@ if (process.env.SENPI_ARGV_REPRO_PARENT_PID) {
 		const stdio = typeof options.stdio === "string" ? [options.stdio, options.stdio, options.stdio] : options.stdio;
 		const child = originalSpawn(command, launchArgs, { ...options, stdio: [...stdio, "ipc"] });
 		children.push(child);
+		exits.push(new Promise((resolve) => child.once("close", resolve)));
+		markers.push(options.env?.SENPI_CLI_ISOLATED_CHILD ?? null);
 		child.once("error", (error) => ready.reject(error));
 		child.once("message", (message) => ready.resolve(message));
 		return child;
@@ -38,11 +43,18 @@ if (process.env.SENPI_ARGV_REPRO_PARENT_PID) {
 	let launchError;
 	try {
 		process.argv = [process.execPath, cliEntry];
-		await import(pathToFileURL(cliEntry).href);
-		receipt = await ready.promise;
+		// The entry awaits its child at module scope, so the deadline bounds the import as well as the receipt.
+		[receipt] = await Promise.race([
+			Promise.all([ready.promise, import(pathToFileURL(cliEntry).href)]),
+			expired.promise,
+		]);
 	} catch (error) {
 		launchError = error.message;
 	} finally {
+		for (const child of children) {
+			if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+		}
+		await Promise.all(exits);
 		clearTimeout(deadline);
 		childProcess.spawn = originalSpawn;
 		syncBuiltinESMExports();
@@ -53,7 +65,10 @@ if (process.env.SENPI_ARGV_REPRO_PARENT_PID) {
 			callerCount: readFileSync(countFile, "utf8").trim().split("\n").length,
 			receipt: receipt ?? null,
 			launchError: launchError ?? null,
+			isolatedChildMarkers: markers,
 			childrenSettled: children.every((child) => child.exitCode !== null || child.signalCode !== null),
 		}),
 	);
+	// The deadline can fire while the CLI entry is still loading; ending here keeps it from launching anything later.
+	process.exit();
 }

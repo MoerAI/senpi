@@ -91,7 +91,7 @@ function isMissingBundledWorkspaceDependencies(packageDir) {
         return !existsSync(join(packageDir, "node_modules", "@earendil-works", name, "dist", "index.js"));
     });
 }
-/** Marks the child an entry spawned for its exec arguments, so it never spawns again. */
+/** Marks the child a bundled entry spawned for its exec arguments, so it never spawns again. */
 const ISOLATED_CHILD_ENV = "SENPI_CLI_ISOLATED_CHILD";
 /**
  * Decide whether the agent needs its own process.
@@ -107,8 +107,8 @@ const ISOLATED_CHILD_ENV = "SENPI_CLI_ISOLATED_CHILD";
  * anything the agent spawns can inherit it.
  */
 function requiresIsolatedProcess() {
-    // The child would otherwise see the same exec arguments and spawn again forever (the bundled entry
-    // re-executes itself rather than a sibling). The marker is read before anything else runs.
+    // The bundled entry re-executes itself rather than a sibling, so the child would otherwise see the
+    // same exec arguments and spawn again forever. The marker is read before anything else runs.
     if (process.env[ISOLATED_CHILD_ENV] === "1")
         return false;
     return runtimeExecArgv().length > 0 || hasInheritedInspectorOption();
@@ -123,7 +123,7 @@ async function spawnFullCli() {
         ? fileURLToPath(import.meta.url)
         : fileURLToPath(new URL(`./cli-main${extension}`, import.meta.url));
     releaseInheritedInspectorForChild();
-    const childEnvironment = { ...process.env, [ISOLATED_CHILD_ENV]: "1" };
+    const childEnvironment = isBundledNode ? { ...process.env, [ISOLATED_CHILD_ENV]: "1" } : process.env;
     return await new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [...runtimeExecArgv(), fullCliPath, ...args], {
             env: childEnvironment,
