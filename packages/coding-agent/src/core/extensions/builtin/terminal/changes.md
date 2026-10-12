@@ -1,22 +1,3 @@
-## 2026-10-12 - Injectable uptime source for the boot instant (senpi#3152)
-
-### What changed
-
-- `packages/coding-agent/src/core/extensions/builtin/terminal/process-identity.ts`: `processBootAtMs` takes an optional `uptimeSeconds` source next to its existing `now` source. Both default to the real clock and `os.uptime`, so callers are unchanged.
-- `packages/coding-agent/test/suite/terminal-process-identity.test.ts`: the boot-instant cases use fixed clock and uptime values instead of two real reads, and pin that reads on either side of an `os.uptime()` tick land one second apart and still count as the same boot.
-
-### Why
-
-- The old case compared two real reads for equality. `os.uptime()` is integral, so the clock minus uptime is a sawtooth, and two reads that straddle a tick or the rounding midpoint land on adjacent whole seconds; CI failed with `expected 1791766719000 to be 1791766720000`. Production compares boot instants with `sameBoot` and its 120 s tolerance, so only the test was wrong.
-
-### Why an extension could not handle it
-
-- The boot instant is computed inside the terminal builtin's lease identity; a test can only make it deterministic through the function's own inputs.
-
-### Expected merge conflict zones
-
-- `process-identity.ts`: the `processBootAtMs` signature.
-
 ## 2026-10-08 - Share process identity parsing with held-session admission (senpi#2951)
 
 ### What changed
