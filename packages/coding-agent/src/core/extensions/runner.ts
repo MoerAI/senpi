@@ -1004,13 +1004,14 @@ export class ExtensionRunner {
 	}
 
 	/**
-	 * Reports a failure from event dispatch. A retired runner (session replaced, reloaded or
-	 * disposed) stands down instead, as its boundary steps do: its handlers fail on the stale
-	 * context, and those leftovers are not extension failures. Direct reports, such as a
-	 * command's failure, still go through emitError.
+	 * Reports a failure from event dispatch. Once the runner is retired (session replaced, reloaded
+	 * or disposed), a handler that fails on its stale context leaves a leftover, not an extension
+	 * failure, so that report is dropped. Every other failure is reported, including a cleanup
+	 * handler that a session replacement dispatches on the retired runner on purpose
+	 * (session_extensions_removed). Direct reports, such as a command's failure, go through emitError.
 	 */
 	private reportDispatchError(error: ExtensionError): void {
-		if (!this.isActive) return;
+		if (this.staleMessage !== undefined && error.error.includes(this.staleMessage)) return;
 		this.emitError(error);
 	}
 

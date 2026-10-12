@@ -2,7 +2,7 @@
 
 ### What changed
 
-- `packages/coding-agent/src/core/extensions/runner.ts`: a private `reportDispatchError` drops a report while the runner is retired and otherwise forwards it to `emitError`. Every report from non-boundary event dispatch goes through it: the handler failures in `dispatchEmit`, `emitModelSelect`, `emitMessageEnd`, `emitToolResult`, `emitUserBash`, `emitBeforeProviderRequest`, `emitBeforeProviderHeaders`, `emitBeforeAgentStart`, `emitResourcesDiscover` and `emitInput`, the `message_end` role check, and the reports `emitContext` hands to `dispatchContextMessages`. `emitError` itself and the direct reports that call it (a command's failure, skill expansion, `sendMessage`, the `session_shutdown` handler budget) are unchanged.
+- `packages/coding-agent/src/core/extensions/runner.ts`: a private `reportDispatchError` drops a report when the runner is retired and the failure carries the runner's stale-context message; every other report goes to `emitError`, including a cleanup handler that a session replacement dispatches on the retired runner on purpose (`session_extensions_removed`). Every report from non-boundary event dispatch goes through it: the handler failures in `dispatchEmit`, `emitModelSelect`, `emitMessageEnd`, `emitToolResult`, `emitUserBash`, `emitBeforeProviderRequest`, `emitBeforeProviderHeaders`, `emitBeforeAgentStart`, `emitResourcesDiscover` and `emitInput`, the `message_end` role check, and the reports `emitContext` hands to `dispatchContextMessages`. `emitError` itself and the direct reports that call it (a command's failure, skill expansion, `sendMessage`, the `session_shutdown` handler budget) are unchanged.
 
 ### Why
 

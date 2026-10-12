@@ -93,6 +93,31 @@ describe("retired runner non-boundary dispatch (#3149)", () => {
 		expect(errors).toMatchObject([{ event: "agent_end", error: "ACTIVE_AGENT_END_FAILURE" }]);
 	});
 
+	it("still reports a genuine failure from a cleanup handler dispatched on the retired runner", async () => {
+		const errors: ExtensionError[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_extensions_removed", () => {
+						throw new Error("CLEANUP_FAILED");
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const runner = harness.getExtensionRunner();
+		runner.onError((error) => errors.push(error));
+		// A session replacement disposes the old session first, then reports removed extensions on its runner.
+		runner.invalidate(RETIRED);
+		await runner.emit({
+			type: "session_extensions_removed",
+			reason: "new",
+			removed: [{ path: "removed.ts", resolvedPath: "/removed.ts" }],
+		});
+
+		expect(errors).toMatchObject([{ event: "session_extensions_removed", error: "CLEANUP_FAILED" }]);
+	});
+
 	it("still reports a command that uses its context after the runner retires", async () => {
 		const errors: ExtensionError[] = [];
 		let retire = (): void => {};
