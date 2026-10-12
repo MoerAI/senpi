@@ -1,5 +1,7 @@
 // Regression for #2889: a --session, --fork or --rebind path that names no file is reported, never opened as a new session.
-import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import {
 	copyFileSync,
 	existsSync,
@@ -18,6 +20,7 @@ import { parseArgs } from "../../../src/cli/args.ts";
 import { ENV_AGENT_DIR } from "../../../src/config.ts";
 import { SettingsManager } from "../../../src/core/settings-manager.ts";
 import { createSessionManager } from "../../../src/main.ts";
+import { hermeticProviderEnv, MOCK_MODEL, MOCK_PROVIDER, writeRpcModelsJson } from "../../helpers/rpc-hermetic.ts";
 import { assertWorkspaceBuildPrerequisite } from "../../support/workspace-build-prerequisite.ts";
 
 assertWorkspaceBuildPrerequisite(import.meta.url);
@@ -26,8 +29,26 @@ const cliPath = resolve(__dirname, "../../../src/cli.ts");
 const sourceResolverUrl = pathToFileURL(resolve(__dirname, "../../../src/experimental/source-resolver.ts")).href;
 const fixture = resolve(__dirname, "../../fixtures/before-compaction.jsonl");
 const tempDirs: string[] = [];
+const children: ChildProcess[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+	// A case that times out leaves its CLI running together with the cli-main child it re-launched. Both
+	// overwrite their command line with process.title, so neither can be found by path: kill the CLI's
+	// process group, then wait for the stderr pipe they share to close, which happens once both have exited.
+	for (const child of children.splice(0)) {
+		if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) continue;
+		const closed = once(child, "close");
+		if (process.platform === "win32") {
+			spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+		} else {
+			try {
+				process.kill(-child.pid, "SIGKILL");
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+			}
+		}
+		await closed;
+	}
 	for (const dir of tempDirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -48,13 +69,22 @@ function listFiles(root: string): string[] {
 }
 
 async function runCli(args: string[], cwd: string, agentDir: string): Promise<{ code: number | null; stderr: string }> {
+	// Even if the path check regressed and a case went on to prompt, no real provider could answer: provider
+	// credentials are blanked and the model is a local stand-in whose endpoint refuses connections.
+	writeRpcModelsJson(agentDir, "http://127.0.0.1:1");
 	let stderr = "";
 	const code = await new Promise<number | null>((resolvePromise, reject) => {
-		const child = spawn(process.execPath, ["--import", sourceResolverUrl, cliPath, ...args], {
-			cwd,
-			env: { ...process.env, [ENV_AGENT_DIR]: agentDir, PI_OFFLINE: "1" },
-			stdio: ["ignore", "ignore", "pipe"],
-		});
+		const child = spawn(
+			process.execPath,
+			["--import", sourceResolverUrl, cliPath, "--provider", MOCK_PROVIDER, "--model", MOCK_MODEL, ...args],
+			{
+				cwd,
+				detached: process.platform !== "win32",
+				env: { ...process.env, ...hermeticProviderEnv(), [ENV_AGENT_DIR]: agentDir, PI_OFFLINE: "1" },
+				stdio: ["ignore", "ignore", "pipe"],
+			},
+		);
+		children.push(child);
 		child.stderr.on("data", (chunk) => {
 			stderr += chunk.toString();
 		});
