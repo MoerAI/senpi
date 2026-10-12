@@ -54,6 +54,14 @@ vi.mock("../../../src/core/agent-session-runtime.ts", async (importOriginal) => 
 		...actual,
 		async createAgentSessionRuntime(...args: Parameters<typeof actual.createAgentSessionRuntime>) {
 			const runtime = await actual.createAgentSessionRuntime(...args);
+			// main() may dispose the runtime itself; the cleanup below must not dispose it a second time.
+			const dispose = runtime.dispose.bind(runtime);
+			let disposed = false;
+			runtime.dispose = async () => {
+				if (disposed) return;
+				disposed = true;
+				await dispose();
+			};
 			state.runtimes.push(runtime);
 			return runtime;
 		},
@@ -117,6 +125,59 @@ describe("main() early-exit branches (#2955)", () => {
 		async ({ args, code }) => {
 			await expect(main(args())).resolves.toBeUndefined();
 			expect(state.exits).toEqual([code]);
+		},
+		120_000,
+	);
+});
+
+describe("main() early-exit branches hand the process back when process.exit returns (#2955)", () => {
+	it.each([
+		{ branch: "--list-tips with --print", args: ["--print", "--list-tips"] },
+		{ branch: "--list-models with --print", args: ["--print", "--list-models"] },
+		{ branch: "--help with --print", args: ["--print", "--help"] },
+	])(
+		"$branch restores stdout before returning",
+		async ({ args }) => {
+			const write = process.stdout.write;
+			await main(args);
+			expect(state.exits).toEqual([0]);
+			expect(process.stdout.write).toBe(write);
+		},
+		120_000,
+	);
+
+	it.each([
+		{ branch: "--list-tips in json mode", args: ["--mode", "json", "--list-tips"] },
+		{ branch: "--help in json mode", args: ["--mode", "json", "--help"] },
+	])(
+		"$branch restores console.log before returning",
+		async ({ args }) => {
+			const log = console.log;
+			await main(args);
+			expect(state.exits).toEqual([0]);
+			expect(console.log).toBe(log);
+		},
+		120_000,
+	);
+
+	it.each([
+		{ branch: "--help with --print", args: ["--print", "--help"] },
+		{ branch: "--help in json mode", args: ["--mode", "json", "--help"] },
+	])(
+		"$branch shuts its session runtime down before returning",
+		async ({ args }) => {
+			const shutdowns: string[] = [];
+			await main(args, {
+				extensionFactories: [
+					(pi) => {
+						pi.on("session_shutdown", (event) => {
+							shutdowns.push(event.reason);
+						});
+					},
+				],
+			});
+			expect(state.exits).toEqual([0]);
+			expect(shutdowns).toEqual(["quit"]);
 		},
 		120_000,
 	);

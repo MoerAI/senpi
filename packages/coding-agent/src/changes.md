@@ -22,10 +22,12 @@ Snapshot materialization precedes extension loading. An extension cannot reduce 
 ### What changed
 
 - `packages/coding-agent/src/main.ts`: the host, schedule, `--version`, `--export`, both `--help`, `--list-tips` and `--list-models` branches of `main()` return right after their awaited `exitAfterOutput` / `printThenExit` call, and the `--export` failure path returns its `process.exit(1)`. The package-command branch already did (senpi#2939).
+- `packages/coding-agent/src/main.ts`: `--list-tips`, `--list-models` and the `--help` that runs after the agent runtime is created hand stdout back before they return, as a full print run does after `runPrintMode`: they end the stdout takeover and, in json mode, the `console.log` redirect, which now keeps the original `console.log` instead of a bound copy. That `--help` first disposes its agent runtime, which emits `session_shutdown` and releases the session hold.
 
 ### Why
 
 - When `process.exit` returns instead of ending the process (an in-process test that stubs it, or an embedder that overrides it), each of these branches fell through into the next dispatch and into normal startup: argument parsing, migrations, the session manager and the agent runtime. A failed `--export` also went on to print `Exported to: undefined` and exit a second time.
+- In print, json and rpc mode these commands run after `main()` has taken stdout over. Returning early skipped the hand-back a full print run does, so after `main()` returned an embedder's own stdout writes and `console.log` still went to stderr, and the late `--help` left its agent runtime undisposed. A bound copy of `console.log` would also make `captureStdout` treat a later run's output as already redirected.
 
 ### Why an extension could not handle it
 
@@ -33,7 +35,7 @@ Snapshot materialization precedes extension loading. An extension cannot reduce 
 
 ### Expected merge conflict zones
 
-- `packages/coding-agent/src/main.ts`: the host and schedule dispatch, the `--version` and `--export` branches, the plain `--help`, `--list-tips` and `--list-models` branches, and the `--help` branch that runs after the agent runtime is created.
+- `packages/coding-agent/src/main.ts`: the host and schedule dispatch, the `--version` and `--export` branches, the json-mode `console.log` redirect, the plain `--help`, `--list-tips` and `--list-models` branches, and the `--help` branch that runs after the agent runtime is created.
 
 ## 2026-10-10 - The runtime snapshot copies the shipped package files only (#3083)
 
