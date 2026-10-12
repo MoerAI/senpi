@@ -8,12 +8,34 @@ import {
 } from "../../src/core/extensions/builtin/terminal/process-identity.ts";
 
 describe("terminal process identity", () => {
-	it("derives a whole-second boot instant from os.uptime that two consecutive reads agree on", () => {
-		const boot = processBootAtMs();
-		expect(Number.isInteger(boot)).toBe(true);
-		expect(boot % 1000).toBe(0);
-		expect(boot).toBeLessThan(Date.now());
-		expect(processBootAtMs()).toBe(boot);
+	it("derives a whole-second boot instant from the clock and os.uptime", () => {
+		expect(
+			processBootAtMs(
+				() => 1_790_000_000_400,
+				() => 86_400,
+			),
+		).toBe(1_789_913_600_000);
+		expect(
+			processBootAtMs(
+				() => 1_790_000_000_600,
+				() => 86_400,
+			),
+		).toBe(1_789_913_601_000);
+	});
+
+	it("keeps two reads across an os.uptime tick on the same boot", () => {
+		// os.uptime() is integral, so the clock minus uptime is a sawtooth: a read just before a tick
+		// and one just after it land on adjacent whole seconds (senpi#3152).
+		const before = processBootAtMs(
+			() => 1_790_000_000_990,
+			() => 86_400,
+		);
+		const after = processBootAtMs(
+			() => 1_790_000_001_010,
+			() => 86_401,
+		);
+		expect(before - after).toBe(1000);
+		expect(sameBoot(before, after)).toBe(true);
 	});
 
 	it.runIf(process.platform === "darwin")("matches the kernel boot time on darwin within the tolerance", () => {

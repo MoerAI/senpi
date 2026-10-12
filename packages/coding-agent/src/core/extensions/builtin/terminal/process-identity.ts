@@ -14,8 +14,12 @@ export const BOOT_INSTANT_TOLERANCE_MS = 120_000;
 
 const wholeSeconds = (ms: number): number => Math.round(ms / 1000) * 1000;
 
-export function processBootAtMs(now: () => number = Date.now): number {
-	return wholeSeconds(now() - osUptimeSeconds() * 1000);
+/**
+ * Two reads can land on adjacent whole seconds, since `os.uptime()` ticks in whole seconds:
+ * compare boot instants with `sameBoot`, never for equality.
+ */
+export function processBootAtMs(now: () => number = Date.now, uptimeSeconds: () => number = osUptimeSeconds): number {
+	return wholeSeconds(now() - uptimeSeconds() * 1000);
 }
 
 const floorToSecond = (ms: number): number => Math.floor(ms / 1000) * 1000;
