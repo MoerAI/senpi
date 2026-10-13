@@ -1,3 +1,23 @@
+## 2026-10-13 - Claude Agent SDK 0.3.296 (senpi#3258)
+
+### What changed
+
+- `packages/coding-agent/package.json`: `@anthropic-ai/claude-agent-sdk` pin moves 0.3.292 -> 0.3.296; `bun.lock` refreshes the pin and its 8 platform optionalDependencies.
+- The root `package-lock.json` (the 8 platform packages relocked) and `packages/coding-agent/install-lock/package-lock.json` follow the same pin; CI's `npm ci` jobs and the install-lock gate read those two.
+
+### Why
+
+- The releasability gate's "Claude Agent SDK currency" job fails while the pin trails the latest published release, blocking the 2026.10.12 release; the bump keeps new Claude models usable on anthropic-subscription.
+
+### Why an extension could not handle it
+
+- The SDK pin and its platform binaries are build-time dependency resolution, not runtime extension surface.
+
+### Expected merge conflict zones
+
+- The dependency pin line in `packages/coding-agent/package.json` and the matching `bun.lock` entries.
+- The SDK entries in the root `package-lock.json` and `packages/coding-agent/install-lock/package-lock.json` at the next dependency sync.
+
 ## 2026-10-12 - Native RPC QA owns neutral helper imports (Refs senpi#3167)
 
 ### What changed
