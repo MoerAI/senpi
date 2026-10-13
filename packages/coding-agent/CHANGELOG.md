@@ -6,6 +6,54 @@
 
 ### Added
 
+- RPC effect ledger (capability `effect_ledger`): `abort`, `set_model` and `set_thinking_level` take an optional `effectId` and get a durable receipt written before the effect is applied; a retry with the same id replays the receipt instead of acting twice, and a different request under that id is refused with `effect_id_conflict`. `get_effect_status` answers any receipt by id, including inputs by `clientMessageId`, from a loaded session or from a transcript on disk. Input receipts now say how their turn ended (completed, aborted and by whom, error), a reopened session seals receipts its dead process left running, and queued input dropped by `new_session`/`switch_session` reads `failed` instead of vanishing ([#3199](https://github.com/code-yeongyu/senpi/issues/3199)).
+
+### Changed
+
+### Fixed
+
+### Removed
+
+- Removed the Codex `app-server` command, daemon, generated protocol and compatibility QA harness. Process integrations use Native RPC (`senpi --mode rpc` or `senpi host`); OpenAI API and ChatGPT subscription models remain supported, and historical model-change records remain readable ([#3167](https://github.com/code-yeongyu/senpi/issues/3167), requested by @code-yeongyu).
+
+## [2026.10.13] - 2026-10-13
+
+### Breaking Changes
+
+### Added
+
+- RPC clients now see scheduled goal continuations, their due time, and their resumption through the `goal_continuation_scheduled`, `goal_continuation_timer_state`, and `goal_continuation_resumed` extension events. The `goal_continuation_fire_now` extension request runs an armed continuation immediately through its normal eligibility checks; a timer held while the user types stays held ([#3208](https://github.com/code-yeongyu/senpi/pull/3208)).
+
+- Shared RPC hosts publish each session holder's public socket and host instance in validated lease evidence. Clients can pass `open_session.expectedHostInstance` to attach only to that live host generation; a changed owner or released path returns a typed refusal with a rediscovery action instead of creating another writer ([#3255](https://github.com/code-yeongyu/senpi/issues/3255), [#3257](https://github.com/code-yeongyu/senpi/pull/3257)).
+
+### Changed
+
+- The bundled Claude Agent SDK is updated to 0.3.296 (from 0.3.292), so the Anthropic subscription lane runs Claude Code 2.1.296 and the models it knows ([#3258](https://github.com/code-yeongyu/senpi/pull/3258)).
+
+- Tip history, changelog acknowledgments, and per-model reasoning/fast-mode memories now live in `state.json`, keeping automatically written bookkeeping out of version-controlled global settings. `/reasoning`, `/efforts`, and thinking cycles remember the model's level without changing the startup default; Ctrl+S in `/thinking` and the `/settings` thinking option still save it explicitly. Existing global keys migrate without overwriting saved state or changing project settings. Corrupt state no longer disables config, and no-value-change saves preserve config bytes. Restart older sessions during upgrades: their legacy bookkeeping writes can still trigger config reloads ([#3213](https://github.com/code-yeongyu/senpi/pull/3213), requested by @devxoul).
+
+### Fixed
+
+- Busy multi-session RPC hosts now reclaim freed heap pages when their session count drops and their footprint is at least 2 GB, even while other children keep running. Drops during the trim interval stay pending until it expires, including when a new session replaces the closed one between checks. Busy-host collections wait at least a minute and at least 100 times the previous collection pause; `host_trimmed` reports `sessions` and `pauseMs`. This prevents long sessions with many concurrent children from retaining their peak memory footprint ([#3240](https://github.com/code-yeongyu/senpi/pull/3240), [#3221](https://github.com/code-yeongyu/senpi/pull/3221)).
+
+- `senpi host session` commands now return only after the host has dropped their attachment: on a host that advertises the new `detach_connection` capability the client asks for the detach and waits for the answer (bounded at 5 s, with one plain line if it never comes), so a listing right after `open` no longer shows the short-lived client as still attached. A connection leaving a session that another client also holds now releases its attachment at once, even while a turn runs; only the last attachment of a non-retained session still waits for the turn to settle. After a request timed out or the connection was lost, the client closes without asking for the detach. Older hosts keep the release on socket close. ([#3238](https://github.com/code-yeongyu/senpi/issues/3238))
+
+- Per-run TPS/cache-hit notices now appear only in the TUI, preventing an extra info row after every agent run in RPC clients ([#3237](https://github.com/code-yeongyu/senpi/pull/3237)).
+
+- Open todo work now shows a quiet `waiting: <sources>` footer when a background child, monitor, eval cell, open question, running goal, pending continuation, or queued message will resume it. The `todo_owed_reminder` event and debug log name those sources. A stopped goal is no longer counted as waiting and keeps its own stop notice ([#3232](https://github.com/code-yeongyu/senpi/pull/3232)).
+
+- Help, version, model/tip listings, session export, and one-shot package/host/schedule commands no longer enable the startup compile cache, avoiding Bun 1.4.3's slower cold-cache write at exit. Interactive, RPC and prompt-processing sessions, schedule watchers, and multi-session RPC hosts retain caching. An externally supplied `NODE_COMPILE_CACHE` remains untouched ([#3169](https://github.com/code-yeongyu/senpi/pull/3169)).
+
+- Closing a todo task resets the two-continuation limit, so unattended work that makes progress can continue after its next early stop. After two automatic continuations close no task, the stop notice explains the limit and how to resume: reply, or close the work with `/todo done` or `/todo drop` ([#3220](https://github.com/code-yeongyu/senpi/pull/3220)).
+
+### Removed
+
+## [2026.10.12] - 2026-10-12
+
+### Breaking Changes
+
+### Added
+
 - The interactive editor paints OmO's reserved prompt keywords (`ulw`/`ultrawork`, `mass ulw` and its aliases, `ulw plan`, `ulw loop`, `ulw research`) with the same per-character rainbow as the OmO desktop composer, only where the OmO engine would arm them (not inside identifiers, paths, URLs, quotes, relayed headers or "do not load ..." sentences): truecolor gradient, 256-colour fallback, and no decoration under `NO_COLOR`. Cursor, selection and wide-glyph widths are unchanged. `findReservedKeywordSpans` and `findReservedKeywordRuns` are exported ([#3160](https://github.com/code-yeongyu/senpi/issues/3160), requested by @code-yeongyu).
 
 - Session-scoped `eval_cells.list`, `eval_cells.peek`, and `eval_cells.stop` RPC commands and typed client methods expose live/recent eval cells, bounded UTF-8 output tails, and confirmed stop outcomes without model tool calls or history entries. Detached stops preserve the existing completion notification; RPC clients can consume the already-forwarded `wake_source_state` event ([#3072](https://github.com/code-yeongyu/senpi/issues/3072)).
@@ -16,12 +64,13 @@
 
 - ChatGPT subscription GPT-6.1 Sol, Fast and Ultrafast now default to a 500,000-token context budget, with compaction and context-usage accounting following that window ([#3150](https://github.com/code-yeongyu/senpi/issues/3150), requested by @code-yeongyu).
 
-- Web search uses the active model's in-turn server tool first on enabled routes. Existing direct Anthropic/Claude OAuth and OpenAI/Azure defaults are preserved; ChatGPT subscription search is enabled, and newly supported xAI Responses, Gemini 2/3, OpenRouter and compatible Anthropic gateways require explicit opt-in. Search-specific failures enable one standalone fallback and record its reason; cheaper auxiliary models remain defaults only on routes without an enabled server tool ([#3122](https://github.com/code-yeongyu/senpi/issues/3122), requested by @code-yeongyu).
+- Web search uses the active model's in-turn server tool first on enabled routes. Existing direct Anthropic/Claude OAuth and OpenAI/Azure defaults are preserved; ChatGPT subscription search is enabled, and newly supported xAI Responses, Google Vertex and AI Studio, OpenRouter and compatible Anthropic gateways require explicit opt-in. Search-specific failures enable one standalone fallback and record its reason; cheaper auxiliary models remain defaults only on routes without an enabled server tool ([#3122](https://github.com/code-yeongyu/senpi/issues/3122), requested by @code-yeongyu).
 
-- Server search remains default-on for direct Anthropic/Claude OAuth and OpenAI/Azure, unchanged from main, and is default-on for the live-verified first-party ChatGPT/Codex subscription route (except Spark). Gateways including ccapi and GLM coding plan on z.ai's Anthropic endpoint require `compat.supportsWebSearch: true`; xAI Responses, Gemini 2/3, OpenRouter, Moonshot PAYG, Z.AI PAYG and Sonar native-bypass routing also require explicit compatibility opt-in. Kimi for Coding and DeepSeek are not live-verified and do not gain default-on search. A different `nativeModel` setting is ignored on enabled server-search routes: main search and fallback use the session model ([#3122](https://github.com/code-yeongyu/senpi/issues/3122), requested by @code-yeongyu).
+- Server search remains default-on for direct Anthropic/Claude OAuth and OpenAI/Azure, unchanged from main, and is default-on for the live-verified first-party ChatGPT/Codex subscription route (except Spark). Gateways including ccapi and GLM coding plan on z.ai's Anthropic endpoint require `compat.supportsWebSearch: true`; xAI Responses, Google Vertex and AI Studio, OpenRouter, Moonshot PAYG, Z.AI PAYG and Sonar native-bypass routing also require explicit compatibility opt-in. Kimi for Coding and DeepSeek are not live-verified and do not gain default-on search. A different `nativeModel` setting is ignored on enabled server-search routes: main search and fallback use the session model ([#3122](https://github.com/code-yeongyu/senpi/issues/3122), requested by @code-yeongyu).
 
 ### Fixed
 
+- A finished bash session no longer keeps its headless terminal screen (10,000 lines of scrollback plus replay history, about 20 MB for a 4,000-line output) until the 32-session limit evicts it; it keeps its final visible screen and its bounded output, so long sessions and task hosts no longer grow with every shell command ([#3171](https://github.com/code-yeongyu/senpi/issues/3171)).
 - A turn no longer fails when the session is replaced, reloaded, or disposed while its first `turn_end` or `agent_before_settle` boundary preview is being built: the retired extension runner now stands down on that step like every other boundary step, discarding drafts and continuation without reporting a stale-context error ([#3101](https://github.com/code-yeongyu/senpi/issues/3101)). Thanks to @MoerAI ([#3145](https://github.com/code-yeongyu/senpi/pull/3145)).
 - Prompts and timeout retries after accepted compaction no longer stop with "Context remains above the compaction threshold because compaction did not complete" because of pre-compaction usage, including when an extension message follows the checkpoint. Failed compaction preserves previous usage, and the existing first-response stale-usage exemption remains in place ([#3137](https://github.com/code-yeongyu/senpi/issues/3137)).
 
@@ -41,7 +90,7 @@
 
 - Cross-route Moonshot sanitization preserves intentional empty tool arrays on main requests with tool history when no declaration was removed, retaining compatibility with LiteLLM-style proxies ([#3122](https://github.com/code-yeongyu/senpi/issues/3122)).
 
-- Server-search failures are remembered for the actual failed request model across prompts and model switches. Cache-friendly compaction retains the original payload hook and exact main-turn tools/include prefix. Standalone summaries, titles and default projections exclude only server-search tools, preserve client `web_search`, and do not add empty tool arrays. Fallback preserves provider-built function schemas and Gemini's single function-declaration entry. Moonshot's opt-in echo tool cannot be discovered or lazily activated through tool_search, and its declaration is stripped from non-Moonshot requests ([#3122](https://github.com/code-yeongyu/senpi/issues/3122)).
+- Server-search failures are remembered for the actual failed request model across prompts and model switches. Cache-friendly compaction retains the original payload hook and exact main-turn tools/include prefix. Standalone summaries, titles and default projections exclude only server-search tools, preserve client `web_search`, and do not add empty tool arrays. Fallback preserves provider-built function schemas and Google's single function-declaration entry. Moonshot's opt-in echo tool cannot be discovered or lazily activated through tool_search, and its declaration is stripped from non-Moonshot requests ([#3122](https://github.com/code-yeongyu/senpi/issues/3122)).
 
 ### Removed
 
