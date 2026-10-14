@@ -1,6 +1,37 @@
 {
 	"version": 1,
 	"nodes": {
+		"senpi#3205": {
+			"additions": [
+				"legacyContracts/test/js-rewrite-imports-host-cost.test.ts/rewriteImports host cost does not parse a cell whose only import text is inside data",
+				"legacyContracts/test/js-rewrite-imports-host-cost.test.ts/rewriteImports host cost still rewrites real static and dynamic imports",
+				"legacyContracts/test/js-rewrite-imports-host-cost.test.ts/rewriteImports host cost still rewrites a comment before a dynamic call",
+				"legacyContracts/test/js-rewrite-imports-host-cost.test.ts/rewriteImports host cost still rewrites a block comment before named bindings",
+				"legacyContracts/test/js-rewrite-imports-host-cost.test.ts/rewriteImports host cost still rewrites a line comment before a default binding",
+				"legacyContracts/test/js-rewrite-imports-host-cost.test.ts/rewriteImports host cost still rewrites a non-ASCII binding",
+				"legacyContracts/test/js-rewrite-imports-host-cost.test.ts/rewriteImports host cost prepares a large data cell full of comment-like import text in linear time"
+			],
+			"reason": "senpi#3205 adds contracts proving a cell whose only import text is data is prepared without a Babel parse, that real static and dynamic imports are still rewritten (including after a comment and with a non-ASCII binding, which the review found the first gate skipped), and that a large data cell full of comment-like import text is prepared in linear time. The frozen baseline and every existing contract remain unchanged."
+		},
+		"senpi#3064": {
+			"additions": [
+				"legacyContracts/test/environments/py-environment.test.ts/Given a Python environment root pip scratch is owned and removed after success (#3064)",
+				"legacyContracts/test/environments/py-environment.test.ts/Given a Python environment root pip scratch is owned and removed after failure (#3064)",
+				"legacyContracts/test/environments/py-environment.test.ts/Given a Python environment root pip scratch is owned and removed after cancel (#3064)",
+				"legacyContracts/test/js-process-fixtures.test.ts/awaits a fixture kernel child before removing its cwd (#3064)",
+				"legacyContracts/test/environments/py-installer-cleanup.test.ts/pip scratch cleanup errors preserves success and reports exhausted cleanup retries (#3064)",
+				"legacyContracts/test/environments/py-installer-cleanup.test.ts/pip scratch cleanup errors preserves failure and reports exhausted cleanup retries (#3064)",
+				"legacyContracts/test/environments/py-installer-cleanup.test.ts/pip scratch cleanup errors preserves cancel and reports exhausted cleanup retries (#3064)"
+			],
+			"reason": "senpi#3064 adds real pip subprocess contracts proving scratch containment and removal after success, failure, and cancellation, preserves install outcomes when cleanup fails, and awaits kernel exit before removing its cwd. Every existing approval and contract remains unchanged."
+		},
+		"senpi#3072": {
+			"additions": [
+				"imports/extension/packages/senpi-codemode/src/extension/eval-cells-rpc.ts",
+				"imports/firstKernel/packages/senpi-codemode/src/extension/eval-cells-rpc.ts"
+			],
+			"reason": "senpi#3072: reviewed session-scoped, model-invisible RPC handlers share the existing eval cell manager. Record only this module's additive import membership in the frozen baseline."
+		},
 		"senpi#3048": {
 			"additions": [
 				"legacyContracts/test/kernels/jl/lazy-globals.test.ts/Julia lazy globals declarations (Refs senpi#3048) installs zero sizing declarations before a below-threshold first result",

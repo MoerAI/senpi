@@ -12,6 +12,34 @@
 
 ### Removed
 
+## [2026.10.13] - 2026-10-13
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [2026.10.12] - 2026-10-12
+
+### Breaking Changes
+
+### Added
+
+- `EditorTheme.keywordHighlight` (`EditorKeywordHighlight`) decorates keyword runs per character with the offset inside the run, so a gradient stays continuous across wrapped rows; a mention or the cursor grapheme takes precedence, and row widths never change ([#3160](https://github.com/code-yeongyu/senpi/issues/3160), requested by @code-yeongyu).
+
+### Changed
+
+### Fixed
+
+- `PI_TUI_DEBUG` render dumps honor the configured OS temporary directory instead of writing to a hard-coded `/tmp/tui` path ([#3103](https://github.com/code-yeongyu/senpi/pull/3103)).
+
+### Removed
+
 ## [2026.10.11] - 2026-10-11
 
 ### Breaking Changes

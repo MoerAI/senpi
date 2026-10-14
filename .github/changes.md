@@ -1,3 +1,102 @@
+## 2026-10-13 - Catalog refresh branches regenerate on main data changes and refuse hand commits (#3243)
+
+### What changed
+
+- `.github/workflows/opengateway-catalog-refresh.yml`: also runs on a push to `main` that touches `packages/ai/src/providers/data/**`, so the refresh branch is regenerated on top of the new main (or its PR closed when main already matches the gateway).
+- `.github/workflows/automation-branch-guard.yml` (new): on a pull request from `automation/opengateway-catalog-refresh`, `scripts/check-bot-branch-commits.mjs` fails when any commit between base and head was not written by the bot (`actions@github.com`), including a hand merge of main.
+- Review delta (Opus on a73f822521): the guard refuses a PR whose head repository is not this one (a fork can reuse the branch name), and runs the checker from the base commit, not the branch under review. The checker compares real file URLs to decide it was started directly, because a hand-built `file://` URL missed paths with spaces or symlinks and then exited 0 without checking. It requires both the author and committer email to be the bot's and passes `--end-of-options` before the range. `scripts/check-bot-branch-commits.test.mjs` adds two cases, a person-committed bot commit and a start through a symlinked path with a space, and both fail on the reviewed script.
+- Delta review nits (Opus on 393e302e74): the workflow comments now say that running the checker from the base commit protects the script, not the workflow file. A pull request can still edit or delete the workflow, because GitHub reads it from the PR's merge ref, so the guard stops accidents, not forgery, and only a required check makes a missing guard fail.
+
+### Why
+
+- `.github/workflows/opengateway-catalog-refresh.yml`: #3243 was opened at 01:55Z; #3248 and #3256 then refreshed the catalog on main, and a hand merge of main into the bot branch kept the branch's older manifest and `opengateway.json` over the newer data. That left a manifest `check:model-data` rejects and put `maxTokens` 943718 back to 393216, under a title that still read as a routine refresh. Regenerating on main data changes keeps the branch current without hand edits; the guard keeps a hand-edited branch from merging.
+
+### Why an extension could not handle it
+
+- CI workflow configuration, not runtime behavior.
+
+### Expected merge conflict zones
+
+- The `on:` block of `.github/workflows/opengateway-catalog-refresh.yml`.
+
+## 2026-10-13 - Catalog drift is advisory in the releasability gate
+
+### What changed
+
+- `.github/workflows/releasability.yml`: the `Model catalog regeneration` job reports generated drift as a warning (`Report generated drift`) instead of failing the job; the warning step prints the catalog diff (first 400 lines) and the step summary says the drift is advisory, with the changed files in a details block. Regeneration, the Claude-id check, static checks, build and both test suites against the regenerated catalog still fail the job.
+
+### Why
+
+- `.github/workflows/releasability.yml`: provider listings and prices move within hours, so the committed catalog went stale between the regeneration commit and the end of the gate's ~50 min test step repeatedly on 2026-10-13: three data-only PRs and two blocked release cuts, each needing another gate run. `scripts/release.mjs` already regenerates the catalog, commits any change to main and waits for that commit's green CI before tagging, so drift never ships; the gate only needs to prove the regenerated catalog builds and passes tests.
+
+### Why an extension could not handle it
+
+- CI workflow configuration, not runtime behavior.
+
+### Expected merge conflict zones
+
+- The drift steps of the `model-catalog-regen` job in `.github/workflows/releasability.yml`.
+
+## 2026-10-12 - Retire Codex app-server compatibility (senpi#3167)
+
+### What changed
+
+Replace the retired app-server daemon job target with the shared process identity suite on Windows.
+
+- `.github/workflows/ci.yml`
+
+### Why
+
+The executable Codex compatibility layer is being removed. Shared Native runtime behavior and historical records must remain independent of that layer.
+
+### Why an extension could not handle it
+
+These host contracts, import paths and build or verification targets belong to the repository; an extension cannot retire them.
+
+### Expected merge conflict zones
+
+The listed paths, especially command dispatch, mode unions and process identity imports. Keep the supported runtime branches and the shared utility behavior.
+
+## 2026-10-12 - The Windows zip install fails in its own step when Chocolatey is down (senpi#3088)
+
+### What changed
+
+- `.github/workflows/ci.yml`: the `Install archive tool` step of the `Compiled extensions (Windows)` job retries `choco install zip` up to four times with a short backoff and fails the step unless `zip` is on PATH afterwards, naming the likely cause.
+
+### Why
+
+- `.github/workflows/ci.yml`: when the Chocolatey community feed returns 503, `choco install` reports "installed 0/0 packages" and exits 0, so the job continued until `scripts/build-binaries.sh` failed with `zip: command not found` (exit 127) inside an unrelated test, sending reviewers to the PR's code.
+
+### Why an extension could not handle it
+
+- `.github/workflows/ci.yml`: CI tool installation is repository configuration.
+
+### Expected merge conflict zones
+
+- `.github/workflows/ci.yml`: the `Install archive tool` step of the `compiled-extensions-windows` job.
+
+## 2026-10-10 - Test-run temporary storage has an owner (senpi#3064)
+
+### What changed
+
+- `.github/workflows/ci.yml`, `.github/workflows/releasability.yml`: test invocations use scripts/run-tests.mjs so TMPDIR/TEMP/TMP are scoped before the test runtime starts and cleaned after exit.
+- `.github/workflows/ci.yml`, `.github/workflows/releasability.yml`: every test job snapshots the OS temp directory before its first test step and runs final teardown/check with `always()` when that snapshot succeeded. Unowned leftovers fail the job and are named; snapshots live under gitignored local-ignore.
+- `.github/workflows/ci.yml`, `.github/workflows/releasability.yml`: snapshot setup explicitly exports a creator-owned cleanup journal. Final teardown retires only recorded run roots before checking for unowned residue, including a run root recreated by late Windows child activity.
+- `.github/workflows/ci.yml`, `.github/workflows/releasability.yml`: exported TMPDIR/TEMP/TMP make the job's count an exclusive measurement, not a count of unrelated host daemons. Final teardown removes its own job parent and restores the host temp environment before post-job actions.
+- `.github/workflows/ci.yml`: the real CLI recovery self-test added on main also runs inside the temp owner, between snapshot setup and an always-run final count, before the workspace build.
+
+### Why
+
+- Vitest SSR copies and interrupted fixture writes must not accumulate in the OS temp directory.
+
+### Why an extension could not handle it
+
+- Test-process bootstrap is repository tooling, before runtime extensions load.
+
+### Expected merge conflict zones
+
+- Test command arguments and runtime selection; preserve existing reporters, shards and test filters.
+
 ## 2026-10-11 - Require the real CLI text-tool recovery self-test (senpi#3109)
 
 ### What changed

@@ -252,6 +252,7 @@ import type {
 	ModelSelectSource,
 } from "./extensions/types.ts";
 import { normalizeToolExposure, RUNTIME_EXTENSION_PATH } from "./extensions/types.ts";
+import { createUserActivitySource, emitUserActivity, type UserActivityKind } from "./extensions/user-activity.ts";
 import { deliveryIdOf, ExternalAdmission } from "./external-admission.ts";
 import { shouldWarnHighReasoning } from "./high-reasoning-warning.ts";
 import { LazyToolActivation } from "./lazy-tool-activation.ts";
@@ -276,6 +277,7 @@ import {
 import { ModelRegistry } from "./model-registry.ts";
 import { type AvailableModelsSource, getModelNarrowingPatterns, resolveModelScope } from "./model-resolver.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
+import { ModelSwitchAuthError } from "./model-switch-auth-error.ts";
 import { NestedToolCallRunner } from "./nested-tool-calls.ts";
 import { PROMPT_CACHE_SAFE_WAIT_ENV, resolvePromptCacheSafeWaitSeconds } from "./prompt-cache-budget.ts";
 import { PromptCachePrefixBuilds } from "./prompt-cache-prefix-request.ts";
@@ -320,6 +322,7 @@ import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionProjecti
 import {
 	CURRENT_SESSION_VERSION,
 	getLatestCompactionEntry,
+	getSessionContextEntryId,
 	type SessionHeader,
 	SessionManager,
 } from "./session-manager.ts";
@@ -534,6 +537,12 @@ export type AgentSessionEvent =
 			shortfallTokens: number;
 			safetyMarginProfile: string;
 			direction: "forward" | "backward";
+	  }
+	| {
+			type: "model_change_cancelled";
+			origin: ModelChangeOrigin;
+			reason: "superseded" | "context-budget" | "error";
+			detail?: string;
 	  }
 	/** A switch accepted but held until the next send can compact for it (#1873). */
 	| {
@@ -1244,6 +1253,7 @@ export class AgentSession {
 	private _extensionRunner!: ExtensionRunner;
 	private _turnIndex = 0;
 	private readonly _entryIdsByMessage = new WeakMap<object, string>();
+	private _prePromptProjection: { branch: SessionEntry[]; projection: SessionProjection } | undefined;
 	private readonly _boundaryDispatchedMessages = new WeakSet<object>();
 	/** Assistant turns whose `turn_end` boundary committed entries, so the next request must re-read agent state. */
 	private readonly _boundaryRefreshedTurns = new WeakSet<object>();
@@ -1285,6 +1295,7 @@ export class AgentSession {
 	// (which rebuilds the base prompt with discovered skills) have run.
 	private _sessionStartSettled: Promise<void> = Promise.resolve();
 	private readonly _promptCachePrefixBuilds = new PromptCachePrefixBuilds();
+	private readonly _userActivity = createUserActivitySource();
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
@@ -1329,6 +1340,8 @@ export class AgentSession {
 	private readonly _shownHighReasoningWarningKeys = new Set<string>();
 	private readonly _shownThinkingClampWarningKeys = new Set<string>();
 	private readonly _startupThinkingClamp: ThinkingClampNotice | undefined;
+	/** Last manual preference for unremembered models, kept in the session rather than startup config. */
+	private _lastManualThinkingLevel: ThinkingLevel | undefined;
 	// Widened with the upstream BuildSystemPromptOptions user-override fields so
 	// extensions (prompt-preset) can see CLI/SDK custom prompts via
 	// before_agent_start/model_select systemPromptOptions and ctx.getSystemPromptOptions().
@@ -4550,6 +4563,11 @@ export class AgentSession {
 		return this._resourceLoader.onExtensionEvent?.(channel, handler) ?? (() => {});
 	}
 
+	/** Host input entry point; not exposed by the extension API or its event bus. */
+	recordUserActivity(kind: UserActivityKind): void {
+		this._userActivity.emit(kind);
+	}
+
 	/** Publish on the internal event bus shared by this session's extensions. */
 	emitExtensionEvent(channel: string, data: unknown): void {
 		this._resourceLoader.emitExtensionEvent?.(channel, data);
@@ -4779,6 +4797,7 @@ export class AgentSession {
 			submittedByCommand: options?.source === "extension",
 		});
 		try {
+			if (options?.source !== "extension") emitUserActivity(this, "prompt");
 			await this._prompt(text, {
 				...options,
 				promptDisposition: (disposition) => {
@@ -5432,6 +5451,7 @@ export class AgentSession {
 		behavior: "steer" | "followUp",
 		options?: QueuedInputOptions,
 	): Promise<QueuedInputDisposition> {
+		if (options?.source !== "extension") emitUserActivity(this, "prompt");
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -6261,6 +6281,7 @@ export class AgentSession {
 		origin: ModelChangeOrigin,
 	): void {
 		const pending = createPendingModelSwitch({ model, projection, persistDefault, origin });
+		this._clearPendingModelSwitch();
 		this._pendingModelSwitch = pending;
 		this._emit({
 			type: "model_change_pending",
@@ -6271,6 +6292,19 @@ export class AgentSession {
 			shortfallTokens: projection.shortfallTokens,
 			notice: pending.notice,
 		});
+	}
+
+	private _clearPendingModelSwitch(error?: ModelUsabilityBudgetError): void {
+		const pending = this._pendingModelSwitch;
+		this._pendingModelSwitch = undefined;
+		if (pending !== undefined) {
+			this._emit({
+				type: "model_change_cancelled",
+				origin: pending.origin,
+				reason: error === undefined ? "superseded" : "context-budget",
+				...(error === undefined ? {} : { detail: error.message }),
+			});
+		}
 	}
 
 	/**
@@ -6342,22 +6376,33 @@ export class AgentSession {
 			}
 		}
 
-		this._pendingModelSwitch = undefined;
 		if (!projection.usable) {
 			const error = new ModelUsabilityBudgetError(projection);
+			this._clearPendingModelSwitch(error);
 			this._recordRejectedModelChange(pending.model, error);
 			throw error;
 		}
+		this._pendingModelSwitch = undefined;
 
-		await this._switchActiveModel(pending.model, {
-			persistDefault: pending.persistDefault,
-			appendSessionEntry: true,
-			emitModelSelect: true,
-			modelSelectSource: "set",
-			invalidateCompaction: true,
-			allowDeferral: false,
-			origin: heldSwitchOrigin(pending.origin),
-		});
+		try {
+			await this._switchActiveModel(pending.model, {
+				persistDefault: pending.persistDefault,
+				appendSessionEntry: true,
+				emitModelSelect: true,
+				modelSelectSource: "set",
+				invalidateCompaction: true,
+				allowDeferral: false,
+				origin: heldSwitchOrigin(pending.origin),
+			});
+		} catch (error) {
+			this._emit({
+				type: "model_change_cancelled",
+				origin: pending.origin,
+				reason: error instanceof ModelUsabilityBudgetError ? "context-budget" : "error",
+				detail: error instanceof Error ? error.message : String(error),
+			});
+			throw error;
+		}
 		return true;
 	}
 
@@ -6532,7 +6577,7 @@ export class AgentSession {
 			this._assertModelUsableForSwitch(model, liveContextTokens);
 		}
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
-			const error = new Error(`No API key for ${model.provider}/${model.id}`);
+			const error = new ModelSwitchAuthError(model.provider, model.id);
 			this._recordRejectedModelChange(model, error);
 			throw error;
 		}
@@ -6697,7 +6742,7 @@ export class AgentSession {
 			// Without this a held switch survives its own resolution - an explicit
 			// /compact followed by a manual retry applies the switch here, and the stale
 			// hold would compact and re-switch again on the next message.
-			this._pendingModelSwitch = undefined;
+			this._clearPendingModelSwitch();
 			// Emit only after all admission hooks have accepted the candidate.
 			this._emit({
 				type: "model_changed",
@@ -6904,7 +6949,7 @@ export class AgentSession {
 			// #1873: the cycle commits here rather than through `_switchActiveModel`, so it
 			// has to supersede a held switch itself - otherwise cycling onto a model that
 			// fits leaves an older hold to reclaim the session on the next message.
-			this._pendingModelSwitch = undefined;
+			this._clearPendingModelSwitch();
 			// Post-switch, same contract as _switchActiveModel: the level in force AFTER the cycle.
 			this._emit({
 				type: "model_changed",
@@ -6943,25 +6988,26 @@ export class AgentSession {
 	/**
 	 * Set thinking level.
 	 * Clamps to model capabilities based on available thinking levels.
-	 * Persistent calls refresh per-model memory; session entries and events are emitted only on change.
+	 * Refreshes per-model memory, never the startup default; explicit save controls own that setting.
 	 */
-	setThinkingLevel(level: ThinkingLevel): void {
-		this._setThinkingLevel(level, true, { level, source: "explicit" });
+	setThinkingLevel(level: ThinkingLevel, origin?: ModelChangeOrigin): void {
+		this._setThinkingLevel(level, true, { level, source: "explicit" }, origin, true);
 	}
 
 	/**
 	 * Set the thinking level for this session without changing the global default.
 	 * The effective level is still persisted in this session's history.
 	 */
-	setSessionThinkingLevel(level: ThinkingLevel): void {
-		this._setThinkingLevel(level, false, { level, source: "explicit" });
+	setSessionThinkingLevel(level: ThinkingLevel, origin?: ModelChangeOrigin): void {
+		this._setThinkingLevel(level, false, { level, source: "explicit" }, origin, true);
 	}
 
 	private _setThinkingLevel(
 		level: ThinkingLevel,
-		updateGlobalDefault: boolean,
+		rememberModelLevel: boolean,
 		selection: ThinkingSelection | undefined,
 		trigger?: ModelChangeOrigin,
+		stampNoOpEffect = false,
 	): void {
 		const availableLevels = this.getAvailableThinkingLevels();
 		const effectiveLevel = availableLevels.includes(level) ? level : this._clampThinkingLevel(level, availableLevels);
@@ -6987,7 +7033,8 @@ export class AgentSession {
 		this.agent.state.thinkingLevel = effectiveLevel;
 		this.agent.state.thinkingSelection = effectiveSelection;
 
-		if (updateGlobalDefault) {
+		if (rememberModelLevel) {
+			if (this.supportsThinking() || effectiveLevel !== "off") this._lastManualThinkingLevel = effectiveLevel;
 			const model = this.model;
 			if (model) {
 				this.settingsManager.setModelThinkingLevel(model.provider, model.id, effectiveLevel);
@@ -7002,9 +7049,6 @@ export class AgentSession {
 				this.sessionManager.appendConfigurationUpdate(effectiveLevel);
 				this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
 			}
-			if (updateGlobalDefault && (this.supportsThinking() || effectiveLevel !== "off")) {
-				this.settingsManager.setDefaultThinkingLevel(effectiveLevel);
-			}
 			this._emit({ type: "thinking_level_changed", level: effectiveLevel });
 			void this._extensionRunner.emit({
 				type: "thinking_level_select",
@@ -7013,6 +7057,9 @@ export class AgentSession {
 			});
 			this._emitHighReasoningWarningIfNeeded();
 			this._emitThinkingClampWarningIfNeeded();
+		} else if (stampNoOpEffect && trigger?.effectId !== undefined) {
+			// A no-op RPC effect still needs proof it applied if the process dies before its receipt.
+			this.sessionManager.appendThinkingLevelChange(effectiveLevel, effectiveSelection, trigger);
 		}
 	}
 
@@ -7110,7 +7157,7 @@ export class AgentSession {
 		requestedLevel ??= model.defaultThinkingLevel;
 		let fromGlobalDefault = false;
 		if (requestedLevel === undefined) {
-			const configuredDefault = this.settingsManager.getDefaultThinkingLevel();
+			const configuredDefault = this._lastManualThinkingLevel ?? this.settingsManager.getDefaultThinkingLevel();
 			if (configuredDefault !== undefined) {
 				requestedLevel = configuredDefault;
 				selection = { level: configuredDefault, source: "explicit" };
@@ -8135,15 +8182,13 @@ export class AgentSession {
 			}
 			this._resumeCompactionRequirement = undefined;
 		}
-		const contextTokens = estimateContextTokens(
-			filterContextExcludedMessages(this.sessionManager.buildSessionContext().messages),
-		).tokens;
 		const compacted = assistantMessage
 			? await this._checkCompaction(assistantMessage, skipAbortedCheck, inlineReason, retryAfterCompaction)
 			: false;
 		if (compacted || (assistantMessage && this._postCompactionUsageExemptAssistants.has(assistantMessage))) {
 			return compacted;
 		}
+		const contextTokens = this._estimatePrePromptContextTokens();
 
 		// Under a virtual selection, the physical model of the latest response supplies the limits;
 		// before one, the virtual model's declared limits apply. An undeclared window (<= 0) is unknown, so
@@ -8159,18 +8204,8 @@ export class AgentSession {
 			return false;
 		}
 
-		const latestCompaction = getLatestCompactionEntry(this.sessionManager.getBranch());
 		const assistantBeforeLatestCompaction =
 			assistantMessage !== undefined && this._isAssistantFromBeforeLatestCompaction(assistantMessage);
-		const hasPostCompactionCustomState =
-			latestCompaction !== null &&
-			this.agent.state.messages.some(
-				(message) =>
-					message.role === "custom" && message.timestamp >= new Date(latestCompaction.timestamp).getTime(),
-			);
-		if (assistantBeforeLatestCompaction && !hasPostCompactionCustomState) {
-			return false;
-		}
 		if (assistantBeforeLatestCompaction && assistantMessage) {
 			const compacted = await this._runPrePromptCompaction(assistantMessage, skipAbortedCheck, inlineReason);
 			if (compacted) return true;
@@ -8179,6 +8214,32 @@ export class AgentSession {
 			return false;
 		}
 		throw new RequiredCompactionError();
+	}
+
+	/** Share resume's branch provenance rule without projecting trusted usage on every request. */
+	private _estimatePrePromptContextTokens(additions: readonly AgentMessage[] = []): number {
+		const branch = this.sessionManager.getBranch();
+		const messages = [...this.sessionManager.buildSessionContext().messages, ...additions];
+		const estimate = estimateContextTokens(messages);
+		const usageMessage = estimate.lastUsageIndex === null ? undefined : messages[estimate.lastUsageIndex];
+		const usageEntryId = usageMessage ? getSessionContextEntryId(usageMessage) : undefined;
+		let needsProjection = false;
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (usageEntryId !== undefined && entry.id === usageEntryId) break;
+			if (entry.type === "compaction" || entry.type === "context_edit") {
+				needsProjection = true;
+				break;
+			}
+		}
+		if (!needsProjection) return estimate.tokens;
+
+		if (this._prePromptProjection?.branch !== branch) {
+			this._prePromptProjection = { branch, projection: this.sessionManager.buildSessionProjection() };
+		}
+		const { projection } = this._prePromptProjection;
+		return estimateProjectedContextTokens({ ...projection, messages: [...projection.messages, ...additions] }, branch)
+			.tokens;
 	}
 
 	/**
@@ -8223,22 +8284,12 @@ export class AgentSession {
 		const settings = this._getCompactionSettings();
 		const reserveTokens = resolveEffectiveReserveTokens(model.contextWindow, settings);
 		const isOversized = (): boolean => {
-			const providerMessages = filterContextExcludedMessages([
-				...this.agent.state.messages,
+			const contextTokens = this._estimatePrePromptContextTokens([
 				...messages,
 				// Re-read the queues on every sample: this closure is evaluated again
 				// after compaction, when more input may have arrived.
 				...this._pendingQueuedInputMessages(),
 			]);
-			const estimate = estimateContextTokens(providerMessages);
-			const usageMessage = estimate.lastUsageIndex === null ? undefined : providerMessages[estimate.lastUsageIndex];
-			// Kept assistant usage can describe the pre-compaction request. Once a
-			// compaction boundary exists, fall back to byte-derived message estimates
-			// until a provider response refreshes that usage.
-			const contextTokens =
-				usageMessage?.role === "assistant" && this._isAssistantFromBeforeLatestCompaction(usageMessage)
-					? estimateMessagesTokens(providerMessages)
-					: estimate.tokens;
 			return contextTokens > model.contextWindow - reserveTokens;
 		};
 
@@ -8450,8 +8501,7 @@ export class AgentSession {
 		let contextTokens: number;
 		let staleUsageContentTokens: number | undefined;
 		if (inlineReason) {
-			const messages = filterContextExcludedMessages(this.sessionManager.buildSessionContext().messages);
-			contextTokens = estimateContextTokens(messages).tokens;
+			contextTokens = this._estimatePrePromptContextTokens();
 		} else {
 			const directContextTokens = assistantMessage.usage ? calculateContextTokens(assistantMessage.usage) : 0;
 			if (!usageScope.usageMatchesProjection) {
@@ -8622,13 +8672,7 @@ export class AgentSession {
 		const settings = this._getCompactionSettings();
 		if (!model || !settings.enabled) return;
 
-		const canonicalMessages = filterContextExcludedMessages(this.sessionManager.buildSessionContext().messages);
-		const estimate = estimateContextTokens(canonicalMessages);
-		const usageMessage = estimate.lastUsageIndex === null ? undefined : canonicalMessages[estimate.lastUsageIndex];
-		const contextTokens =
-			usageMessage?.role === "assistant" && this._isAssistantFromBeforeLatestCompaction(usageMessage)
-				? estimateMessagesTokens(canonicalMessages)
-				: estimate.tokens;
+		const contextTokens = this._estimatePrePromptContextTokens();
 		// An explicit user prompt passes the proactive policy in the compaction
 		// extension's before_agent_start, which automatic continuations never emit.
 		// Sampling the same predicate here makes both routes compact at the same
@@ -9274,6 +9318,7 @@ export class AgentSession {
 				getPromptCacheSafeWaitSeconds: () => this.resolvePromptCacheSafeWaitSeconds(),
 				getPromptCacheGoalBackstopMaxSeconds: () => this.settingsManager.getPromptCacheGoalBackstopMaxSeconds(),
 				getPromptCacheKeepAliveSettings: () => this.settingsManager.getPromptCacheKeepAliveSettings(),
+				onUserActivity: (listener) => this._userActivity.subscribe(listener),
 				getLookAtSettings: () => {
 					const global = this.settingsManager.getGlobalSettings().lookAt;
 					const project = this.settingsManager.getProjectSettings().lookAt;
@@ -10576,9 +10621,7 @@ export class AgentSession {
 		// before the continuation so a rejected compaction never admits that model.
 		const model = this.model;
 		const compactionSettings = this._getCompactionSettings();
-		const contextTokens = estimateContextTokens(
-			filterContextExcludedMessages(this.sessionManager.buildSessionContext().messages),
-		).tokens;
+		const contextTokens = this._estimatePrePromptContextTokens();
 		if (
 			compactionSettings.enabled &&
 			model &&

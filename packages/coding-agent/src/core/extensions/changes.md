@@ -1,3 +1,61 @@
+## 2026-10-12 - Retire Codex app-server compatibility (senpi#3167)
+
+### What changed
+
+Remove app-server from the executable ExtensionMode contract. TUI, RPC, JSON and print remain supported.
+
+- `packages/coding-agent/src/core/extensions/types.ts`
+
+### Why
+
+The executable Codex compatibility layer is being removed. Shared Native runtime behavior and historical records must remain independent of that layer.
+
+### Why an extension could not handle it
+
+These host contracts, import paths and build or verification targets belong to the repository; an extension cannot retire them.
+
+### Expected merge conflict zones
+
+The listed paths, especially command dispatch, mode unions and process identity imports. Keep the supported runtime branches and the shared utility behavior.
+
+## 2026-10-11 - Typed missing extension RPC handler (senpi#3072 review)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/runner.ts`: missing registered RPC handlers throw `ExtensionRpcRequestNotFoundError` with the existing message. The transport distinguishes unavailable eval controls from unknown cell IDs without matching prose.
+
+### Why
+
+The session may deliberately load no codemode extension; clients need a typed unavailable response on both named controls and extension-request aliases.
+
+### Why an extension could not handle it
+
+A handler that was not loaded cannot return an error; the runner owns handler discovery.
+
+### Expected merge conflict zones
+
+- The zero-handler branch of `ExtensionRunner.requestRpc`.
+
+## 2026-10-11 - Host-authenticated user activity subscription (senpi#3140)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/user-activity.ts`: creates a session-owned activity source and distinguishes `"draft"` from `"prompt"`. A borrowed UI receiver without a session or its publisher method is a no-op.
+- `packages/coding-agent/src/core/extensions/types.ts`: adds optional subscription-only `onUserActivity` to the extension context and its host bindings.
+- `packages/coding-agent/src/core/extensions/runner.ts`: binds the host subscriber, tracks its disposal with the extension generation, and reports listener errors without throwing out of the input path.
+
+### Why
+
+- Cache prewarm needs to distinguish actual composer activity from session lifecycle and prompt admission, without importing TUI or RPC implementation classes.
+
+### Why an extension could not handle it
+
+- Only the host knows whether composer text came from a user edit or restoration and when a submitted prompt entered admission. An open event bus is not authoritative: extensions could forge activity on it.
+
+### Expected merge conflict zones
+
+- `types.ts`: context/action subscription signatures; `runner.ts`: context binding and construction; new activity-source module. No change to the typed lifecycle event union.
+
 ## 2026-10-11 - Request-local search exclusion and canonical fallback (senpi#3122 review)
 
 ### What changed
@@ -56,6 +114,24 @@
 ### Expected merge conflict zones
 
 - `packages/coding-agent/src/core/extensions/runner.ts`: `emitContext` delegation and `prepareProviderRequest` origin argument. `packages/coding-agent/src/core/extensions/types.ts`: the `ContextEvent` type re-export.
+
+## 2026-10-11 - Retired runners stand down when the first boundary preview fails (senpi#3101)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/runner.ts`: `emitBoundary` runs its first `buildContext` under the same lease check as every later step. A rejection after the runner retired returns the shared `retired()` result instead of propagating; an active runner still propagates it unchanged. `retired()` is defined before that first build and reports an empty preview when no build completed.
+
+### Why
+
+- A session replaced or reloaded while the initial boundary preview was being built made `emitBoundary` reject on a retired runner, so its callers could still surface a stale-context error, the symptom senpi#2785 removed from every other boundary path.
+
+### Why an extension could not handle it
+
+- The host dispatcher owns the runner lease and builds the preview before any handler runs. An extension cannot intercept that rejection before it reaches the session.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/extensions/runner.ts`: the start of `emitBoundary` (the initial preview build and the `retired()` helper).
 
 ## 2026-10-10 - Retired runners stop boundary dispatch (senpi#2785)
 

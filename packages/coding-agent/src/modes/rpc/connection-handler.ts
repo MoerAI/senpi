@@ -55,6 +55,7 @@ import type {
 	ExtensionWidgetOptions,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
+import { ExtensionRpcRequestNotFoundError } from "../../core/extensions/runner.ts";
 import { describeUsageLimitEntry, describeUsageLimitMessage } from "../../core/retry-fallback/usage-limit.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { DURABLE_CLIENT_MESSAGE_ID_CAPABILITY } from "./client-admission-record.ts";
@@ -67,12 +68,22 @@ import {
 	buildCustomUnsupportedRequest,
 	CONTINUE_FROM_LEAF_CAPABILITY,
 	DEFAULT_CUSTOM_EXTENSION_LABEL,
+	EVAL_CELLS_CAPABILITY,
 	EXTENSION_EVENTS_CAPABILITY,
 	MEDIA_PLACEHOLDERS_CAPABILITY,
 	QUESTION_CAPABILITY,
 	RETRY_FALLBACK_COMMAND_CAPABILITY,
 	SESSION_HELD_CAPABILITY,
 } from "./custom-capability.ts";
+import {
+	type EffectCommandContext,
+	runAbort,
+	runGetEffectStatus,
+	runSetModel,
+	runSetThinkingLevel,
+} from "./effect-commands.ts";
+import { EffectLedger } from "./effect-ledger.ts";
+import { EFFECT_LEDGER_CAPABILITY } from "./effect-record.ts";
 import { createRpcEventOutputBuffer } from "./event-output-buffer.ts";
 import { settleExtensionUiResponse } from "./extension-ui-response.ts";
 import { HostSessionControl } from "./host-session-control.ts";
@@ -102,8 +113,14 @@ import type {
 	RpcSessionReplacedEvent,
 	RpcSkillInvocationEvent,
 } from "./rpc-types.ts";
-import { RPC_ERROR_ENTRY_NOT_FOUND, RPC_ERROR_MEDIA_NOT_FOUND, RPC_ERROR_MODEL_NOT_FOUND } from "./rpc-types.ts";
-import { availableModelsData, interruptRunningTurn, unsupportedThinkingLevel } from "./session-control-actions-data.ts";
+import {
+	RPC_ERROR_ENTRY_NOT_FOUND,
+	RPC_ERROR_EVAL_CELL_NOT_FOUND,
+	RPC_ERROR_EVAL_CELLS_UNAVAILABLE,
+	RPC_ERROR_INVALID_EVAL_CELL_REQUEST,
+	RPC_ERROR_MEDIA_NOT_FOUND,
+} from "./rpc-types.ts";
+import { availableModelsData, interruptRunningTurn } from "./session-control-actions-data.ts";
 import { SessionExtensionUiRequests } from "./session-extension-ui-requests.ts";
 
 export { buildRpcSessionState } from "./rpc-session-state.ts";
@@ -303,6 +320,12 @@ export function createRpcConnectionHandler(
 	let rpcCommandsDigest: string | undefined;
 	let suppressLoadedSurfaceEvents = false;
 	const eventOutput = createRpcEventOutputBuffer(sink.writeRaw, options.eventFlushScheduler);
+
+	const effectContext = (): EffectCommandContext => ({
+		session,
+		by: { connectionId: options.clientInfo?.connectionId() ?? "local" },
+		...(routingSessionId === undefined ? {} : { sessionId: routingSessionId }),
+	});
 
 	const tagSessionRecord = <T extends object>(value: T): T | (T & { sessionId: string }) =>
 		routingSessionId === undefined ? value : { ...value, sessionId: routingSessionId };
@@ -855,6 +878,8 @@ export function createRpcConnectionHandler(
 				await waitForRpcBackpressure();
 			});
 		}
+		// Seals what a previous load left nonterminal before any command can read or replay it.
+		EffectLedger.forSession(session);
 		if (deferRefresh) {
 			// The subscription is already installed on the replaced session above, so
 			// the deferred refresh only needs its failure reported. Re-installing here
@@ -958,7 +983,9 @@ export function createRpcConnectionHandler(
 								AUTO_TITLE_SESSIONS_CAPABILITY,
 								MEDIA_PLACEHOLDERS_CAPABILITY,
 								DURABLE_CLIENT_MESSAGE_ID_CAPABILITY,
+								EFFECT_LEDGER_CAPABILITY,
 								CONTINUE_FROM_LEAF_CAPABILITY,
+								EVAL_CELLS_CAPABILITY,
 								...(options.retryFallbackCommand ? [RETRY_FALLBACK_COMMAND_CAPABILITY] : []),
 								// Client flags cannot advertise a host guard this classic binding does not run.
 								...(options.capabilities ?? []).filter((capability) => capability !== SESSION_HELD_CAPABILITY),
@@ -1032,16 +1059,23 @@ export function createRpcConnectionHandler(
 				return undefined;
 			}
 
-			case "abort": {
-				void session.abort().catch((cause: unknown) => {
-					// Abort is acknowledged once dispatched; report quiesce failures out of band.
-					outputEvent({ type: "rpc_error", error: String(cause) });
+			case "abort":
+				return runAbort(effectContext(), command, () => {
+					void session.abort().catch((cause: unknown) => {
+						// Abort is acknowledged once dispatched; report quiesce failures out of band.
+						outputEvent({ type: "rpc_error", error: String(cause) });
+					});
 				});
-				return success(id, "abort");
-			}
 
 			case "interrupt":
-				return success(id, "interrupt", await interruptRunningTurn(session, command.turnId, () => session.abort()));
+				return success(
+					id,
+					"interrupt",
+					await interruptRunningTurn(session, command.turnId, () => {
+						ClientAdmissions.forSession(session).noteAbort(effectContext().by);
+						return session.abort();
+					}),
+				);
 
 			case "abort_compaction": {
 				session.abortCompaction();
@@ -1112,24 +1146,15 @@ export function createRpcConnectionHandler(
 			case "get_state":
 				return success(id, "get_state", buildRpcSessionState(session, lastAbortSource));
 
+			case "get_effect_status":
+				return runGetEffectStatus(effectContext(), command);
+
 			// =================================================================
 			// Model
 			// =================================================================
 
-			case "set_model": {
-				const models = await session.modelRegistry.getAvailable();
-				const model = models.find((m) => m.provider === command.provider && m.id === command.modelId);
-				if (!model) {
-					return error(
-						id,
-						"set_model",
-						`Model not found: ${command.provider}/${command.modelId}`,
-						RPC_ERROR_MODEL_NOT_FOUND,
-					);
-				}
-				const systemPromptChange = await session.setModel(model, { source: "rpc" });
-				return success(id, "set_model", { ...model, systemPromptName: systemPromptChange?.systemPromptName });
-			}
+			case "set_model":
+				return runSetModel(effectContext(), command);
 
 			case "set_favorite_models":
 				session.setFavoriteModels(command.models);
@@ -1156,20 +1181,8 @@ export function createRpcConnectionHandler(
 			// Thinking
 			// =================================================================
 
-			case "set_thinking_level": {
-				if (command.scope === "turn") {
-					// Validate BEFORE mutating: the session clamps an unsupported level to a supported
-					// neighbour, so applying first would leave a REJECTED request's clamped level in
-					// place. A failed command must not change session state.
-					if (!session.getAvailableThinkingLevels().includes(command.level)) {
-						return error(id, "set_thinking_level", unsupportedThinkingLevel(command.level));
-					}
-					session.setSessionThinkingLevel(command.level);
-				} else {
-					session.setThinkingLevel(command.level);
-				}
-				return success(id, "set_thinking_level");
-			}
+			case "set_thinking_level":
+				return runSetThinkingLevel(effectContext(), command);
 
 			case "cycle_thinking_level": {
 				const level = session.cycleThinkingLevel();
@@ -1624,13 +1637,39 @@ export function createRpcConnectionHandler(
 				return success(id, "get_loaded_surfaces", inventory.data);
 			}
 
-			case "extension_request": {
-				const name = command.name.trim();
-				if (name.length === 0) {
-					return error(id, "extension_request", "Extension RPC request name cannot be empty");
+			case "extension_request":
+			case "eval_cells.list":
+			case "eval_cells.peek":
+			case "eval_cells.stop": {
+				const name = command.type === "extension_request" ? command.name.trim() : command.type;
+				if (name.length === 0) return error(id, command.type, "Extension RPC request name cannot be empty");
+				try {
+					const data = await session.extensionRunner.requestRpc(
+						name,
+						command.type === "extension_request" ? command.data : command,
+					);
+					return success(id, command.type, data);
+				} catch (cause) {
+					if (
+						cause instanceof ExtensionRpcRequestNotFoundError &&
+						(name === "eval_cells.list" || name === "eval_cells.peek" || name === "eval_cells.stop")
+					) {
+						return error(
+							id,
+							command.type,
+							"Eval cell controls are unavailable in this session",
+							RPC_ERROR_EVAL_CELLS_UNAVAILABLE,
+						);
+					}
+					if (
+						cause instanceof Error &&
+						"code" in cause &&
+						(cause.code === RPC_ERROR_EVAL_CELL_NOT_FOUND || cause.code === RPC_ERROR_INVALID_EVAL_CELL_REQUEST)
+					) {
+						return error(id, command.type, cause.message, cause.code);
+					}
+					throw cause;
 				}
-				const data = await session.extensionRunner.requestRpc(name, command.data);
-				return success(id, "extension_request", data);
 			}
 
 			// =================================================================

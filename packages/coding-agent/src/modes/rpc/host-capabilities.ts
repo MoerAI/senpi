@@ -8,7 +8,9 @@ import {
 	AUTO_TITLE_SESSIONS_CAPABILITY,
 	BROWSER_ENGINE_CAPABILITY,
 	CONTINUE_FROM_LEAF_CAPABILITY,
+	DETACH_CONNECTION_CAPABILITY,
 	DURABLE_SESSION_ID_CAPABILITY,
+	EVAL_CELLS_CAPABILITY,
 	MEDIA_PLACEHOLDERS_CAPABILITY,
 	MOVED_PATH_GUARD_CAPABILITY,
 	PROMPT_SURFACE_CAPABILITY,
@@ -20,6 +22,7 @@ import {
 	SESSION_KIND_CAPABILITY,
 	WARM_CAPABILITY,
 } from "./custom-capability.ts";
+import { EFFECT_LEDGER_CAPABILITY } from "./effect-record.ts";
 
 /**
  * The capabilities a multi-session host advertises in `get_protocol_info`, in their wire order. `warm` is added only
@@ -32,10 +35,13 @@ export function multiSessionHostCapabilities(options: {
 	return [
 		...new Set([
 			"multi_session",
+			"expected_host_instance",
 			AUTO_TITLE_SESSIONS_CAPABILITY,
 			MEDIA_PLACEHOLDERS_CAPABILITY,
 			DURABLE_CLIENT_MESSAGE_ID_CAPABILITY,
+			EFFECT_LEDGER_CAPABILITY,
 			CONTINUE_FROM_LEAF_CAPABILITY,
+			EVAL_CELLS_CAPABILITY,
 			// Both shared runtimes dispatch through the active session-writing holder guard.
 			SESSION_HELD_CAPABILITY,
 			// Host capabilities, not client opt-ins: only a multi-session host owns the
@@ -43,6 +49,8 @@ export function multiSessionHostCapabilities(options: {
 			// per-session launch profile `context`/`auto_title` travel on, and the session
 			// listing `kind` filters.
 			RETAIN_ON_DISCONNECT_CAPABILITY,
+			// Only a multi-session host tracks attachments per connection, so only it can drop them on request.
+			DETACH_CONNECTION_CAPABILITY,
 			SESSION_CONTEXT_CAPABILITY,
 			SESSION_KIND_CAPABILITY,
 			AUTO_TITLE_PER_SESSION_CAPABILITY,

@@ -1,3 +1,58 @@
+## 2026-10-12 - Explicit thinking saves own the startup default (senpi#3178)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `/thinking` Ctrl+S and the `/settings` thinking callback explicitly save the clamped session level through `setDefaultThinkingLevel`; ordinary cycle keys use model memory only. Explicit saves of `off` on non-reasoning models preserve the configured startup default, matching the prior guard.
+
+### Why
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: moving bookkeeping out of config must preserve explicit default-save controls.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: these built-in selectors own the save action.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `applyThinkingLevel` and `onThinkingLevelChange`.
+
+## 2026-10-12 - Short owned temp roots contain TUI socket fallbacks (Refs senpi#3064)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/session-control-registry.ts`: prefer the inherited temp root for the hashed fallback when its complete socket fits the existing 103-byte limit. Test launchers now guarantee that room; normal users with long system temp paths retain the original short `/tmp` fallback.
+
+### Why
+
+- `packages/coding-agent/src/modes/interactive/session-control-registry.ts`: deep quarantined agent paths pushed CI sockets into unowned system directories.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/session-control-registry.ts`: endpoint registration owns the socket path before an extension can connect.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/session-control-registry.ts`: fallback root selection and private-directory checks.
+
+## 2026-10-11 - Publish composer edits without counting restored drafts (senpi#3140)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/composer-user-activity.ts`: observes text changes made during editor input, excluding submit-time clearing and programmatic draft restoration. Submission wrappers preserve all callback arguments, including raw-text details. Programmatic extension input bypasses the observer.
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: connects default and extension-provided composers to the host activity source, publishes completed clipboard draft edits safely on borrowed receivers, and inserts extension `pasteToEditor` text without claiming terminal activity. Image paste distinguishes an actual attachment from a compaction drop; a handled drop never publishes draft activity or a second failure status.
+
+### Why
+
+- The first actual keystroke or paste should allow prewarm, but restoring a composer during resume, fork, or reload must not cause a provider call.
+
+### Why an extension could not handle it
+
+- The host owns editor input dispatch and clipboard completion. A generic extension only sees submitted `input` events, too late to warm while the user drafts.
+
+### Expected merge conflict zones
+
+- `interactive-mode.ts`: editor construction, custom editor callback wiring, and clipboard paste completion; new composer observer module.
+
 ## 2026-10-11 - Preserve explanations for zero-attempt retry failures (senpi#3131 delta)
 
 ### What changed
@@ -2673,3 +2728,24 @@ The assistant descriptor builder owns restored transcript rendering.
 ### Expected merge conflict zones
 
 The error descriptor branch and imports in `assistant-render-descriptors.ts`.
+
+## 2026-10-12 - Rainbow for reserved OmO keywords in the editor (senpi#3160)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/theme/theme.ts`
+- `packages/coding-agent/src/modes/interactive/grok/chrome.ts`
+
+`getEditorTheme()` and the Grok chrome editor theme set `keywordHighlight` from `getReservedKeywordHighlight()`, which builds the desktop composer's light/dark spectrum (fork-only `theme/reserved-keyword-rainbow.ts`) in the active colour mode and returns `undefined` under `NO_COLOR`.
+
+### Why
+
+Match the OmO desktop app's rainbow keyword cue in the TUI so `ulw`-style prompts read the same on both surfaces.
+
+### Why an extension could not handle it
+
+The editor theme is built by the interactive mode itself; extensions cannot inject an `EditorTheme` hook into the built-in editor.
+
+### Expected merge conflict zones
+
+- LOW: `getEditorTheme()` in `theme.ts` and the editor theme object in `GrokChrome`.

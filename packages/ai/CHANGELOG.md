@@ -6,19 +6,58 @@
 
 ### Added
 
+### Changed
+
+- The bundled model catalog is refreshed from models.dev and the providers' model listings (`github-copilot`, `google`, `google-vertex`, `meta`, `opencode`, `opencode-go`, `opengateway`, `openrouter`, `vercel-ai-gateway`).
+
+### Fixed
+
+- Anthropic's "Third-party apps now draw from your extra usage" rejection is classified as terminal account exhaustion with a plain explanation of the billing path, and the `anthropic` provider no longer offers a Claude subscription OAuth login; subscriptions use the Agent SDK lane ([#3259](https://github.com/code-yeongyu/senpi/issues/3259)).
+
+### Removed
+
+## [2026.10.13] - 2026-10-13
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- The advertised Claude Code fingerprint floor that Anthropic OAuth requests declare follows the bundled Claude Agent SDK to Claude Code 2.1.296 ([#3258](https://github.com/code-yeongyu/senpi/pull/3258)).
+- The bundled model catalog is refreshed from models.dev and the providers' model listings (`cloudflare-ai-gateway`, `meta`, `opengateway`, `openrouter`, `vercel-ai-gateway`) ([#3248](https://github.com/code-yeongyu/senpi/pull/3248)).
+
+### Fixed
+
+- Tool parameter schemas sent to OpenAI Chat Completions providers now always declare a root `type: "object"`, including when a root `anyOf`/`oneOf` union cannot be merged into a single object schema. DeepSeek's official API (and gateways that forward to it, such as OpenGateway's DeepSeek route) rejected such requests with `400 Invalid schema ... got 'type: null'` ([#3245](https://github.com/code-yeongyu/senpi/issues/3245)).
+
+### Removed
+
+## [2026.10.12] - 2026-10-12
+
+### Breaking Changes
+
+### Added
+
 - Assistant messages can carry a redaction-safe `errorCause` for usage limits, preserving account or model scope when the session replaces provider text with recovery advice ([#3131](https://github.com/code-yeongyu/senpi/issues/3131)).
 
 ### Changed
 
-- xAI catalogs select the documented Responses `web_search` shape without enabling search by default; routes require explicit `compat.supportsWebSearchPreview: true`. Gemini/Vertex models now support typed `compat.supportsWebSearch` opt-in ([#3122](https://github.com/code-yeongyu/senpi/issues/3122)).
+- The bundled model catalog is refreshed from models.dev and the providers' model listings (`openrouter`, `vercel-ai-gateway`).
+
+- ChatGPT subscription GPT-6.1 Sol, Fast and Ultrafast now default to a 500,000-token context budget, with compaction and context-usage accounting following that window ([#3150](https://github.com/code-yeongyu/senpi/issues/3150), requested by @code-yeongyu).
+
+- xAI catalogs select the documented Responses `web_search` shape without enabling search by default; routes require explicit `compat.supportsWebSearchPreview: true`. Google Vertex and AI Studio models now support typed `compat.supportsWebSearch` opt-in ([#3122](https://github.com/code-yeongyu/senpi/issues/3122)).
 
 ### Fixed
+
+- An Anthropic session no longer wedges once a replayed native web search result expires. A request rejected with `400 Invalid \`encrypted_content\` in \`search_result\` block` is retried with the expired search turned into text (query, result titles and URLs), newer search results keep replaying unchanged, and the session remembers the demotion ([#3201](https://github.com/code-yeongyu/senpi/issues/3201)).
 
 - The shared provider-failure formatter explains account-wide usage limits with the provider, reset hint, and model-switch recovery instead of raw 429 JSON ([#3131](https://github.com/code-yeongyu/senpi/issues/3131)).
 
 - Responses search declarations honor endpoint compatibility, and completed/failed `web_search_call` items replay only on the same provider/API/model. Opted-in GLM coding-plan Anthropic requests now preserve paired native `tool_result` blocks during replay as well as displaying them in the response; a zero server-search usage counter does not hide those blocks ([#3122](https://github.com/code-yeongyu/senpi/issues/3122)).
 
-- Fixed Gemini 3+ (Vertex and AI Studio) rejecting replayed tool-call history with 400 "Function call is missing a thought_signature in functionCall parts". When an assistant step in the current turn lacks a usable thought signature on its first tool call, calls and paired results replay as text with inline image support; earlier turns and steps with a valid first signature retain structured replay. The current turn ends at the last user message carrying content, an image-only user turn included.
+- Fixed Gemini 3+ (Vertex and AI Studio) rejecting replayed tool-call history with 400 "Function call is missing a thought_signature in functionCall parts". When an assistant step in the current turn lacks a usable thought signature on its first tool call, calls and paired results replay as text with inline image support; earlier turns and steps with a valid first signature retain structured replay. The current turn ends at the last user message carrying content, an image-only user turn included ([#3055](https://github.com/code-yeongyu/senpi/pull/3055)). Thanks to @Bearmancer.
 
 ### Removed
 
