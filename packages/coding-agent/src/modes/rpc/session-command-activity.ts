@@ -3,6 +3,7 @@ import type { RpcCommand } from "./rpc-types.ts";
 /** Whether the command itself refreshes activity, apart from attached-client keepalives. */
 const observations: ReadonlySet<string> = new Set([
 	"get_state",
+	"get_effect_status",
 	"get_messages",
 	"get_entries",
 	"get_tree",
@@ -20,6 +21,8 @@ const observations: ReadonlySet<string> = new Set([
 	"get_auth_providers",
 	"get_provider_accounts",
 	"memory_report",
+	"eval_cells.list",
+	"eval_cells.peek",
 ] satisfies readonly RpcCommand["type"][]);
 
 export function refreshesSessionActivity(command: string): boolean {

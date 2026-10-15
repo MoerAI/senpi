@@ -10,6 +10,64 @@
 
 ### Fixed
 
+### Removed
+
+## [2026.10.15] - 2026-10-15
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- `display()` of a large object, such as a screenshot result that wraps a multi-MB Buffer, no longer writes megabytes into the session file or breaks the session render. The stored copy is trimmed inside the value instead of dropped: every top-level key is kept, Buffers become a `<Buffer N MB>` summary, long strings, arrays and keys keep a prefix with a visible marker, and the entry stays within the display budget, emoji included. Older sessions holding such entries render a short summary, and an object whose `buffer` holds image bytes now displays as the image with its metadata ([#3320](https://github.com/code-yeongyu/senpi/pull/3320)).
+
+### Removed
+
+## [2026.10.13] - 2026-10-13
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Large JavaScript `eval` data cells no longer stall the shared RPC host on unnecessary import parsing. Cells without possible import syntax skip Babel, and the whole-AST walk runs only when a dynamic import is possible. The dynamic-import check stays linear on comment-heavy data; imports with comments or non-ASCII bindings still rewrite correctly ([#3206](https://github.com/code-yeongyu/senpi/pull/3206)).
+
+### Removed
+
+## [2026.10.12] - 2026-10-12
+
+### Breaking Changes
+
+### Added
+
+- Session-owned eval cell RPC handlers share the eval tool's manager, bound output tails, return typed unknown-cell failures and confirmed stop snapshots, and preserve ordinary detached completion notifications ([#3072](https://github.com/code-yeongyu/senpi/issues/3072)).
+
+### Changed
+
+- The eval tool's stop action also cancels listed running foreground cells, returning their terminal outcome. Concurrent stops await the same interrupt and confirm whether kernel state survived ([#3072](https://github.com/code-yeongyu/senpi/issues/3072)).
+
+### Fixed
+
+- Pip installs preserve successful results, typed install errors and cancellation when scratch cleanup fails. Cleanup retries before reporting exhausted retries as a warning ([#3103](https://github.com/code-yeongyu/senpi/pull/3103)).
+
+### Removed
+
+## [2026.10.11] - 2026-10-11
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+### Fixed
+
 - Julia loads handle helpers at first use and installs globals sizing declarations only when a globals diagnostic is requested, reducing fresh-kernel CPU work. This is a partial fix; the remaining startup regression is tracked separately (Refs [#3048](https://github.com/code-yeongyu/senpi/issues/3048)).
 
 ### Removed

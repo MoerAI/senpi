@@ -80,6 +80,7 @@ import {
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import { formatNoModelsAvailableMessage } from "../../core/auth-guidance.ts";
 import { isApiKeyLoginProvider } from "../../core/auth-providers.ts";
+import { markModeCrashHandler } from "../../core/bootstrap-crash-listeners.ts";
 import { envValue } from "../../core/brand.ts";
 import {
 	CACHE_TTL_MS,
@@ -110,6 +111,7 @@ import type {
 } from "../../core/extensions/index.ts";
 import { buildNoticeBox, type NoticeLine, type NoticeSpec } from "../../core/extensions/notice/index.ts";
 import type { QuestionRequest, QuestionResponse, SystemPromptChangeEvent } from "../../core/extensions/types.ts";
+import { emitUserActivity } from "../../core/extensions/user-activity.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { sessionHolderWarning } from "../../core/foreign-session-holders.ts";
 import { appendUncaughtCrashLog, appendUnhandledRejectionLog } from "../../core/hidden-stdout-log.ts";
@@ -137,6 +139,7 @@ import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from
 import type { FullscreenExitOutput, QuietStartup, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import { containStaleExtensionError } from "../../core/stale-extension-containment.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import { formatThinkingClampWarning } from "../../core/thinking-levels.ts";
 import { formatTimings, resetTimings, time } from "../../core/timings.ts";
@@ -239,6 +242,7 @@ import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
+import { insertProgrammaticComposerInput, observeComposerActivity } from "./composer-user-activity.ts";
 import { expandEditorSubmission, expandSubmittedText, transferEditorContent } from "./editor-paste-transfer.ts";
 import { formatExtensionErrorHeadline, sanitizeTuiErrorMessage } from "./extension-error-format.ts";
 import { editFileInExternalEditor, editInExternalEditor } from "./external-editor.ts";
@@ -790,7 +794,7 @@ interface ClipboardImageDeps {
 
 /**
  * Attach a clipboard bitmap as an in-memory image behind an atomic
- * `[Image #N]` marker. Returns false when nothing was attached, so the caller
+ * `[Image #N]` marker. Returns false when the paste was unhandled, so the caller
  * falls through to the plain-text clipboard path.
  *
  * The bytes deliberately never touch the filesystem: writing a temp file and
@@ -801,7 +805,7 @@ interface ClipboardImageDeps {
 async function attachClipboardImage(
 	deps: ClipboardImageDeps,
 	image: { bytes: Uint8Array; mimeType: string },
-): Promise<boolean> {
+): Promise<"attached" | "dropped" | false> {
 	if (deps.settings.getBlockImages()) {
 		// Pinned behavior: nothing is attached and nothing is inserted, but the
 		// paste is never a silent no-op - the user must learn why their screenshot
@@ -819,12 +823,12 @@ async function attachClipboardImage(
 	if (deps.isCompacting()) {
 		// The compaction queue carries text only; an attachment queued behind
 		// compaction would be silently lost at delivery, so drop it here with a
-		// visible status. Consume the paste (true) - the clipboard holds a
+		// visible status. Consume the paste as dropped - the clipboard holds a
 		// bitmap, so the plain-text fallback has nothing useful to insert.
 		deps.showStatus(
 			"Image paste dropped: messages sent during compaction cannot carry images - paste again after compaction finishes",
 		);
-		return true;
+		return "dropped";
 	}
 
 	const processed = await processImage(image.bytes, image.mimeType, {
@@ -848,7 +852,7 @@ async function attachClipboardImage(
 		mimeType: processed.mimeType,
 	});
 	deps.requestRender();
-	return true;
+	return "attached";
 }
 
 /**
@@ -1235,6 +1239,7 @@ export class InteractiveMode {
 			});
 		}
 		this.editor = this.defaultEditor;
+		observeComposerActivity(this.defaultEditor, () => emitUserActivity(this.session, "draft"));
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as Component);
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
@@ -3665,7 +3670,7 @@ export class InteractiveMode {
 				this.applyTerminalTitle();
 			},
 			custom: (factory, options) => this.showExtensionCustom(factory, options),
-			pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
+			pasteToEditor: (text) => insertProgrammaticComposerInput(this.editor, `\x1b[200~${text}\x1b[201~`),
 			setEditorText: (text) => this.editor.setText(text),
 			getEditorText: () => this.getExpandedEditorText(),
 			editor: (title, prefill) =>
@@ -4307,6 +4312,7 @@ export class InteractiveMode {
 				this.defaultEditor.onSubmit?.(expandSubmittedText(newEditor, text));
 			};
 			newEditor.onChange = this.defaultEditor.onChange;
+			observeComposerActivity(newEditor, () => emitUserActivity(this.session, "draft"));
 
 			// Copy text (and any collapsed paste/image markers) from previous editor.
 			// Image payloads live on this instance, so they must be dropped when the
@@ -4650,6 +4656,7 @@ export class InteractiveMode {
 				const leadingSpace = characterBeforeCursor && !/\s/.test(characterBeforeCursor) ? " " : "";
 				const trailingSpace = characterAfterCursor && !/\s/.test(characterAfterCursor) ? " " : "";
 				this.editor.insertTextAtCursor?.(`${leadingSpace}${paths}${trailingSpace}`);
+				emitUserActivity(this.session, "draft");
 				this.ui.requestRender();
 				return;
 			}
@@ -4668,11 +4675,15 @@ export class InteractiveMode {
 					},
 					image,
 				));
-			if (attached) return;
+			if (attached) {
+				if (attached === "attached") emitUserActivity(this.session, "draft");
+				return;
+			}
 
 			const text = await readClipboardText();
 			if (text) {
 				this.editor.insertTextAtCursor?.(text);
+				emitUserActivity(this.session, "draft");
 				this.ui.requestRender();
 			}
 		} catch (error) {
@@ -6717,6 +6728,7 @@ export class InteractiveMode {
 			this.showWarning(INSPECTOR_VM_IMPORT_WARNING);
 			return;
 		}
+		if (containStaleExtensionError(error, origin)) return;
 		this.isShuttingDown = true;
 		try {
 			this.unregisterSignalHandlers();
@@ -6830,9 +6842,11 @@ export class InteractiveMode {
 		// in pi) leaves the terminal in raw mode with no cursor.
 		const uncaughtExceptionHandler = (error: Error, origin: "uncaughtException" | "unhandledRejection") =>
 			this.uncaughtCrash(error, origin);
+		markModeCrashHandler(uncaughtExceptionHandler);
 		process.prependListener("uncaughtException", uncaughtExceptionHandler);
 		this.signalCleanupHandlers.push(() => process.off("uncaughtException", uncaughtExceptionHandler));
 		const unhandledRejectionHandler = (reason: unknown) => this.unhandledRejection(reason);
+		markModeCrashHandler(unhandledRejectionHandler);
 		process.prependListener("unhandledRejection", unhandledRejectionHandler);
 		this.signalCleanupHandlers.push(() => process.off("unhandledRejection", unhandledRejectionHandler));
 
@@ -7740,6 +7754,9 @@ export class InteractiveMode {
 					},
 					onThinkingLevelChange: (level) => {
 						this.session.setThinkingLevel(level);
+						if (this.session.thinkingLevel !== "off" || this.session.supportsThinking()) {
+							this.settingsManager.setDefaultThinkingLevel(this.session.thinkingLevel);
+						}
 						this.footer.invalidate();
 						this.updateEditorBorderColor();
 					},
@@ -7945,8 +7962,12 @@ export class InteractiveMode {
 	 * reaches exactly the members the switch uses.
 	 */
 	private static applyThinkingLevel(mode: InteractiveMode, level: ThinkingLevel, persist: boolean): void {
-		if (persist) mode.session.setThinkingLevel(level);
-		else mode.session.setSessionThinkingLevel(level);
+		if (persist) {
+			mode.session.setThinkingLevel(level);
+			if (mode.session.thinkingLevel !== "off" || mode.session.supportsThinking()) {
+				mode.settingsManager.setDefaultThinkingLevel(mode.session.thinkingLevel);
+			}
+		} else mode.session.setSessionThinkingLevel(level);
 		mode.footer.invalidate();
 		mode.updateEditorBorderColor();
 		mode.showStatus(persist ? `Default thinking level: ${level}` : `Thinking level: ${level}`);

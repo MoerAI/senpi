@@ -1,3 +1,199 @@
+## 2026-10-15 - pi.getPermissionPreset() (#3301, senpi#2465)
+
+### What changed
+
+`ExtensionAPI.getPermissionPreset(): PermissionPresetName | undefined` returns the preset the permission system enforces for this session now. The loader resolves it through the session's own `sessionManager` from `builtin/permission-system/preset-registry.ts`; before the host binds the runtime there is no session and it returns `undefined`.
+
+- `packages/coding-agent/src/core/extensions/types.ts`: `ExtensionAPI.getPermissionPreset()` declared beside `getFlag`.
+- `packages/coding-agent/src/core/extensions/loader.ts`: `getPermissionPreset()` reads the bound session's preset from the permission-system registry.
+
+### Why
+
+Clients (the desktop's Full-access UI) must show the preset actually enforced, including a settings-only Full access and the `full-access` default, not just the flag.
+
+### Why an extension could not handle it
+
+The value lives inside the permission-system builtin, and another extension can only reach it through the public `pi` object. Adding a member to `ExtensionAPI` that every loaded extension's `pi` carries is the loader's job; no extension can extend another extension's API object.
+
+### Expected merge conflict zones
+
+`types.ts` (the Flags block of `ExtensionAPI`) and `loader.ts` (beside `getFlag`).
+
+## 2026-10-15 - The stale guard throws a branded StaleExtensionContextError (senpi#3389)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/runner.ts` and `packages/coding-agent/src/core/extensions/loader.ts`: `assertActive` throws `StaleExtensionContextError` (fork-only `stale-context-error.ts`, a plain `Error` subclass with the same message) instead of `Error`. `isStaleExtensionContextError` accepts the class first and still matches the two messages.
+
+### Why
+
+- Process-level containment of a retired ctx (senpi#3389) must match the guard exactly, not by message text another error could carry.
+
+### Why an extension could not handle it
+
+- The guard is the runner and loader themselves.
+
+### Expected merge conflict zones
+
+- LOW: the `throw` in each `assertActive` and one import line per file.
+
+## 2026-10-14 - `pi.appendEntry` takes `{ startupBookkeeping }` (senpi#3263)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/types.ts`: `ExtensionAPI.appendEntry` and `AppendEntryHandler` take an optional third argument, `AppendEntryOptions` with `startupBookkeeping?: boolean`. Existing two-argument calls are unchanged.
+- `packages/coding-agent/src/core/extensions/loader.ts`: the extension API wrapper forwards the options argument to the runtime action.
+
+### Why
+
+- `packages/coding-agent/src/core/extensions/types.ts`: a session closed without a conversation should leave no file, but only the extension that wrote a `custom` entry knows whether it is disposable startup bookkeeping or user-created or billed state (senpi#3263). The default stays "keep the file".
+- `packages/coding-agent/src/core/extensions/loader.ts`: the option has to cross the loader's API wrapper to reach the session.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/extensions/types.ts`: the `pi.appendEntry` signature is the public extension contract itself.
+- `packages/coding-agent/src/core/extensions/loader.ts`: the API wrapper that every extension calls is built by the loader.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/extensions/types.ts`: LOW, the `appendEntry` declaration in `ExtensionAPI` and the `AppendEntryHandler` type.
+- `packages/coding-agent/src/core/extensions/loader.ts`: LOW, the `appendEntry` wrapper and the `./types.ts` import list.
+
+## 2026-10-12 - Retire Codex app-server compatibility (senpi#3167)
+
+### What changed
+
+Remove app-server from the executable ExtensionMode contract. TUI, RPC, JSON and print remain supported.
+
+- `packages/coding-agent/src/core/extensions/types.ts`
+
+### Why
+
+The executable Codex compatibility layer is being removed. Shared Native runtime behavior and historical records must remain independent of that layer.
+
+### Why an extension could not handle it
+
+These host contracts, import paths and build or verification targets belong to the repository; an extension cannot retire them.
+
+### Expected merge conflict zones
+
+The listed paths, especially command dispatch, mode unions and process identity imports. Keep the supported runtime branches and the shared utility behavior.
+
+## 2026-10-11 - Typed missing extension RPC handler (senpi#3072 review)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/runner.ts`: missing registered RPC handlers throw `ExtensionRpcRequestNotFoundError` with the existing message. The transport distinguishes unavailable eval controls from unknown cell IDs without matching prose.
+
+### Why
+
+The session may deliberately load no codemode extension; clients need a typed unavailable response on both named controls and extension-request aliases.
+
+### Why an extension could not handle it
+
+A handler that was not loaded cannot return an error; the runner owns handler discovery.
+
+### Expected merge conflict zones
+
+- The zero-handler branch of `ExtensionRunner.requestRpc`.
+
+## 2026-10-11 - Host-authenticated user activity subscription (senpi#3140)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/user-activity.ts`: creates a session-owned activity source and distinguishes `"draft"` from `"prompt"`. A borrowed UI receiver without a session or its publisher method is a no-op.
+- `packages/coding-agent/src/core/extensions/types.ts`: adds optional subscription-only `onUserActivity` to the extension context and its host bindings.
+- `packages/coding-agent/src/core/extensions/runner.ts`: binds the host subscriber, tracks its disposal with the extension generation, and reports listener errors without throwing out of the input path.
+
+### Why
+
+- Cache prewarm needs to distinguish actual composer activity from session lifecycle and prompt admission, without importing TUI or RPC implementation classes.
+
+### Why an extension could not handle it
+
+- Only the host knows whether composer text came from a user edit or restoration and when a submitted prompt entered admission. An open event bus is not authoritative: extensions could forge activity on it.
+
+### Expected merge conflict zones
+
+- `types.ts`: context/action subscription signatures; `runner.ts`: context binding and construction; new activity-source module. No change to the typed lifecycle event union.
+
+## 2026-10-11 - Request-local search exclusion and canonical fallback (senpi#3122 review)
+
+### What changed
+
+- `runner.ts` / `types.ts`: request projections disable search by default; optional `allowServerSearch` preserves the keepalive prefix.
+- Native Messages/Responses injectors consult session/model failure memory before stripping function declarations and use the effective request model. All unverified routes require explicit opt-in; the live-verified ChatGPT subscription remains default-on.
+- `builtin/server-search-fallback.ts` owns non-serialized request metadata and a weakly session-owned failed-model set, preserving adapter-built schemas on fallback.
+
+### Why
+
+- Fallback must not rebuild raw parameter schemas or retry an already rejected native tool on every new prompt.
+
+### Why an extension could not handle it
+
+- The existing native and standalone extensions share the request boundary and session identity.
+
+### Expected merge conflict zones
+
+- Request preparation, native capability predicates, and fallback metadata.
+
+## 2026-10-11 - Native server web search first (senpi#3122)
+
+### What changed
+
+- `builtin/openai-web-search/index.ts` handles first-party Codex Responses as well as API-key Responses, chooses the current `web_search` type for Codex/xAI, and preserves the explicit capability opt-in for compatible routes.
+- `builtin/anthropic-web-search/index.ts` documents the exact search-and-encrypted-replay meaning of `supportsWebSearch`, with ccapi's verified contract requiring an explicit model/provider flag.
+- `builtin/websearch/` owns one bounded standalone continuation after search-specific errors and additional provider-native shapes; see its local ledger.
+
+### Why
+
+- Requested by @code-yeongyu: use the session model's in-turn server tool before any auxiliary search-model request.
+
+### Why an extension could not handle it
+
+- This is the coordinated behavior of the existing built-in search extensions, using existing provider-request and settled-agent hooks without changing the extension API.
+
+### Expected merge conflict zones
+
+- The native injector capability predicates and the standalone extension's event registrations.
+
+## 2026-10-10 - Identify prepared context projections (senpi#900)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/runner.ts` labels context events from `prepareProviderRequest` as projections; normal agent dispatch is labeled separately. The unchanged two-phase transformation, cloning, snapshot, and system-message restoration logic now lives in `packages/coding-agent/src/core/extensions/context-dispatch.ts`.
+- `packages/coding-agent/src/core/extensions/types.ts` re-exports `ContextEvent` from `packages/coding-agent/src/core/extensions/context-event.ts` with an optional read-only `source` marker. `packages/coding-agent/docs/extensions.md` documents its ownership meaning.
+
+### Why
+
+- A real agent request can reach the context hook before its current user message reaches the session journal. Comparing those lists misclassifies the live request; a prepared projection can also exactly match the journal.
+
+### Why an extension could not handle it
+
+- Only the host dispatcher knows whether it is preparing a separate projection or handling the agent's request. The compaction extension uses that provenance to keep projections on scratch state.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/extensions/runner.ts`: `emitContext` delegation and `prepareProviderRequest` origin argument. `packages/coding-agent/src/core/extensions/types.ts`: the `ContextEvent` type re-export.
+
+## 2026-10-11 - Retired runners stand down when the first boundary preview fails (senpi#3101)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/runner.ts`: `emitBoundary` runs its first `buildContext` under the same lease check as every later step. A rejection after the runner retired returns the shared `retired()` result instead of propagating; an active runner still propagates it unchanged. `retired()` is defined before that first build and reports an empty preview when no build completed.
+
+### Why
+
+- A session replaced or reloaded while the initial boundary preview was being built made `emitBoundary` reject on a retired runner, so its callers could still surface a stale-context error, the symptom senpi#2785 removed from every other boundary path.
+
+### Why an extension could not handle it
+
+- The host dispatcher owns the runner lease and builds the preview before any handler runs. An extension cannot intercept that rejection before it reaches the session.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/extensions/runner.ts`: the start of `emitBoundary` (the initial preview build and the `retired()` helper).
+
 ## 2026-10-10 - Retired runners stop boundary dispatch (senpi#2785)
 
 ### What changed
@@ -3250,3 +3446,21 @@ The dialog options type is the public extension API that every UI context receiv
 ### Expected merge conflict zones
 
 The `ExtensionUIDialogOptions` interface in `types.ts`.
+## 2026-10-11 - Share usable compaction model selection (senpi#3131)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/types.ts`: optional `getCompactionModel` resolves the session's usable summary model.
+- `packages/coding-agent/src/core/extensions/runner.ts`: forwards that callback with the existing active-runner lease checks.
+
+### Why
+
+Builtin summarization must obey the same spent-account state and held-switch target as core compaction.
+
+### Why an extension could not handle it
+
+Only the session owns account suppression and pending model selection.
+
+### Expected merge conflict zones
+
+The compaction context/action declarations in `types.ts` and callback storage, binding, and context construction in `runner.ts`.

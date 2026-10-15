@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
+import { applyDatedListPrice } from "./dated-list-prices.ts";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { getBaiModels } from "./generate-models-bai.ts";
@@ -35,9 +36,11 @@ import type {
 import {
 	assertExactModelIds,
 	createModelDataManifest,
+	type ModelDataManifest,
 	type ModelDataStructure,
 	MODEL_DATA_MANIFEST_FILE,
 	readModelDataProviderIds,
+	stableGeneratedAt,
 	readModelDataStructure,
 	validateGeneratedModelData,
 	validateModelDataDirectory,
@@ -498,6 +501,8 @@ const OPENAI_MAX_CONTEXT_INPUT_CAP = 922000;
 // same 1,050,000 window and 922,000 input cap); GPT-6 Luna ships the full 922,000 input cap.
 const GPT_6_ASTRA_DEFAULT_CONTEXT_WINDOW = 600000;
 const GPT_6_SOL_DEFAULT_CONTEXT_WINDOW = 400000;
+// Live Codex catalog, 2026-10-12T00:15Z: subscription default only; API budgets stay unchanged (#3150).
+const CHATGPT_SUBSCRIPTION_GPT_61_SOL_CONTEXT_WINDOW = 500000;
 const GPT_6_LUNA_DEFAULT_CONTEXT_WINDOW = OPENAI_MAX_CONTEXT_INPUT_CAP;
 const OPENAI_FLAGSHIP_DEFAULT_CONTEXT_WINDOWS: ReadonlyMap<string, number> = new Map([
 	["gpt-5.6-sol", 650000],
@@ -1289,6 +1294,10 @@ function applyOpenAIConfigurationUpdateMetadata(model: Model<Api>): void {
 // first-party OpenAI catalogs carry the input cap, so the effective Astra budget
 // changed with the provider that routed the request.
 function applyGpt6ContextWindow(model: Model<Api>): void {
+	if (model.provider === "chatgpt-subscription" && model.id === "gpt-6.1-sol") {
+		model.contextWindow = CHATGPT_SUBSCRIPTION_GPT_61_SOL_CONTEXT_WINDOW;
+		return;
+	}
 	const contextWindow = gpt6FamilyDefaultContextWindow(model.id);
 	if (contextWindow === undefined) return;
 	model.contextWindow = contextWindow;
@@ -2700,7 +2709,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		// - null/undefined/@ai-sdk/openai-compatible → openai-completions
 		const opencodeVariants = [
 			{ key: "opencode", provider: "opencode", basePath: "https://opencode.ai/zen" },
-			{ key: "opencode-go", provider: "opencode-go", basePath: "https://opencode.ai/zen/go" },
+			// Go's documented base (https://opencode.ai/docs/go/). The legacy /zen/go keeps the OpenAI and
+			// Anthropic wires but has no native generate-content route (404), senpi#3377.
+			{ key: "opencode-go", provider: "opencode-go", basePath: "https://opencode.ai/inference/go" },
 		] as const;
 
 		for (const variant of opencodeVariants) {
@@ -3994,7 +4005,11 @@ async function generateModels() {
 			candidate.id.includes("deepseek-v4") &&
 			!QWEN_TOKEN_PLAN_PROVIDER_IDS.has(candidate.provider)
 		) {
-			const preservesNativeReasoningEffort = candidate.provider === "openrouter" || candidate.provider === "opencode";
+			// Venice's request schema is additionalProperties:false and has no `thinking` field, so
+			// DeepSeek's native `thinking: { type }` object 400s every request there (senpi#3308); its
+			// deepseek models take thinking through `reasoning_effort` like OpenRouter and OpenCode.
+			const preservesNativeReasoningEffort =
+				candidate.provider === "openrouter" || candidate.provider === "opencode" || candidate.provider === "venice";
 			candidate.compat = {
 				...candidate.compat,
 				...(preservesNativeReasoningEffort
@@ -4022,7 +4037,8 @@ async function generateModels() {
 	// OpenAI Codex (ChatGPT OAuth) models
 	// NOTE: These are not fetched from models.dev; we keep a small, explicit list to avoid aliases.
 	// Older model limits are based on observed server behavior. GPT-5.6 Luna and Terra follow Codex's 272k
-	// catalog limit (formerly 372k); Sol defaults to 400k. GPT-6 Astra is stamped with the fork's series
+	// catalog limit (formerly 372k); 6.1 Sol defaults to the live Codex catalog's 500k in the final pass.
+	// GPT-6 Sol keeps 400k. GPT-6 Astra is stamped with the fork's series
 	// default by applyGpt6AstraContextWindow in the final metadata pass.
 	const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 	const CODEX_CONTEXT = 272000;
@@ -4076,7 +4092,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: withOpenAiLongContextPricing(OPENAI_GPT_6_STANDARD_COSTS["gpt-6.1-sol"]),
-			contextWindow: GPT_6_SOL_DEFAULT_CONTEXT_WINDOW,
+			contextWindow: CHATGPT_SUBSCRIPTION_GPT_61_SOL_CONTEXT_WINDOW,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
@@ -4258,6 +4274,7 @@ async function generateModels() {
 		applyBaiReasoningConsistency(model);
 		applyPromptCacheMetadata(model);
 		applyImageInputMetadata(model);
+		applyDatedListPrice(model);
 	}
 	applyAnthropicAllowedFallbackModelMetadata(allModels.filter(isAnthropicFallbackMetadataModel));
 
@@ -4425,9 +4442,25 @@ async function generateModels() {
 				fileContents[filename] = content;
 				writeFileSync(join(stagedDataDir, filename), content);
 			}
+
+			// Idempotent timestamp: when the regenerated content (the whole manifest except generatedAt)
+			// equals the committed catalog, keep its generatedAt so a content-unchanged regeneration is
+			// byte-identical and the drift check stays green. An explicit --generatedAt always wins.
+			let stableTs = generatedAt;
+			if (generatorOptions.generatedAt === undefined) {
+				const newManifest = createModelDataManifest(modelDataStructure, fileContents, generatedAt);
+				try {
+					const committedManifestPath = join(packageRoot, "src/providers/data", MODEL_DATA_MANIFEST_FILE);
+					const committedManifest = JSON.parse(readFileSync(committedManifestPath, "utf8")) as ModelDataManifest;
+					stableTs = stableGeneratedAt(newManifest, committedManifest);
+				} catch (error) {
+					// No committed manifest yet, or it is corrupt: fall back to the fresh timestamp.
+					console.warn(`generate-models: no readable committed manifest (${error instanceof Error ? error.message : String(error)}); using the fresh timestamp.`);
+				}
+			}
 			writeJson(
 				join(stagedDataDir, MODEL_DATA_MANIFEST_FILE),
-				createModelDataManifest(modelDataStructure, fileContents, generatedAt),
+				createModelDataManifest(modelDataStructure, fileContents, stableTs),
 			);
 			validateModelDataDirectory(modelDataStructure, stagedDataDir);
 

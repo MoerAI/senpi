@@ -15,6 +15,7 @@ export {
 	VERSION,
 } from "./config.ts";
 export {
+	type AgentAbortCause,
 	AgentSession,
 	type AgentSessionConfig,
 	type AgentSessionEvent,
@@ -301,6 +302,13 @@ export {
 	readOwnFootprint,
 	readProcessFootprint,
 } from "./core/process-footprint.ts";
+export {
+	findReservedKeywordRuns,
+	findReservedKeywordSpans,
+	type ReservedKeyword,
+	type ReservedKeywordRun,
+	type ReservedKeywordSpan,
+} from "./core/reserved-keywords.ts";
 export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
 // SDK for programmatic usage
@@ -536,6 +544,8 @@ export {
 	RpcClientOpenInFlightError,
 	type RpcClientOptions,
 	type RpcCommand,
+	type RpcEvalCell,
+	type RpcEvalCellSnapshot,
 	type RpcEventListener,
 	type RpcExtensionEvent,
 	type RpcExtensionUIRequest,

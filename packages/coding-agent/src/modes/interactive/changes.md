@@ -1,3 +1,133 @@
+## 2026-10-15 - A retired extension ctx never exits the session (senpi#3389)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `uncaughtCrash` returns early when the error is the runner's stale-ctx guard (`containStaleExtensionError` from the new fork-only `core/stale-extension-containment.ts`). The full stack goes to the debug log, and the session keeps running. Every other uncaught throw still stops the UI and exits 1. Its two crash handlers are registered with `markModeCrashHandler`, so the bootstrap listeners in `cli-main.ts` defer to them.
+
+### Why
+
+- An extension that kept a ctx past an automatic session replacement or reload and used it from a timer threw the stale guard synchronously, and the TUI exited mid-task with "exiting due to uncaughtException: ... extension ctx is stale ..." (oh-my-openagent#7114, a 5.1.33 user report). The guard throws before the retired generation's operation runs, so ending the live session added nothing but the crash. Regression: `test/suite/regressions/stale-extension-ctx-never-exits.test.ts`.
+
+### Why an extension could not handle it
+
+- The process-level crash handler belongs to interactive mode. Each extension can only guard its own callbacks (#2549, #2551, #1129), so one that misses the pattern still ended every session.
+
+### Expected merge conflict zones
+
+- LOW: the early returns at the top of `uncaughtCrash`; the `markModeCrashHandler` calls beside the two `prependListener` calls; the hidden-stdout-log import block.
+
+## 2026-10-15 - The handoff block folds into one muted line in the transcript (senpi#3323)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/handoff-fold.ts` (new): `splitHandoffBlocks` folds only a paragraph (outside code fences) whose labels are exactly the prompt templates' sequence: `Ask:` [`wanted:`] `For you:` `Now:` `Next:` with nothing before `Ask:`, or an outcome sentence followed by exactly `You need:` `Now:` `Next:` (GPT presets). Prose that merely uses those words stays text. The kept answer is the `For you` slot, or the GPT outcome followed by its `You need` slot, so the result sentence is never folded away. A block still streaming renders raw until its `Next:` arrives, then folds.
+- `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts`: a block renders as one dim `▸ Handoff · Now: … · Next: …` line (`handoff-line`) followed by its answer as ordinary text; open, it renders `▾ Handoff` and the block as written, dimmed (`handoff-body`).
+- `packages/coding-agent/src/modes/interactive/components/assistant-message.ts`: the fold follows Ctrl+O (`app.tools.expand`, which already toggles assistant output); a left click on the line or the open body toggles that block alone, like a thinking run. The line is cut to the width, never wrapped.
+
+### Why
+
+- A reader hunting for the answer had to read past Ask / wanted / Now / Next bookkeeping on every work turn. The answer in `For you` stays in full; nothing else is lost, it is one key or click away.
+
+### Why an extension could not handle it
+
+- Assistant text rendering is core TUI; `MarkdownTransformer` can rewrite text but cannot add a toggleable, width-cut component.
+
+### Expected merge conflict zones
+
+- `createAssistantRenderDescriptors`'s `text` case; `AssistantMessageComponent.createRenderChild` / `setExpanded` / `createMessageSignature`.
+
+## 2026-10-12 - Explicit thinking saves own the startup default (senpi#3178)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `/thinking` Ctrl+S and the `/settings` thinking callback explicitly save the clamped session level through `setDefaultThinkingLevel`; ordinary cycle keys use model memory only. Explicit saves of `off` on non-reasoning models preserve the configured startup default, matching the prior guard.
+
+### Why
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: moving bookkeeping out of config must preserve explicit default-save controls.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: these built-in selectors own the save action.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `applyThinkingLevel` and `onThinkingLevelChange`.
+
+## 2026-10-12 - Short owned temp roots contain TUI socket fallbacks (Refs senpi#3064)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/session-control-registry.ts`: prefer the inherited temp root for the hashed fallback when its complete socket fits the existing 103-byte limit. Test launchers now guarantee that room; normal users with long system temp paths retain the original short `/tmp` fallback.
+
+### Why
+
+- `packages/coding-agent/src/modes/interactive/session-control-registry.ts`: deep quarantined agent paths pushed CI sockets into unowned system directories.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/modes/interactive/session-control-registry.ts`: endpoint registration owns the socket path before an extension can connect.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/session-control-registry.ts`: fallback root selection and private-directory checks.
+
+## 2026-10-11 - Publish composer edits without counting restored drafts (senpi#3140)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/composer-user-activity.ts`: observes text changes made during editor input, excluding submit-time clearing and programmatic draft restoration. Submission wrappers preserve all callback arguments, including raw-text details. Programmatic extension input bypasses the observer.
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: connects default and extension-provided composers to the host activity source, publishes completed clipboard draft edits safely on borrowed receivers, and inserts extension `pasteToEditor` text without claiming terminal activity. Image paste distinguishes an actual attachment from a compaction drop; a handled drop never publishes draft activity or a second failure status.
+
+### Why
+
+- The first actual keystroke or paste should allow prewarm, but restoring a composer during resume, fork, or reload must not cause a provider call.
+
+### Why an extension could not handle it
+
+- The host owns editor input dispatch and clipboard completion. A generic extension only sees submitted `input` events, too late to warm while the user drafts.
+
+### Expected merge conflict zones
+
+- `interactive-mode.ts`: editor construction, custom editor callback wiring, and clipboard paste completion; new composer observer module.
+
+## 2026-10-11 - Preserve explanations for zero-attempt retry failures (senpi#3131 delta)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: restores the general terminal retry failure handler, including zero-attempt long-wait and over-cap errors. The session emitter suppresses only the initial account-limit retry-end event.
+
+### Why
+
+The broad zero-attempt clear branch dropped the only explanation for provider-requested waits and rejected retry delays.
+
+### Why an extension could not handle it
+
+Provider-error notice ownership and terminal retry status belong to the interactive mode.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: `auto_retry_end`.
+
+## 2026-10-11 - Fail-fast account errors match restored transcripts (senpi#3131 review)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: a zero-attempt terminal failure clears retry status without claiming zero failed retries.
+- `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts`: structured usage-limit projections retain their already-formatted text instead of adding another error prefix or reclassifying `/model` advice.
+
+### Why
+
+The live account-limit message and restored transcript differed despite representing the same failure.
+
+### Why an extension could not handle it
+
+Retry status and assistant transcript rendering belong to the interactive mode.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`: terminal retry status.
+
 ## 2026-10-10 - The footer shows the reasoning level and its cycle key (senpi#3090)
 
 ### What changed
@@ -2619,3 +2749,41 @@ Upstream edits to `showLoadedResources` or the startup-warning block in interact
 ### Expected merge conflict zones
 
 - LOW: the `case "user"` branch of the message renderer (the `textContent` line) and the ask-user `format.ts` import in `interactive-mode.ts`; the `role === "user"` branch of the tree selector's entry label and its import.
+## 2026-10-11 - Explain account limits in restored transcripts (senpi#3131)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/components/assistant-render-descriptors.ts`: supplies the message's provider/model and usage-limit scope to the existing provider-failure formatter.
+
+### Why
+
+Restored transcript messages retain provider diagnostics; their visible error must explain the account limit rather than expose raw JSON.
+
+### Why an extension could not handle it
+
+The assistant descriptor builder owns restored transcript rendering.
+
+### Expected merge conflict zones
+
+The error descriptor branch and imports in `assistant-render-descriptors.ts`.
+
+## 2026-10-12 - Rainbow for reserved OmO keywords in the editor (senpi#3160)
+
+### What changed
+
+- `packages/coding-agent/src/modes/interactive/theme/theme.ts`
+- `packages/coding-agent/src/modes/interactive/grok/chrome.ts`
+
+`getEditorTheme()` and the Grok chrome editor theme set `keywordHighlight` from `getReservedKeywordHighlight()`, which builds the desktop composer's light/dark spectrum (fork-only `theme/reserved-keyword-rainbow.ts`) in the active colour mode and returns `undefined` under `NO_COLOR`.
+
+### Why
+
+Match the OmO desktop app's rainbow keyword cue in the TUI so `ulw`-style prompts read the same on both surfaces.
+
+### Why an extension could not handle it
+
+The editor theme is built by the interactive mode itself; extensions cannot inject an `EditorTheme` hook into the built-in editor.
+
+### Expected merge conflict zones
+
+- LOW: `getEditorTheme()` in `theme.ts` and the editor theme object in `GrokChrome`.

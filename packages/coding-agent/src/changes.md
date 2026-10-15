@@ -1,3 +1,137 @@
+## 2026-10-15 - The package exports the abort cause type (senpi#3357)
+
+### What changed
+
+- `packages/coding-agent/src/index.ts`: exports the `AgentAbortCause` type, so RPC and SDK callers can read `agent_end.abortCause` (set when a turn stops because its session was replaced) with its type.
+
+### Why
+
+- A caller reacting to a replaced session needs the cause's shape; the runtime change is tracked in `core/changes.md`.
+
+### Why an extension could not handle it
+
+- The package's public type surface is defined only by its entry point.
+
+### Expected merge conflict zones
+
+- LOW: the type export list in `src/index.ts`.
+
+## 2026-10-15 - Print and RPC processes contain a retired extension ctx too (senpi#3389)
+
+### What changed
+
+- `packages/coding-agent/src/cli-main.ts`: installs `installStaleExtensionContainment()` (fork-only `core/stale-extension-containment.ts`) right after the early inspector seam. It adds one process `uncaughtException` listener that logs and contains only the stale-ctx guard (`StaleExtensionContextError`) and keeps every other uncaught throw fatal (`console.error` + exit 1), unless interactive mode has registered its own handler (`markModeCrashHandler`). It adds no `unhandledRejection` listener: that would change the default routing of every rejection, including the Inspector rejection the early seam recovers. So under Bun an async stale throw in print or RPC mode still exits, as before; the TUI already logs rejections and keeps running.
+- `packages/coding-agent/src/inspector-policy.ts`: the early inspector listener defers only to a handler interactive mode registered with `markModeCrashHandler` (fork-only `core/bootstrap-crash-listeners.ts`), never to another bootstrap or library listener; it leaves a stale-ctx error to the containment seam, and the containment seam leaves the recoverable Inspector rejection to it. Before this, with `SENPI_RECOVER_INSPECTOR_VM_IMPORT=1`, the two bootstrap listeners each deferred to the other and a real crash kept the process running.
+
+### Why
+
+- Print mode and the RPC host have no crash handler of their own, so the same stale-ctx throw from a timer ended a headless run or every session on a host (senpi#3389, oh-my-openagent#7114).
+
+### Why an extension could not handle it
+
+- The listener has to exist before any extension loads, and process-wide; the entry point is the only place that covers every mode.
+
+### Expected merge conflict zones
+
+- LOW: the bootstrap block in `cli-main.ts` beside `installEarlyInspectorVmImportRecovery()`; the listener registration and `otherHandlerActive` check in `inspector-policy.ts`.
+
+## 2026-10-14 - A model that cannot start is reported, not crashed on (senpi#3333)
+
+### What changed
+
+- `packages/coding-agent/src/main.ts`: a `ModelUsabilityBudgetError` from `createAgentSessionRuntime` prints its one-line message in red and exits 1, instead of escaping as an uncaught error with a stack and minified bundle source.
+
+### Why
+
+The startup refusal is the user's to fix; a stack trace hid the reason and the fix.
+
+### Why an extension could not handle it
+
+The error is thrown while the runtime is created, before extensions are bound.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/main.ts`: the `createAgentSessionRuntime` call.
+
+## 2026-10-12 - Retire Codex app-server compatibility (senpi#3167)
+
+### What changed
+
+Remove app-server dispatch and its mode/trust special cases from CLI startup. The parser refuses the retired command rather than treating it as a prompt.
+
+- `packages/coding-agent/src/main.ts`
+
+### Why
+
+The executable Codex compatibility layer is being removed. Shared Native runtime behavior and historical records must remain independent of that layer.
+
+### Why an extension could not handle it
+
+These host contracts, import paths and build or verification targets belong to the repository; an extension cannot retire them.
+
+### Expected merge conflict zones
+
+The listed paths, especially command dispatch, mode unions and process identity imports. Keep the supported runtime branches and the shared utility behavior.
+
+## 2026-10-12 - Print-then-exit commands skip startup compile caching (senpi#3166)
+
+### What changed
+
+- `packages/coding-agent/src/compile-cache.ts`: `enableStartupCompileCache` checks command arguments before enabling or publishing the cache. Package and host routing reuse `cli/deferred-commands.ts`; schedule commands skip caching except `run --watch`. Root `--version`/`-v` uses the same parser-free check as `cli.ts`. Other candidate help/list/export flags lazily use the existing argument parser so prompt and option values do not disable session caching. Parse/import failures fall through to the previous cache enablement behavior, leaving errors to the CLI. Multi-session RPC hosts retain caching even with `--help`. Ordinary sessions still enable the cache before loading the parser.
+- `packages/coding-agent/src/cli.ts` and `packages/coding-agent/src/cli-main.ts` await the shared decision before continuing startup, including help's fast path and isolated child entries.
+- `packages/coding-agent/test/compile-cache-invocation.test.ts` observes the enable call and inherited environment without timing thresholds, including legacy provider IDs, deferred commands, schedule watchers and multi-session RPC hosts. `packages/coding-agent/test/compile-cache.test.ts` observes parser module resolution to protect the parser-free version path; its cache subprocess drivers await the decision. Node-bundle smoke tests are unchanged.
+
+### Why
+
+Bun 1.4.3 writes a cold compile cache at process exit more slowly than 1.4.2. Metadata-only invocations paid this shutdown cost despite never opening a session. Real sessions retain compile caching for later launches.
+
+An externally supplied `NODE_COMPILE_CACHE` remains untouched: the runtime may enable that cache before CLI startup, so skipping senpi's programmatic enablement does not disable the external cache.
+
+### Why an extension could not handle it
+
+Cache enablement happens in the CLI bootstrap before extension loading and before the help fast path.
+
+### Expected merge conflict zones
+
+- LOW: the shared startup compile-cache helper and its two entry-point calls. Preserve the pre-import ordering for sessions and await the command decision.
+
+## 2026-10-11 - Export eval cell RPC contracts (senpi#3072)
+
+### What changed
+
+- `packages/coding-agent/src/index.ts` and `packages/coding-agent/src/modes/index.ts` export `RpcEvalCell` and `RpcEvalCellSnapshot` beside the established RPC types.
+
+### Why
+
+Typed downstream clients need the new session-owned cell control results through the public coding-agent entry point.
+
+### Why an extension could not handle it
+
+Extensions cannot add exports to the host's public package entry point.
+
+### Expected merge conflict zones
+
+- Additive RPC type export lists in the two barrels; no runtime initialization changes.
+
+## 2026-10-10 - Runtime dependency snapshots omit development payload (#3083 part B)
+
+### What changed
+
+- `packages/coding-agent/src/runtime-snapshot/layout.ts` (fork-only) keeps the full nested/hoisted dependency closure, applying `packages/coding-agent/src/runtime-snapshot/dependency-files.ts` to each dependency's payload. Development trees, root Markdown and extensionless README/changelog/history files are omitted unless a manifest entry names them; license files remain. Redundant TypeScript under `src` is omitted only for packages with an existing built JavaScript entry; source-only extensions, source assets, skills, native binaries and wasm remain.
+- `packages/coding-agent/src/runtime-snapshot/tree.ts` and `packages/coding-agent/src/runtime-snapshot/package-files.ts` extract tree planning and the existing shipped-package policy from layout, without changing the package-root selection. The real CLI inventory regression observes Node resolution hooks, Bun loads/resolution and transpiler reads across help, external TypeScript/typebox loading, a faux turn, Claude executable resolution, photon, grep and codemode bootstrap. Glob-only shipping is now tested at the snapshot boundary.
+
+### Why
+
+Copying dependency tests, documentation and duplicate TypeScript sources increases file-system work on every new snapshot. A representative run cannot prove an unvisited provider or dynamic extension will never load a package, so it must not become a package allowlist. Both runtimes resolve the Claude platform binary inside the snapshot; it stays eagerly copied with the existing clone/link/copy mechanism, independent of install updates.
+
+### Why an extension could not handle it
+
+Snapshot materialization precedes extension loading. An extension cannot reduce this first-launch copy or safely repair a missing dependency after an update deletes the original install.
+
+### Expected merge conflict zones
+
+- None upstream: `runtime-snapshot/` is fork-only. Part A's package selection moved from layout into package-files; preserve it when merging other snapshot changes.
+
 ## 2026-10-10 - The runtime snapshot copies the shipped package files only (#3083)
 
 ### What changed
@@ -4817,3 +4951,40 @@ The runtime factory builds the session before any extension is loaded.
 ### Expected merge conflict zones
 
 The `promptSurface: launchProfile?.promptSurface` line in the session creation call.
+## 2026-10-11 - Print account limits through the shared formatter (senpi#3131)
+
+### What changed
+
+- `packages/coding-agent/src/modes/print-mode.ts`: supplies provider/model identity and classified usage-limit scope to the existing provider-failure formatter.
+
+### Why
+
+Print mode reads internal messages, where the raw provider detail remains for retry classification.
+
+### Why an extension could not handle it
+
+Print mode owns the final stderr error.
+
+### Expected merge conflict zones
+
+The provider-error branch and usage-limit import in `packages/coding-agent/src/modes/print-mode.ts`.
+
+## 2026-10-12 - Export the reserved-keyword matcher (senpi#3160)
+
+### What changed
+
+- `packages/coding-agent/src/index.ts`
+
+Exports `findReservedKeywordSpans`, `findReservedKeywordRuns` and their types from the fork-only `core/reserved-keywords.ts`, which follows the omo-senpi engine's arming rules (identifier/path guards plus quote, URL, relay-header and negation masks), so it marks only text that actually arms.
+
+### Why
+
+One matcher drives both the TUI rainbow and any SDK consumer that needs the engine's keyword detection.
+
+### Why an extension could not handle it
+
+The package barrel is the only public entry point; an extension cannot add exports to it.
+
+### Expected merge conflict zones
+
+- LOW: the `core/skills.ts` export block in `packages/coding-agent/src/index.ts`.

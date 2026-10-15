@@ -20,6 +20,8 @@ import type { RpcExtensionUIRequest } from "./rpc-types.ts";
 /** The capability string a client sends in its handshake to opt into the notice. */
 export const CUSTOM_UNSUPPORTED_CAPABILITY = "custom_unsupported";
 export const EXTENSION_EVENTS_CAPABILITY = "extension_events";
+/** Host protocol support; a session without codemode returns `eval_cells_unavailable`. */
+export const EVAL_CELLS_CAPABILITY = "eval_cells";
 export const AUTO_TITLE_SESSIONS_CAPABILITY = "auto_title_sessions";
 /** Host capability: the `continue_from_leaf` command starts a turn with no new prompt (#1930). */
 export const CONTINUE_FROM_LEAF_CAPABILITY = "continue_from_leaf";
@@ -39,6 +41,13 @@ export const QUESTION_CAPABILITY = "question";
  * that flag survives its last client's disconnect instead of being closed with it.
  */
 export const RETAIN_ON_DISCONNECT_CAPABILITY = "retain_on_disconnect";
+
+/**
+ * Advertised by a multi-session host that answers `detach_connection`: it drops every attachment the
+ * asking connection holds and replies only once that is done, so a short-lived client can return knowing
+ * no other connection will still see it attached (senpi#3238).
+ */
+export const DETACH_CONNECTION_CAPABILITY = "detach_connection";
 
 /**
  * HOST capability: this host accepts `open_session.context`, hands it to that session's

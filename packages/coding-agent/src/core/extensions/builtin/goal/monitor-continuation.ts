@@ -14,6 +14,7 @@ import {
 	resolveGoalPromptCacheLifetime,
 } from "./cache-warm.ts";
 import { subscribeGoalChannelState } from "./channel-state-subscriptions.ts";
+import { type GoalContinuationFireNowResult, publishGoalContinuationEvent } from "./rpc-wait-surface.ts";
 
 export {
 	GOAL_MONITOR_BACKSTOP_DEFAULT_DELAY_MS,
@@ -49,6 +50,7 @@ import type {
 } from "./monitor-continuation-types.ts";
 import { findParkedGoalWait, type ParkedGoalWait } from "./parked-wait.ts";
 import { buildContinuationPrompt, buildGoalStallNotice, buildTruncationRecoveryPrompt } from "./prompt.ts";
+import { PROVIDER_RETRY_BASE_MS, providerRetryAt, providerRetryDelayMs } from "./provider-retry.ts";
 import { isStaleExtensionContextError } from "./stale-context.ts";
 import { resetContinuationStreak } from "./store.ts";
 import { goalStoreRef } from "./store-ref.ts";
@@ -77,6 +79,7 @@ export class MonitorAwareGoalContinuation {
 	#goal: Goal | null = null;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#scheduledContinuationKind: DelayedContinuationKind | undefined;
+	#armedDrainFire = false;
 	#channelStateUnsubscribers: Array<() => void> = [];
 	#lastAgentEndMessages: readonly AgentMessage[] = [];
 	#consecutiveLengthRecoveries = new Map<string, number>();
@@ -98,6 +101,8 @@ export class MonitorAwareGoalContinuation {
 	#directInputHolds = new Set<string>();
 	#pendingSystemRecovery: SystemAbortOptions | undefined;
 	#pendingProviderRecovery: ProviderRecoveryOptions | undefined;
+	#providerRetryAttempts = 0;
+	#providerRetryDelayMs: number | undefined;
 
 	constructor(
 		pi: ExtensionAPI,
@@ -125,6 +130,7 @@ export class MonitorAwareGoalContinuation {
 
 	async afterAgentEnd(options: AgentEndOptions): Promise<Goal | null> {
 		if (options.goal?.id !== this.#goal?.id) this.#resetContinuationState();
+		this.#providerRetryAttempts = 0;
 		this.#ctx = options.ctx;
 		this.#goal = options.goal;
 		this.#lastAgentEndMessages = options.messages;
@@ -234,6 +240,19 @@ export class MonitorAwareGoalContinuation {
 			pendingProvider.event.abortSource === "user"
 		) {
 			return undefined;
+		}
+		this.#providerRetryAttempts += 1;
+		const now = Date.now();
+		const delayMs = providerRetryDelayMs(
+			this.#providerRetryAttempts,
+			providerRetryAt(pendingProvider.messages, now),
+			now,
+		);
+		if (delayMs > 0) {
+			this.#cancelTimer();
+			this.#providerRetryDelayMs = delayMs;
+			this.#schedule(pendingProvider.goal, "providerRetry");
+			return pendingProvider.goal;
 		}
 		return (
 			await this.#admitAndQueue(
@@ -369,7 +388,9 @@ export class MonitorAwareGoalContinuation {
 							resolveGoalPromptCacheLifetime(this.#ctx?.model, process.env),
 						),
 					))
-				: GOAL_USER_GRACE_DELAY_MS;
+				: kind === "providerRetry"
+					? (this.#providerRetryDelayMs ?? PROVIDER_RETRY_BASE_MS)
+					: GOAL_USER_GRACE_DELAY_MS;
 		this.#scheduledDelayMs = delayMs;
 		let remainingMs = delayMs;
 		if (kind === "monitor") {
@@ -394,7 +415,7 @@ export class MonitorAwareGoalContinuation {
 				wakeSources,
 				...(cache !== undefined ? { cache } : {}),
 			});
-			this.#pi.events?.emit(GOAL_CONTINUATION_SCHEDULED_EVENT, scheduleData);
+			this.#publish(GOAL_CONTINUATION_SCHEDULED_EVENT, scheduleData);
 			// Progress adjusts this wait; it is not another cache-warm iteration
 			// or transcript entry for every keystroke in the answer composer.
 			if (!repark && parked === undefined)
@@ -408,7 +429,7 @@ export class MonitorAwareGoalContinuation {
 			this.#scheduledCacheWarmIteration = undefined;
 		}
 		this.#scheduledContinuationKind = kind;
-		this.#pi.events?.emit(GOAL_CONTINUATION_TIMER_STATE_EVENT, { armed: true, kind });
+		this.#publish(GOAL_CONTINUATION_TIMER_STATE_EVENT, { armed: true, kind, dueAtMs: Date.now() + remainingMs });
 		if (this.#directInputHolds.size > 0) {
 			this.#heldTimer = { kind, remainingMs, heldAtMs: Date.now(), totalMs: delayMs, drainFire: false };
 			return;
@@ -435,6 +456,7 @@ export class MonitorAwareGoalContinuation {
 
 	#armTimer(kind: DelayedContinuationKind, delayMs: number, totalMs: number, drainFire = false): void {
 		this.#scheduledDueAtMs = Date.now() + delayMs;
+		this.#armedDrainFire = drainFire;
 		const ctx = this.#ctx;
 		if (ctx !== undefined && this.#ctxHasUI(ctx)) {
 			this.#waitTicker?.sync(ctx, {
@@ -461,11 +483,15 @@ export class MonitorAwareGoalContinuation {
 		this.#timer = undefined;
 		this.#scheduledDueAtMs = undefined;
 		this.#scheduledContinuationKind = undefined;
-		this.#pi.events?.emit(GOAL_CONTINUATION_TIMER_STATE_EVENT, { armed: false, kind });
+		this.#publish(GOAL_CONTINUATION_TIMER_STATE_EVENT, { armed: false, kind });
 		this.#waitTicker?.stop();
 		const delayMs =
 			this.#scheduledDelayMs ??
-			(kind === "monitor" ? GOAL_MONITOR_CONTINUATION_FALLBACK_DELAY_MS : GOAL_USER_GRACE_DELAY_MS);
+			(kind === "monitor"
+				? GOAL_MONITOR_CONTINUATION_FALLBACK_DELAY_MS
+				: kind === "providerRetry"
+					? PROVIDER_RETRY_BASE_MS
+					: GOAL_USER_GRACE_DELAY_MS);
 		const waitedMs = this.#scheduledAtMs === undefined ? delayMs : Math.max(0, Date.now() - this.#scheduledAtMs);
 		const dueAtMs = this.#scheduledAtMs === undefined ? undefined : this.#scheduledAtMs + delayMs;
 		const wakeCause = drainFire ? "sources-drained" : "timer";
@@ -482,12 +508,12 @@ export class MonitorAwareGoalContinuation {
 		const admission = await this.#admitAndQueue(
 			ctx,
 			goal,
-			kind === "monitor" ? "monitorDelayed" : "userGrace",
+			kind === "monitor" ? "monitorDelayed" : kind === "providerRetry" ? "providerRecovery" : "userGrace",
 			this.#lastAgentEndMessages,
 		);
 		if (kind !== "monitor" || !admission.admitted || iteration === undefined) return;
 		const wakeSources = this.#wakeSourceSnapshot();
-		this.#pi.events?.emit(GOAL_CONTINUATION_RESUMED_EVENT, {
+		this.#publish(GOAL_CONTINUATION_RESUMED_EVENT, {
 			goalId: goal.id,
 			delayMs,
 			dueAtMs,
@@ -578,7 +604,7 @@ export class MonitorAwareGoalContinuation {
 				: buildContinuationPrompt(goal, { modelId: ctx.model?.id });
 		if (!verdict.stallNotice) return content;
 
-		const liveSources = this.#liveWakeSources();
+		const liveSources = this.liveWakeSources();
 		this.#pi.events?.emit(GOAL_MONITOR_STALL_EVENT, {
 			goalId: goal.id,
 			consecutiveContinuations: this.#toollessContinuationStreak,
@@ -740,7 +766,7 @@ export class MonitorAwareGoalContinuation {
 		return Object.fromEntries([...this.#wakeSources.entries()].sort(([left], [right]) => left.localeCompare(right)));
 	}
 
-	#liveWakeSources(): string[] {
+	liveWakeSources(): string[] {
 		return [...this.#wakeSources.entries()]
 			.filter(([, count]) => count > 0)
 			.map(([source]) => source)
@@ -750,6 +776,7 @@ export class MonitorAwareGoalContinuation {
 	#resetContinuationState(): void {
 		this.#pendingSystemRecovery = undefined;
 		this.#pendingProviderRecovery = undefined;
+		this.#providerRetryAttempts = 0;
 		this.#consecutiveLengthRecoveries.clear();
 		this.#recentNormalizedOutputHashes = [];
 		this.#resetToollessContinuationStreak();
@@ -766,6 +793,23 @@ export class MonitorAwareGoalContinuation {
 		this.#toollessStreakGoalId = null;
 	}
 
+	/**
+	 * Runs the armed continuation now, through the same eligibility checks as its timer (the
+	 * desktop's "Check now"). A held timer (the user is typing) stays held.
+	 */
+	async fireNow(): Promise<GoalContinuationFireNowResult> {
+		if (this.#heldTimer !== undefined) return { fired: false, reason: "held" };
+		const kind = this.#scheduledContinuationKind;
+		if (this.#timer === undefined || kind === undefined) return { fired: false, reason: "not_armed" };
+		clearTimeout(this.#timer);
+		await this.#continueIfEligible(kind, this.#armedDrainFire);
+		return { fired: true, kind };
+	}
+
+	#publish(name: string, data: unknown): void {
+		publishGoalContinuationEvent(this.#pi, name, data);
+	}
+
 	#cancelTimer(): void {
 		const kind = this.#scheduledContinuationKind;
 		this.#scheduledAtMs = undefined;
@@ -777,7 +821,7 @@ export class MonitorAwareGoalContinuation {
 		if (this.#timer !== undefined) clearTimeout(this.#timer);
 		this.#timer = undefined;
 		this.#scheduledContinuationKind = undefined;
-		if (kind !== undefined) this.#pi.events?.emit(GOAL_CONTINUATION_TIMER_STATE_EVENT, { armed: false, kind });
+		if (kind !== undefined) this.#publish(GOAL_CONTINUATION_TIMER_STATE_EVENT, { armed: false, kind });
 		this.#waitTicker?.stop();
 	}
 }

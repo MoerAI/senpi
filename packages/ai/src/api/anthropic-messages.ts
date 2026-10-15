@@ -95,8 +95,17 @@ import {
 	resolveTranscript,
 	type TranscriptContext,
 } from "../utils/transcript.ts";
+import {
+	isAnthropicWebSearchReplayBlock,
+	isReplayableAnthropicProviderNativeBlock,
+} from "./anthropic-native-replay-blocks.ts";
 import { sanitizeAnthropicToolPairs } from "./anthropic-tool-pairs.ts";
 import { demoteToolReferenceReplay, demoteUnavailableToolReferences } from "./anthropic-tool-references.ts";
+import {
+	demoteExpiredWebSearchReplay,
+	expiredWebSearchReplayIds,
+	isExpiredWebSearchContentError,
+} from "./anthropic-web-search-expiry.ts";
 import { resolveCloudflareBaseUrl } from "./cloudflare.ts";
 import {
 	getJsonSchemaToolParameters,
@@ -161,7 +170,7 @@ function getCacheControl(
 // The bundled Claude Code version and the floor of the advertised `claude-cli/<version>`
 // (see utils/claude-code-version.ts). Keep this exact declaration: a downstream installer
 // (oh-my-openagent) rewrites it byte-for-byte in the installed dist and bundle.
-const claudeCodeVersion = "2.1.292";
+const claudeCodeVersion = "2.1.296";
 
 // Claude Code 2.x tool names (canonical casing)
 // Source: https://cchistory.mariozechner.at/data/prompts-2.1.11.md
@@ -384,6 +393,8 @@ type UnsignedThinkingReplay = "text" | "empty-signature";
 const unsignedThinkingTextReplayFallbacks = new Set<string>();
 // Endpoints that rejected a replayed tool_reference for one conversation (senpi #2568).
 const toolReferenceReplayFallbacks = new Set<string>();
+// `${fallbackKey}\u0000${tool_use_id}` of web search results whose encrypted payload expired (senpi #3201).
+const expiredWebSearchReplays = new Set<string>();
 
 registerSessionResourceCleanup((sessionId?: string) => {
 	// One small entry per (session, base URL, model) that ever hit the fallback;
@@ -392,10 +403,15 @@ registerSessionResourceCleanup((sessionId?: string) => {
 	if (sessionId === undefined) {
 		unsignedThinkingTextReplayFallbacks.clear();
 		toolReferenceReplayFallbacks.clear();
+		expiredWebSearchReplays.clear();
 		return;
 	}
 	const prefix = `${sessionId}\u0000`;
-	for (const fallbacks of [unsignedThinkingTextReplayFallbacks, toolReferenceReplayFallbacks]) {
+	for (const fallbacks of [
+		unsignedThinkingTextReplayFallbacks,
+		toolReferenceReplayFallbacks,
+		expiredWebSearchReplays,
+	]) {
 		for (const key of fallbacks) {
 			if (key.startsWith(prefix)) fallbacks.delete(key);
 		}
@@ -608,28 +624,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-const REPLAYABLE_ANTHROPIC_PROVIDER_NATIVE_TYPES: ReadonlySet<string> = new Set([
-	"server_tool_use",
-	"web_search_tool_result",
-	"web_fetch_tool_result",
-	"code_execution_tool_result",
-	"bash_code_execution_tool_result",
-	"text_editor_code_execution_tool_result",
-	"tool_search_tool_result",
-	"container_upload",
-	// The server-side fallback marker (`fallback`, server-side-fallback-2026-06-01
-	// beta) is deliberately absent: the Messages API rejects it as an *input* tag
-	// ("Input tag 'fallback' found using 'type' does not match any of the expected
-	// tags"), so replaying it 400s every subsequent same-model request. The stored
-	// marker is audit metadata and still drives declined-attempt pruning in
-	// convertMessages (see lastAnthropicFallbackBoundary and
-	// collectDiscardedFallbackToolCallIds); blocks after it replay verbatim.
-]);
-
-function isReplayableAnthropicProviderNativeBlock(raw: unknown): raw is ContentBlockParam {
-	return isRecord(raw) && typeof raw.type === "string" && REPLAYABLE_ANTHROPIC_PROVIDER_NATIVE_TYPES.has(raw.type);
-}
-
 function isSameAnthropicModel(message: AssistantMessage, model: Model<"anthropic-messages">): boolean {
 	return message.provider === model.provider && message.api === model.api && message.model === model.id;
 }
@@ -674,12 +668,6 @@ function isProviderNativeToolUseBlock(raw: unknown): boolean {
 // blocks (kimi-coding 400s with `tool_call_id is not found`), wedging every
 // subsequent request of the session. Dropping the pair loses the searched
 // context but keeps the conversation usable.
-function isAnthropicWebSearchReplayBlock(raw: unknown): boolean {
-	if (!isRecord(raw)) return false;
-	if (raw.type === "web_search_tool_result") return true;
-	return raw.type === "server_tool_use" && raw.name === "web_search";
-}
-
 // Anthropic validates server-tool pairing per request: a `server_tool_use` /
 // `mcp_tool_use` must be answered by its `*_tool_result`, and a result must
 // have its use — otherwise the API answers `400 ... \`web_search\` tool use
@@ -741,13 +729,13 @@ function collectProviderNativeToolPairing(
 			for (const block of message.content) {
 				if (block.type !== "providerNative" || !isRecord(block.raw)) continue;
 				const raw = block.raw;
-				if (typeof raw.type !== "string" || !REPLAYABLE_ANTHROPIC_PROVIDER_NATIVE_TYPES.has(raw.type)) continue;
+				if (!isReplayableAnthropicProviderNativeBlock(raw)) continue;
 				if (isProviderNativeToolUseBlock(raw) && typeof raw.id === "string") pendingUseIds.add(raw.id);
 			}
 			for (const block of message.content) {
 				if (block.type !== "providerNative" || !isRecord(block.raw)) continue;
 				const raw = block.raw;
-				if (typeof raw.type !== "string" || !REPLAYABLE_ANTHROPIC_PROVIDER_NATIVE_TYPES.has(raw.type)) continue;
+				if (!isReplayableAnthropicProviderNativeBlock(raw)) continue;
 				const toolUseId = raw.tool_use_id;
 				if (typeof toolUseId !== "string") continue;
 				if (priorUseIds.has(toolUseId) || pendingUseIds.has(toolUseId)) {
@@ -1429,6 +1417,14 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 					: getAnthropicCompat(model).unsignedThinkingReplay;
 			let demoteReferenceReplay = fallbackKey !== undefined && toolReferenceReplayFallbacks.has(fallbackKey);
 			let requestReplaysReferences = false;
+			const expiredSearchPrefix = fallbackKey === undefined ? undefined : `${fallbackKey}\u0000`;
+			const expiredSearchIds = new Set<string>();
+			if (expiredSearchPrefix !== undefined) {
+				for (const key of expiredWebSearchReplays) {
+					if (key.startsWith(expiredSearchPrefix)) expiredSearchIds.add(key.slice(expiredSearchPrefix.length));
+				}
+			}
+			let lastSentParams: MessageCreateParamsStreaming | undefined;
 			const createRequest = async (): Promise<{ params: MessageCreateParamsStreaming; response: Response }> => {
 				let params = buildParams(model, normalizedContext, isOAuth, options, unsignedThinkingReplay);
 				const nextParams = await options?.onPayload?.(params, model);
@@ -1441,6 +1437,8 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				const withoutReferenceReplay = demoteToolReferenceReplay(params);
 				requestReplaysReferences = withoutReferenceReplay !== params;
 				if (demoteReferenceReplay) params = withoutReferenceReplay;
+				params = demoteExpiredWebSearchReplay(params, expiredSearchIds);
+				lastSentParams = params;
 				params = sanitizeAnthropicToolPairs(params) as MessageCreateParamsStreaming;
 				const payloadRequestMetadata = extractPayloadRequestMetadata(params);
 				params = payloadRequestMetadata.params;
@@ -1469,6 +1467,29 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				});
 				return { params: sent.params, response: sent.result };
 			};
+			// True when the error names web search payloads this request had not demoted yet.
+			const markNewlyExpiredSearches = (error: unknown): boolean => {
+				if (!isExpiredWebSearchContentError(error) || lastSentParams === undefined) return false;
+				const newlyExpired = expiredWebSearchReplayIds(lastSentParams, error).filter(
+					(id) => !expiredSearchIds.has(id),
+				);
+				for (const id of newlyExpired) {
+					expiredSearchIds.add(id);
+					if (expiredSearchPrefix !== undefined) expiredWebSearchReplays.add(expiredSearchPrefix + id);
+				}
+				return newlyExpired.length > 0;
+			};
+			const createRequestDemotingExpiredSearches = async (): Promise<{
+				params: MessageCreateParamsStreaming;
+				response: Response;
+			}> => {
+				try {
+					return await createRequest();
+				} catch (error) {
+					if (markNewlyExpiredSearches(error)) return createRequestDemotingExpiredSearches();
+					throw error;
+				}
+			};
 			let requestOutcome: { params: MessageCreateParamsStreaming; response: Response };
 			try {
 				requestOutcome = await retryProviderRequest(
@@ -1486,6 +1507,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 								if (fallbackKey) toolReferenceReplayFallbacks.add(fallbackKey);
 								return createRequest();
 							}
+							if (markNewlyExpiredSearches(error)) return createRequestDemotingExpiredSearches();
 							if (await retryWithNewerClaudeCode(error)) {
 								try {
 									return await createRequest();

@@ -1,3 +1,117 @@
+## 2026-10-15 - Effective-dated cost cards in the generated catalog (senpi#3378)
+
+### What changed
+
+- `packages/ai/scripts/generate-models.ts`: the per-model post-pass calls `applyDatedListPrice` (new fork file `scripts/dated-list-prices.ts`), which pins the Argon rows on `google` and `google-vertex` to the introductory card plus a `2026-12-01T08:00:00Z` list-price card. `google.json` and `google-vertex.json` were regenerated with `--strict --providers google,google-vertex`: no row added or removed, and only the two Argon rows' `cost` changed.
+- `packages/ai/scripts/model-data.ts`: `cost.effectiveRates` is validated: a non-empty array, ISO UTC `effectiveFrom` (seconds or milliseconds, `Z` only), no two cards starting at the same instant, and four finite non-negative rates per card.
+
+### Why
+
+- senpi#3378: the provider moves the 2026-10-13 Argon model from $2/$10 to $4/$20 per 1M tokens on 2026-12-01 08:00Z. A single static card under-reports every request after that instant by 2x until a catalog refresh, and a session loaded before the refresh keeps the old card even after it.
+
+### Why an extension could not handle it
+
+- The cost card is baked into the generated catalog and its validator is the generator's schema authority; an extension cannot change either.
+
+### Expected merge conflict zones
+
+- LOW: the post-pass loop in `generate-models.ts` (one line) and the cost block of `validateModelEntry` in `model-data.ts`.
+
+## 2026-10-15 - OpenCode Go uses its documented inference base (senpi#3377)
+
+### What changed
+
+- `packages/ai/scripts/generate-models.ts`: the `opencode-go` variant's base path is `https://opencode.ai/inference/go` instead of `https://opencode.ai/zen/go`. `src/providers/data/opencode-go.json` was regenerated with `--providers opencode-go`: all 31 rows kept, and only `baseUrl` changed (`/zen/go` -> `/inference/go`, `/zen/go/v1` -> `/inference/go/v1`).
+
+### Why
+
+- The legacy base still proxies the OpenAI and Anthropic wires but has no route for the native generate-content wire: `POST /zen/go/v1/models/<id>:streamGenerateContent` returns a 404 HTML page, while the same path on `/inference/go/v1` reaches the API. The Argon Contributor row is served only over that wire, so every request to it failed (senpi#3377; measured 2026-10-15).
+
+### Why an extension could not handle it
+
+- The base URL is baked into the generated catalog every builtin provider request reads; an extension cannot move a builtin row's endpoint.
+
+### Expected merge conflict zones
+
+- LOW: the `opencodeVariants` entry in `generate-models.ts`; `opencode-go.json` and `.manifest.json` are generated.
+
+## 2026-10-14 - Venice deepseek models take thinking through reasoning_effort (senpi#3308)
+
+### What changed
+
+- `packages/ai/scripts/generate-models.ts`: the deepseek-v4 compat post-pass treats `venice` like `openrouter` and `opencode`. It keeps only `requiresReasoningContentOnAssistantMessages` and leaves Venice's auto-detected `reasoning_effort` format in place, instead of stamping DeepSeek's native `thinkingFormat: "deepseek"`. `src/providers/data/venice.json` was regenerated with `--providers venice` (no model added or removed). The six Venice deepseek-v4 entries lost `thinkingFormat: "deepseek"`, and their `thinkingLevelMap` now follows Venice's published efforts (`off: "none"`, then `low`/`medium`/`high`/`max` as models.dev lists them per model).
+
+### Why
+
+- Venice's chat schema is `additionalProperties: false` and has no `thinking` field. The deepseek format always sent `thinking: { type: "enabled" | "disabled" }`, so every request to a Venice deepseek model failed with `400 Invalid request parameters` ("Unrecognized key(s) in object: 'thinking'"), whatever the thinking level (senpi#3308, captured on the wire by the reporter).
+
+### Why an extension could not handle it
+
+- The compat flags are baked into the generated catalog that every provider request reads; an extension cannot change a builtin model's request shape before the provider builds the payload.
+
+### Expected merge conflict zones
+
+- LOW: the `preservesNativeReasoningEffort` line in the deepseek-v4 post-pass of `generate-models.ts`; `venice.json` and `.manifest.json` are generated.
+
+## 2026-10-13 - Idempotent catalog generation (whole-manifest key)
+
+### What changed
+
+- `packages/ai/scripts/model-data.ts`: `stableGeneratedAt(newManifest, committedManifest)` keeps the committed `generatedAt` when the new manifest equals the committed one on `structureHash` AND every `files` hash; otherwise the fresh timestamp.
+- `packages/ai/scripts/generate-models.ts`: builds the new manifest after `fileContents` is populated and applies the stable timestamp only when no explicit `--generatedAt` was passed.
+- The committed catalog (`.manifest.json`, `opencode.json`, `openrouter.json`) is refreshed from the live providers.
+
+### Why
+
+The releasability drift check regenerated the catalog with a fresh `generatedAt` and diffed the whole file, so it always failed on the timestamp. An idempotent key that covers the whole manifest except the timestamp keeps the drift check green on unchanged content while still tripping on a real change (a new/removed model, or a field edit).
+
+### Why an extension could not handle it
+
+The catalog's `generatedAt` and the manifest comparison are build-time constants in the generator, not something an extension can override at runtime.
+
+### Expected merge conflict zones
+
+The manifest's `generatedAt` and `structureHash` lines.
+
+## 2026-10-10 - Test-run temporary storage has an owner (senpi#3064)
+
+### What changed
+
+- `packages/ai/package.json`: test invocations use scripts/run-tests.mjs so TMPDIR/TEMP/TMP are scoped before the test runtime starts and cleaned after exit.
+- `packages/ai/vitest.config.ts`: always load the fixture teardown adapter, retaining CI diagnostics; plain subprocess helpers do not import framework hooks.
+
+### Why
+
+- Vitest SSR copies and interrupted fixture writes must not accumulate in the OS temp directory.
+
+### Why an extension could not handle it
+
+- Test-process bootstrap is repository tooling, before runtime extensions load.
+
+### Expected merge conflict zones
+
+- Test command arguments and runtime selection; preserve existing reporters, shards and test filters.
+
+## 2026-10-12 - Subscription GPT-6.1 Sol 500k default (senpi#3150)
+
+### What changed
+
+- `packages/ai/scripts/generate-models.ts`: the ChatGPT subscription `gpt-6.1-sol` row literal and final context metadata pass both use the subscription-specific 500000 prompt budget. Priority and Ultrafast clone that processed row. The subscription shard and manifest are regenerated with `--strict --providers chatgpt-subscription`.
+
+### Why
+
+- Requested by @code-yeongyu for the next release. The live Codex catalog fetched 2026-10-12T00:15Z reports `context_window: 500000`, `max_context_window: 872000`, and no explicit auto-compaction limit. The previous 400000 was a deliberate project budget inherited from GPT-6 Sol, not this live subscription default.
+- API and gateway budgets, other subscription models, output limits and the >272K price tier remain unchanged. Subscription surcharge removal is unconfirmed. The shared model contract has no separate subscription maximum field, so none is added.
+- Compaction thresholds/reserve and context-usage display already derive from the selected model window. The 500000 default yields a 350000 adaptive threshold, a 20000 scaled reserve, and 25000 retained-token budget under the existing default policy.
+
+### Why an extension could not handle it
+
+- `packages/ai/scripts/generate-models.ts` owns the shipped builtin catalog and its clone metadata; local overrides cannot correct the default for every installation.
+
+### Expected merge conflict zones
+
+- LOW: the constants and final context metadata pass in `packages/ai/scripts/generate-models.ts`. Regenerate the subscription shard and manifest rather than hand-merging generated data.
+
 ## 2026-10-08 - Native ChatGPT Subscription Sol Ultrafast catalog variant
 
 ### What changed

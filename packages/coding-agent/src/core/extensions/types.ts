@@ -8,6 +8,10 @@
  * - Interact with the user via UI primitives
  */
 
+import type { ContextEvent } from "./context-event.ts";
+
+export type { ContextEvent } from "./context-event.ts";
+
 import type {
 	AgentMessage,
 	AgentTool,
@@ -106,9 +110,11 @@ import type {
 import type { ReadClassifier } from "../tools/read-classifiers.ts";
 import type { ModelRoute, ModelRouteRequest, VirtualModelDefinition } from "../virtual-models.ts";
 import type { McpServerDeclaration } from "./builtin/mcp/config-schema.ts";
+import type { PermissionPresetName } from "./builtin/permission-system/types.ts";
 import type { EvalHandleHost } from "./eval-handle-host.ts";
 import type { ExtensionKernelTools } from "./kernel-tools-context.ts";
 import type { SessionControlActions, SessionControlWakeEvent } from "./session-control-types.ts";
+import type { UserActivityKind } from "./user-activity.ts";
 
 export type { ExecOptions, ExecResult } from "../exec.ts";
 export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
@@ -467,7 +473,7 @@ export type FilesystemPolicyChecker = (request: Readonly<FilesystemPolicyRequest
 /**
  * Context passed to extension event handlers.
  */
-export type ExtensionMode = "tui" | "rpc" | "app-server" | "json" | "print";
+export type ExtensionMode = "tui" | "rpc" | "json" | "print";
 
 export interface ExtensionContext {
 	/** UI methods for user interaction */
@@ -552,6 +558,8 @@ export interface ExtensionContext {
 	getContextUsage(): ContextUsage | undefined;
 	/** Get resolved compaction settings from global/project/user overrides. */
 	getCompactionSettings(): CompactionPreparation["settings"];
+	/** Session-selected usable summarization model; throws when every authenticated account is spent. */
+	getCompactionModel?(): Model<Api> | undefined;
 	/**
 	 * Longest a tool may block in the foreground before the active model's prompt
 	 * cache expires, or `undefined` when no cache-derived budget applies. Reads the
@@ -560,6 +568,8 @@ export interface ExtensionContext {
 	getPromptCacheSafeWaitSeconds?(): number | undefined;
 	/** Maximum Goal monitor continuation backstop configured for prompt-cache waits. */
 	getPromptCacheGoalBackstopMaxSeconds?(): number;
+	/** Subscribe to host-authenticated activity; extensions cannot publish it. */
+	onUserActivity?(listener: (kind: UserActivityKind) => void): () => void;
 	/** Resolved opt-in prompt-cache keep-alive policy. */
 	getPromptCacheKeepAliveSettings?(): {
 		enabled: boolean;
@@ -579,9 +589,13 @@ export interface ExtensionContext {
 	compact(options?: CompactOptions): void;
 	/**
 	 * Prepare a request-local provider context through the normal extension
-	 * boundary. Persisted session messages are never modified.
+	 * boundary. Persisted session messages are never modified. Server search is
+	 * disabled for these auxiliary requests unless preserving a keepalive prefix.
 	 */
-	prepareProviderRequest?(messages: AgentMessage[]): Promise<ProviderRequestPreparation>;
+	prepareProviderRequest?(
+		messages: AgentMessage[],
+		options?: { allowServerSearch?: boolean },
+	): Promise<ProviderRequestPreparation>;
 	/**
 	 * The provider request prefix the next user turn will send, with an empty conversation:
 	 * the system prompt composed through a `before_agent_start` preview pass, the session's
@@ -1338,18 +1352,6 @@ export type SessionEvent =
 // ============================================================================
 // Agent Events
 // ============================================================================
-
-/**
- * Fired before each LLM call. Can modify messages.
- *
- * `messages` holds the conversation without system messages. The prompt and tool state
- * belong to Pi: it restores them after the handler returns, so a handler cannot drop
- * them and does not need to preserve them.
- */
-export interface ContextEvent {
-	type: "context";
-	messages: AgentMessage[];
-}
 
 /**
  * Fired before each LLM call, after every `context` handler has run and Pi has restored
@@ -2397,6 +2399,14 @@ export interface ExtensionAPI {
 	/** Get the value of a registered CLI flag. */
 	getFlag(name: string): boolean | string | undefined;
 
+	/**
+	 * The permission preset the permission system enforces for this session right now: the flag, then
+	 * project and global settings (with the same untrusted-project handling), then the `full-access`
+	 * default. A preset flag changed since the last tool call is applied first. `undefined` when the
+	 * permission system is not running for the session, its setup failed, or the session is not bound yet.
+	 */
+	getPermissionPreset(): PermissionPresetName | undefined;
+
 	// =========================================================================
 	// Message Rendering
 	// =========================================================================
@@ -2446,7 +2456,7 @@ export interface ExtensionAPI {
 	): void;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
-	appendEntry<T = unknown>(customType: string, data?: T): void;
+	appendEntry<T = unknown>(customType: string, data?: T, options?: AppendEntryOptions): void;
 
 	// =========================================================================
 	// Session Metadata
@@ -2847,7 +2857,16 @@ export type SendUserMessageHandler = (
 	options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 ) => void;
 
-export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
+export interface AppendEntryOptions {
+	/**
+	 * Mark the entry as bookkeeping written at session start without any user action. A session file this
+	 * process created that holds only setup entries and such bookkeeping is removed when the session closes
+	 * without a conversation (senpi#3263). Leave it unset for anything a user created or anything billed.
+	 */
+	startupBookkeeping?: boolean;
+}
+
+export type AppendEntryHandler = <T = unknown>(customType: string, data?: T, options?: AppendEntryOptions) => void;
 
 export type SetSessionNameHandler = (name: string) => void;
 
@@ -3048,8 +3067,10 @@ export interface ExtensionContextActions {
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;
 	getCompactionSettings: () => CompactionPreparation["settings"];
+	getCompactionModel?: () => Model<Api> | undefined;
 	getPromptCacheSafeWaitSeconds?: () => number | undefined;
 	getPromptCacheGoalBackstopMaxSeconds?: () => number;
+	onUserActivity?: (listener: (kind: UserActivityKind) => void) => () => void;
 	getPromptCacheKeepAliveSettings?: () => {
 		enabled: boolean;
 		maxRequestsPerSession: number;

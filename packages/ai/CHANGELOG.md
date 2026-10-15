@@ -6,6 +6,89 @@
 
 ### Added
 
+- Model cost cards can carry scheduled list-price changes (`cost.effectiveRates`, each with an ISO UTC `effectiveFrom`). Usage is billed with the card in force when it is computed, and the Argon model rows on `google` and `google-vertex` now carry the provider's 2026-12-01 price change ($2/$10 to $4/$20 per 1M tokens), so cost totals stay right across the switch without a catalog refresh ([#3378](https://github.com/code-yeongyu/senpi/issues/3378)).
+
+### Changed
+
+### Fixed
+
+- OpenCode Go models now use the documented `https://opencode.ai/inference/go` base. The legacy `/zen/go` base has no route for the native generate-content wire, so the Argon Contributor model failed with a 404 page ([#3377](https://github.com/code-yeongyu/senpi/issues/3377)).
+
+- Newer-generation provider models that accept only discrete thinking levels now get a thinking level instead of a thinking budget, which they reject with HTTP 400. Rows without a thinking-level map, such as custom or discovered models, no longer offer the off and minimal levels those models reject ([#3292](https://github.com/code-yeongyu/senpi/issues/3292)).
+
+- A model that refuses a forced first-turn tool choice with "Thinking mode does not support this tool_choice" (opencode-go DeepSeek thinking models) no longer kills the turn at launch: the request is retried once without the forced choice ([#3324](https://github.com/code-yeongyu/senpi/issues/3324)).
+
+### Removed
+
+## [2026.10.15] - 2026-10-15
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- The bundled model catalog is refreshed from models.dev and the providers' model listings (`github-copilot`, `google`, `google-vertex`, `meta`, `opencode`, `opencode-go`, `opengateway`, `openrouter`, `vercel-ai-gateway`).
+
+### Fixed
+
+- OpenCode Go models served over the Google Generative AI API now have a working transport; the refreshed catalog had added one, which broke the typed catalog. Two entries the provider no longer offers are removed from OpenCode Go.
+- Venice deepseek models (`deepseek-v4-1-flash`, `deepseek-v4-pro-0813` and the other deepseek-v4 entries) work again: requests no longer carry DeepSeek's `thinking` key, which Venice rejected with 400 on every call, and thinking runs through Venice's `reasoning_effort` instead ([#3308](https://github.com/code-yeongyu/senpi/issues/3308)).
+- Anthropic's "Third-party apps now draw from your extra usage" rejection is classified as terminal account exhaustion with a plain explanation of the billing path, and the `anthropic` provider no longer offers a Claude subscription OAuth login; subscriptions use the Agent SDK lane ([#3259](https://github.com/code-yeongyu/senpi/issues/3259)).
+
+### Removed
+
+## [2026.10.13] - 2026-10-13
+
+### Breaking Changes
+
+### Added
+
+### Changed
+
+- The advertised Claude Code fingerprint floor that Anthropic OAuth requests declare follows the bundled Claude Agent SDK to Claude Code 2.1.296 ([#3258](https://github.com/code-yeongyu/senpi/pull/3258)).
+- The bundled model catalog is refreshed from models.dev and the providers' model listings (`cloudflare-ai-gateway`, `meta`, `opengateway`, `openrouter`, `vercel-ai-gateway`) ([#3248](https://github.com/code-yeongyu/senpi/pull/3248)).
+
+### Fixed
+
+- Tool parameter schemas sent to OpenAI Chat Completions providers now always declare a root `type: "object"`, including when a root `anyOf`/`oneOf` union cannot be merged into a single object schema. DeepSeek's official API (and gateways that forward to it, such as OpenGateway's DeepSeek route) rejected such requests with `400 Invalid schema ... got 'type: null'` ([#3245](https://github.com/code-yeongyu/senpi/issues/3245)).
+
+### Removed
+
+## [2026.10.12] - 2026-10-12
+
+### Breaking Changes
+
+### Added
+
+- Assistant messages can carry a redaction-safe `errorCause` for usage limits, preserving account or model scope when the session replaces provider text with recovery advice ([#3131](https://github.com/code-yeongyu/senpi/issues/3131)).
+
+### Changed
+
+- The bundled model catalog is refreshed from models.dev and the providers' model listings (`openrouter`, `vercel-ai-gateway`).
+
+- ChatGPT subscription GPT-6.1 Sol, Fast and Ultrafast now default to a 500,000-token context budget, with compaction and context-usage accounting following that window ([#3150](https://github.com/code-yeongyu/senpi/issues/3150), requested by @code-yeongyu).
+
+- xAI catalogs select the documented Responses `web_search` shape without enabling search by default; routes require explicit `compat.supportsWebSearchPreview: true`. Google Vertex and AI Studio models now support typed `compat.supportsWebSearch` opt-in ([#3122](https://github.com/code-yeongyu/senpi/issues/3122)).
+
+### Fixed
+
+- An Anthropic session no longer wedges once a replayed native web search result expires. A request rejected with `400 Invalid \`encrypted_content\` in \`search_result\` block` is retried with the expired search turned into text (query, result titles and URLs), newer search results keep replaying unchanged, and the session remembers the demotion ([#3201](https://github.com/code-yeongyu/senpi/issues/3201)).
+
+- The shared provider-failure formatter explains account-wide usage limits with the provider, reset hint, and model-switch recovery instead of raw 429 JSON ([#3131](https://github.com/code-yeongyu/senpi/issues/3131)).
+
+- Responses search declarations honor endpoint compatibility, and completed/failed `web_search_call` items replay only on the same provider/API/model. Opted-in GLM coding-plan Anthropic requests now preserve paired native `tool_result` blocks during replay as well as displaying them in the response; a zero server-search usage counter does not hide those blocks ([#3122](https://github.com/code-yeongyu/senpi/issues/3122)).
+
+- Fixed Gemini 3+ (Vertex and AI Studio) rejecting replayed tool-call history with 400 "Function call is missing a thought_signature in functionCall parts". When an assistant step in the current turn lacks a usable thought signature on its first tool call, calls and paired results replay as text with inline image support; earlier turns and steps with a valid first signature retain structured replay. The current turn ends at the last user message carrying content, an image-only user turn included ([#3055](https://github.com/code-yeongyu/senpi/pull/3055)). Thanks to @Bearmancer.
+
+### Removed
+
+## [2026.10.11] - 2026-10-11
+
+### Breaking Changes
+
+### Added
+
 ### Changed
 
 - The bundled model catalog is refreshed from models.dev and the providers' model listings (`openrouter`).

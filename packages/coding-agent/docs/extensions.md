@@ -709,7 +709,7 @@ The `systemPromptOptions` field gives extensions access to the same structured d
 
 Inside `before_agent_start`, `event.systemPrompt` and `ctx.getSystemPrompt()` both reflect the chained system prompt as of the current handler. Later `before_agent_start` handlers can still modify it again.
 
-`event.preview` is `true` when senpi composes the next turn's system prompt before any user prompt exists: the session-start prompt-cache prewarm sends the first turn's prefix ahead of time, and `ctx.getPromptCachePrefixRequest()` returns that prefix to extensions. In a preview `event.prompt` is empty and no turn follows.
+`event.preview` is `true` when senpi composes the next turn's system prompt before any user prompt exists. Prompt-cache prewarm sends that prefix only after the first real composer activity and only when `promptCache.keepAlive.enabled` is `true` (default `false`, so prewarm is off by default). Session start, resume, fork, reload, and extension-injected text never trigger prewarm. `ctx.getPromptCachePrefixRequest()` also returns this prefix to extensions. In a preview `event.prompt` is empty and no turn follows.
 
 A preview only reaches handlers that opt in with `{ previewSafe: true }`:
 
@@ -867,6 +867,10 @@ pi.on("tool_execution_end", async (event, ctx) => {
 #### context
 
 Fired before each LLM call. Modify messages non-destructively. See [Session Format](session-format.md) for message types.
+
+`event.source` is `"agent"` for the live agent request and `"projection"` for `prepareProviderRequest` calls, including summarizer inputs. Projections must not advance state belonging to the live request, even when their messages match the branch. The session journal can lag a live request, so transcript equality is not a reliable substitute for this marker.
+
+`ctx.prepareProviderRequest(messages, excludeExtensionPath?, options?)` returns the projected context and its payload transform. In this release the transform excludes server-search tools by default, while retaining client function tools such as `web_search`. Call `ctx.prepareProviderRequest(messages, undefined, { allowServerSearch: true })` when a request must mirror the main turn's native tools and include fields, as keepalive does. Cache-friendly compaction retains the original main-turn payload hook separately; standalone summaries and session titles exclude server search.
 
 ```typescript
 pi.on("context", async (event, ctx) => {
@@ -1257,6 +1261,12 @@ Optional read-only getter for the absolute path to the current session's authori
 
 Shell tools and eval kernels expose this value as `PI_GOAL_STORE_FILE` and `ctx.cwd` as `PI_SESSION_CWD`. Hand-built contexts and older hosts may omit the getter, in which case `PI_GOAL_STORE_FILE` is unset.
 
+### ctx.onUserActivity()
+
+Optional subscription-only hook for host-authenticated activity. `ctx.onUserActivity(listener)` calls a synchronous listener with `"draft"` for actual terminal composer edits or `"prompt"` for user-originated prompt, steer, or follow-up admission, including RPC. It returns an unsubscribe function and is also removed when the extension generation retires. The host owns the emitter; `pi.events.emit("user_activity", ...)` cannot invoke this hook. Extension `pasteToEditor`, programmatic draft restoration, and lifecycle events do not publish activity.
+
+Cache prewarm consumes the first activity per session generation. It is opt-in via `promptCache.keepAlive.enabled` (default `false`): a first draft edit may prewarm, while prompt admission uses the real request instead of issuing an extra warm call. This one-shot policy does not gate the existing idle keep-alive loop after completed turns.
+
 ### ctx.modelRegistry / ctx.model / ctx.thinkingLevel / ctx.scopedModels
 
 Access to models, providers, and resolved authentication. `ctx.modelRegistry.getProvider(id)` returns the effective pi-ai provider, while `getProviderAuth(id)` resolves its current API key, headers, base URL, and provider-scoped environment without requiring a loaded model. `ctx.model` is the active model, and `ctx.thinkingLevel` is its current effective thinking level.
@@ -1326,6 +1336,10 @@ if (usage && usage.tokens > 100_000) {
   // ...
 }
 ```
+
+### ctx.getCompactionModel()
+
+Optional on hosts that expose session-owned summarization routing. Returns the current session model while its account is usable, preserving builtin compaction behavior even when core compaction has a model override. For a spent account, it tries the held switch target, the configured summary override, then an authenticated alternate with enough context capacity for the active transcript and reserved output. It does not change the active session selection and throws an account-limit error when no usable summary model is available.
 
 ### ctx.compact()
 
@@ -2016,9 +2030,17 @@ From a command handler, send the text before the handler returns: messages anoth
 
 See [send-user-message.ts](../examples/extensions/send-user-message.ts) for a complete example.
 
-### pi.appendEntry(customType, data?)
+### pi.appendEntry(customType, data?, options?)
 
 Persist extension data. Custom entries do NOT participate in LLM context. In interactive mode, they can also render inside the chat transcript when paired with `pi.registerEntryRenderer()`.
+
+Pass `{ startupBookkeeping: true }` for an entry your extension writes at session start without any user action (a scan record, an environment fingerprint). A session that closes without a conversation then leaves no file behind if it holds only setup entries and such bookkeeping. Leave the option unset for anything a user created or anything billed: an unmarked entry keeps the session file.
+
+```typescript
+pi.on("session_start", () => {
+  pi.appendEntry("my-ext.scan", { at: Date.now() }, { startupBookkeeping: true });
+});
+```
 
 ```typescript
 pi.appendEntry("my-state", { count: 42 });
@@ -2234,6 +2256,18 @@ pi.registerFlag("plan", {
 if (pi.getFlag("plan")) {
   // Plan mode enabled
 }
+```
+
+### pi.getPermissionPreset()
+
+The permission preset the built-in permission system enforces for this session right now (`"full-access"`, `"workspace"`, `"accept-edits"`, `"auto"`, `"read-only"` or `"ask"`). It resolves like the permission system does: the `--permission-preset` flag, then project and global settings (with the same untrusted-project handling), then the `full-access` default. A preset flag changed on a live session is applied before the read. It returns `undefined` when the permission system is not running for the session, its setup failed, or the session is not bound yet (during extension loading).
+
+```typescript
+pi.on("tool_call", () => {
+  if (pi.getPermissionPreset() === "full-access") {
+    // Nothing will prompt for permission in this session.
+  }
+});
 ```
 
 ### pi.exec(command, args, options?)

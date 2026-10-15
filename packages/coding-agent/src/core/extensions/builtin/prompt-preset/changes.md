@@ -20,6 +20,26 @@
 
 # prompt-preset Extension Changes
 
+## 2026-10-15 - Every preset states the same handoff condition (senpi#3323)
+
+### What changed
+
+- `gpt-surface.ts` `GPT_HANDOFF_MOMENTS` carries the senpi#3323 condition from `dynamic-prompt/handoff.ts`; `gpt-6-astra.ts` `HANDOFF_REPORT` now interpolates `GPT_HANDOFF_MOMENTS.terminal` instead of a copy of it, so its app replacement cannot drift.
+- Final-message rules apply to a change ("if the turn changed something", "The final message of a change ...", "for a change, the Handoff block"): `claude-opus-5-5.ts`, `claude-opus-5.ts`, `claude-sonnet-5-5.ts`, `claude-haiku-5-5.ts`, `claude-fable-5.ts`, `claude-fable-5-1.ts`, `kimi-k3.ts`, `gpt-5.5.ts`, `gpt-5.6.ts`, `grok-4.5.ts`, and `gpt-6-astra.ts` `FINAL_MESSAGE_SHAPE` with its app replacement.
+- `test/suite/prompt-presets-native-baseline.json` is recaptured: every terminal and app hash changes, every chat hash is unchanged.
+
+### Why
+
+- Same cause as `dynamic-prompt/changes.md` (senpi#3323).
+
+### Why an extension could not handle it
+
+- These lines are the preset cores themselves.
+
+### Expected merge conflict zones
+
+- Fork-only files. The handoff-moment and final-message sentences in each preset.
+
 ## 2026-10-04 - Routing and handoff format examples are no longer markdown quote lines (senpi#2714)
 
 ### What changed
@@ -1511,3 +1531,21 @@ Per-model prompt preset extension. Selects a tuned system prompt based on the ac
 ### Expected merge conflict zones on next upstream sync
 - LOW: `gpt-5{,.2,.3-codex,.4,.5}.ts` `tuningSection` template literals - upstream has no equivalent helper. If upstream adds its own tuning lines, append rather than overwrite the file-operations block.
 - LOW: `file-operations.ts` is new and additive; no upstream counterpart.
+
+## 2026-10-11 - Public Native prompt generation for adapters (#3104)
+
+### What changed
+
+The model cores and `presets.ts` forward optional host branding without changing Native defaults, while `public.ts` exposes the same generators through the narrowed type views in `generation.ts`.
+
+### Why
+
+Hosts need Native's actual model bodies without duplicate templates or process-global branding changes.
+
+### Why an extension could not handle it
+
+The package export and generator input types are engine-owned contracts.
+
+### Expected merge conflict zones
+
+Builder exports, option forwarding, and application-name interpolations in the model cores.
