@@ -2,8 +2,8 @@
 
 ### What changed
 
-- `packages/agent/src/agent-loop.ts`: `abortError` converts supplied non-Error reasons to text instead of replacing them with the generic abort message. Error instances remain unchanged; an absent reason keeps the fallback.
-- The existing pre-stream test owner covers default, string, numeric and Error reasons, and separately pins provider-creation failure messages when the caller has also aborted.
+- `packages/agent/src/agent-loop.ts`: `abortError` converts supplied non-Error reasons to text instead of replacing them with the generic abort message. Error instances remain unchanged; absent reasons and values that cannot be converted to text keep the fallback.
+- The existing pre-stream test owner covers default, string, numeric, Error and unprintable object reasons, and separately pins provider-creation failure messages when the caller has also aborted.
 
 ### Why
 

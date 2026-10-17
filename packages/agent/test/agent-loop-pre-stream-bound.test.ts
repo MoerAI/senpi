@@ -184,11 +184,16 @@ describe("the start bound covers the work before the provider stream (senpi#3471
 	});
 
 	it.each([
-		{ reason: undefined, errorMessage: undefined },
-		{ reason: "user stop", errorMessage: "user stop" },
-		{ reason: 42, errorMessage: "42" },
-		{ reason: new Error("caller error"), errorMessage: "caller error" },
-	])("lets a step finish after a caller abort with reason $reason", async ({ reason, errorMessage }) => {
+		{ label: "default", reason: undefined, errorMessage: undefined },
+		{ label: "string", reason: "user stop", errorMessage: "user stop" },
+		{ label: "number", reason: 42, errorMessage: "42" },
+		{ label: "Error", reason: new Error("caller error"), errorMessage: "caller error" },
+		{
+			label: "unprintable object",
+			reason: Object.create(null) as Record<string, unknown>,
+			errorMessage: "Request was aborted",
+		},
+	])("lets a step finish after a caller abort with a $label reason", async ({ reason, errorMessage }) => {
 		// given: the key lookup is still running when the caller aborts, then completes
 		const controller = new AbortController();
 		const asked = Promise.withResolvers<void>();
