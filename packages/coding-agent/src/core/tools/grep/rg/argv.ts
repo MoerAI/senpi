@@ -1,5 +1,5 @@
 /**
- * Characters one rg command line may use. Windows caps a whole command line at
+ * Budget for one rg command line. Windows caps a whole command line at
  * 32,767 characters. POSIX ARG_MAX (1 MiB on macOS, 2 MiB on Linux) also counts
  * the environment and one pointer per argument; 256 KiB leaves room for both.
  * Batches split to stay under it and never truncate an argument.
@@ -12,11 +12,11 @@ export function argvBudget(platform: NodeJS.Platform = process.platform): number
 export const EXECUTABLE_RESERVE = 4096;
 
 /**
- * Characters one argument occupies on the command line: its separator and, on Windows,
- * the surrounding quotes plus the backslash escapes libuv adds before quotes and trailing backslashes.
+ * POSIX counts UTF-8 bytes, a NUL terminator and an eight-byte argv pointer.
+ * Windows counts characters, surrounding quotes and libuv's backslash escapes.
  */
 export function argvCost(argument: string, platform: NodeJS.Platform = process.platform): number {
-	if (platform !== "win32") return argument.length + 1;
+	if (platform !== "win32") return Buffer.byteLength(argument) + 1 + 8;
 	const quotes = argument.match(/"/g)?.length ?? 0;
 	const doubled = argument.match(/\\+(?="|$)/g)?.join("").length ?? 0;
 	return argument.length + 3 + quotes + doubled;
@@ -32,8 +32,10 @@ export function commandLineOverflow(
 ): string | undefined {
 	const budget = argvBudget(platform);
 	const length = EXECUTABLE_RESERVE + args.reduce((sum, argument) => sum + argvCost(argument, platform), 0);
-	if (length > budget)
-		return `the ripgrep command line would be ${length} characters, over the ${budget}-character limit on ${platform}`;
+	if (length > budget) {
+		const unit = platform === "win32" ? "character" : "byte";
+		return `the ripgrep command line would be ${length} ${unit}s, over the ${budget}-${unit} limit on ${platform}`;
+	}
 	if (platform !== "linux") return undefined;
 	const longest = Math.max(0, ...args.map((argument) => Buffer.byteLength(argument)));
 	if (longest >= LINUX_MAX_ARG_STRLEN)

@@ -8,7 +8,7 @@ export interface RgEngineOptions {
 	/** Process and clock seams keep cancellation and ordered-deadline tests event-driven. */
 	spawn?: (command: string, args: string[], options: SpawnOptionsWithoutStdio) => ChildProcessWithoutNullStreams;
 	now?: () => number;
-	/** Batches per-file arguments under this many command-line characters instead of the platform budget. */
+	/** Batches per-file arguments under this many POSIX bytes or Windows characters instead of the platform budget. */
 	batchBudget?: number;
 }
 

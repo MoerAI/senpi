@@ -1,5 +1,29 @@
 # core/tools changes
 
+## 2026-10-18 - Byte-accurate POSIX ripgrep budgets (senpi#3552)
+
+### What changed
+
+- `packages/coding-agent/src/core/tools/grep/rg/argv.ts`: count UTF-8 bytes, NUL terminators and argv pointers on POSIX; report the corresponding budget unit.
+- `packages/coding-agent/src/core/tools/grep/rg-engine.ts`: precheck matcher and walker flags with the pattern before resolving roots or launching ripgrep.
+- `packages/coding-agent/src/core/tools/grep/rg/process.ts`: document the platform-specific units of the existing batch-budget option.
+
+### Why
+
+- `packages/coding-agent/src/core/tools/grep/rg/argv.ts`: UTF-16 string lengths undercount multibyte filenames and omit pointer storage.
+- `packages/coding-agent/src/core/tools/grep/rg-engine.ts`: a pattern that fits alone can exceed the budget with search flags and otherwise receive a misleading engine-unavailable error.
+- `packages/coding-agent/src/core/tools/grep/rg/process.ts`: the option measures bytes on POSIX and characters on Windows, not characters on every platform.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/tools/grep/rg/argv.ts`, `packages/coding-agent/src/core/tools/grep/rg-engine.ts` and `packages/coding-agent/src/core/tools/grep/rg/process.ts`: the builtin grep engine owns argument planning and its final pre-launch guard; extensions do not intercept those internal launches.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/tools/grep/rg/argv.ts`: LOW, cost calculation and overflow diagnostics.
+- `packages/coding-agent/src/core/tools/grep/rg-engine.ts`: LOW, search argument preparation and pattern preflight.
+- `packages/coding-agent/src/core/tools/grep/rg/process.ts`: LOW, the batch-budget documentation.
+
 ## 2026-09-30 - Sync with upstream v0.99.1 (6a4af07d6): extension loader, runner and wrappers
 
 ### What changed

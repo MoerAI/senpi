@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GrepEngineRequest, GrepEngineResult } from "../../../src/core/tools/grep/engine.ts";
 import { matcherFlags, segmentFlags, walkerFlags } from "../../../src/core/tools/grep/rg/args.ts";
 import { argvBudget, argvCost, commandLineOverflow, EXECUTABLE_RESERVE } from "../../../src/core/tools/grep/rg/argv.ts";
@@ -12,6 +12,7 @@ import {
 	type Root,
 	resolveRoots,
 } from "../../../src/core/tools/grep/rg/enumerate.ts";
+import { createRgRunner } from "../../../src/core/tools/grep/rg/process.ts";
 import { planSegments } from "../../../src/core/tools/grep/rg/segments.ts";
 import { createRgEngine } from "../../../src/core/tools/grep/rg-engine.ts";
 
@@ -68,12 +69,56 @@ describe("#3516 rg launches fit the whole OS command line", () => {
 	});
 
 	it("counts Windows quoting: quotes, escaped quotes and doubled backslash runs", () => {
-		expect(argvCost("ab", "darwin")).toBe(3);
+		expect(argvCost("ab", "darwin")).toBe(11);
 		expect(argvCost("a b", "win32")).toBe(6);
 		expect(argvCost('a"b', "win32")).toBe(7);
 		expect(argvCost("C:\\dir\\", "win32")).toBe("C:\\dir\\".length + 3 + 1);
 		expect(argvCost('a\\\\"b c\\', "win32")).toBe('a\\\\"b c\\'.length + 3 + 1 + 2 + 1);
 	});
+
+	// #3552: the independent oracle counts UTF-8 bytes, a NUL, and an eight-byte argv pointer.
+	for (const platform of ["darwin", "linux"] as const) {
+		it(`counts UTF-8 and argv pointers at the ${platform} boundary`, () => {
+			expect(argvCost("한글", platform)).toBe(15);
+			const count = (argvBudget(platform) - EXECUTABLE_RESERVE) / 9;
+			const args = Array.from({ length: count }, () => "");
+			expect(commandLineOverflow(args, platform)).toBeUndefined();
+			expect(commandLineOverflow([...args, ""], platform)).toBeDefined();
+		});
+
+		it(`keeps non-ASCII paths within the independent ${platform} byte budget`, () => {
+			const request: GrepEngineRequest = { pattern: "needle", paths: [base], cwd: base };
+			const walk = walkerFlags(request);
+			const matcher = matcherFlags(request);
+			const files = Array.from({ length: 3000 }, (_, index) => fileCandidate(index, `${"한".repeat(64)}.ts`));
+			const segments = planSegments(files, request, { walk, matcher, platform });
+
+			expect(segments.length).toBeGreaterThan(1);
+			expect(segments.flat()).toEqual(files);
+			for (const segment of segments) {
+				const bytes =
+					EXECUTABLE_RESERVE +
+					segmentFlags(segment, request.pattern, walk, matcher).reduce(
+						(sum, argument) => sum + Buffer.byteLength(argument) + 9,
+						0,
+					);
+				expect(bytes).toBeLessThanOrEqual(argvBudget(platform));
+			}
+
+			const pair = files.slice(0, 2);
+			const exact =
+				EXECUTABLE_RESERVE +
+				segmentFlags(pair, request.pattern, walk, matcher).reduce(
+					(sum, argument) => sum + Buffer.byteLength(argument) + 9,
+					0,
+				);
+			expect(planSegments(pair, request, { walk, matcher, platform, budget: exact })).toEqual([pair]);
+			expect(planSegments(pair, request, { walk, matcher, platform, budget: exact - 1 })).toEqual([
+				[pair[0]],
+				[pair[1]],
+			]);
+		});
+	}
 
 	it("packs a quote-and-backslash-heavy batch exactly at the win32 limit and splits at limit - 1", () => {
 		const request: GrepEngineRequest = { pattern: "needle", paths: [base], cwd: base };
@@ -178,6 +223,47 @@ describe("#3516 rg launches fit the whole OS command line", () => {
 			message: expect.stringContaining("too long"),
 		});
 		expect(calls).toEqual([]);
+	});
+
+	it("rejects a pattern that exceeds the budget only with its search flags (#3552)", async () => {
+		const root = await realpath(await mkdtemp(join(tmpdir(), "grep-3552-flags-")));
+		cleanups.push(() => rm(root, { recursive: true, force: true }));
+		const path = join(root, "one.txt");
+		await writeFile(path, "needle\n");
+		const request: GrepEngineRequest = {
+			pattern: "a".repeat(process.platform === "win32" ? 27_000 : 120_000),
+			literal: true,
+			paths: [path],
+			cwd: root,
+			glob: Array.from(
+				{ length: process.platform === "win32" ? 8 : 144 },
+				(_, index) => `!ignore-${index}-${"a".repeat(1000)}`,
+			),
+		};
+		expect(commandLineOverflow([request.pattern])).toBeUndefined();
+		expect(
+			commandLineOverflow([...matcherFlags(request), ...walkerFlags(request), "--", request.pattern]),
+		).toBeDefined();
+		const calls: string[][] = [];
+		const engine = createRgEngine({
+			spawn: (command, args, options) => {
+				calls.push(args);
+				return spawn(command, args, options);
+			},
+		});
+
+		await expect(engine.search(request)).rejects.toMatchObject({ code: "INVALID_PATTERN" });
+		expect(calls).toEqual([]);
+	});
+
+	it("refuses an oversized argument list at the runner before launching (#3552)", async () => {
+		const launch = vi.fn(() => {
+			throw new Error("unexpected ripgrep launch");
+		});
+		const run = createRgRunner({ executable: "rg", launch, now: () => 0, deadline: 1000, check: () => {} });
+
+		await expect(run(["x".repeat(argvBudget())], tmpdir())).rejects.toMatchObject({ code: "ENGINE_UNAVAILABLE" });
+		expect(launch).not.toHaveBeenCalled();
 	});
 
 	it("names the platform limit an argument list would break", () => {

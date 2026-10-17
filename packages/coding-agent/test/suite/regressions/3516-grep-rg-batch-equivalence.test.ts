@@ -26,7 +26,7 @@ beforeAll(async () => {
 		"ignored.ts",
 		"notes.md",
 		"bin.dat",
-		...(posix ? ["new\nline.ts", "back\\slash\\.ts", "C:\\Windows\\style.ts"] : []),
+		...(posix ? ["new\nline.ts", "back\\slash\\.ts", "C:\\Windows\\style.ts", "trailing\\"] : []),
 	];
 	for (const [index, name] of names.entries()) {
 		const dir = join(root, `n${String(index).padStart(2, "0")}`);
@@ -75,6 +75,14 @@ async function run(budget: number | undefined, request: GrepEngineRequest): Prom
 }
 
 describe("#3516 batched rg launches return exactly the per-file results", () => {
+	if (posix)
+		it("finds a known hit in a POSIX filename ending in a backslash (#3552)", async () => {
+			const path = explicit.find((entry) => entry.endsWith("trailing\\"));
+			expect(path).toBeDefined();
+			const result = await createRgEngine().search({ pattern: "Needle", paths: [path!], cwd: root });
+			expect(result.counts).toMatchObject({ matches: 1, files: 1 });
+		});
+
 	for (const [label, option] of options)
 		it(label, async () => {
 			for (const paths of [explicit, [join(root, "tree"), ...explicit.slice(0, 5)]]) {

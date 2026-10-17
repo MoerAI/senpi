@@ -47,11 +47,13 @@ export class RgGrepEngine implements GrepEngine {
 			if (signal?.aborted) throw new GrepEngineError("ABORTED", "Grep search aborted");
 			if (this.now() >= deadline) throw new SearchTimeout();
 		};
-		const overflow = commandLineOverflow([request.pattern]);
+		const walk = walkerFlags(request);
+		const matcher = matcherFlags(request);
+		const overflow = commandLineOverflow([...matcher, ...walk, "--", request.pattern]);
 		if (overflow)
 			throw new GrepEngineError(
 				"INVALID_PATTERN",
-				`Pattern is too long to pass to ripgrep: ${overflow}. Shorten it.`,
+				`Pattern is too long to pass to ripgrep with these search flags: ${overflow}. Shorten it or reduce the globs.`,
 			);
 		try {
 			check();
@@ -60,8 +62,6 @@ export class RgGrepEngine implements GrepEngine {
 			const executable = await ensureTool("rg");
 			if (!executable)
 				throw new GrepEngineError("ENGINE_UNAVAILABLE", "ripgrep is unavailable and could not be downloaded");
-			const walk = walkerFlags(request);
-			const matcher = matcherFlags(request);
 			const run = createRgRunner({
 				executable,
 				launch: (command, args, options) => this.launch(command, args, options),
