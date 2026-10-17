@@ -81,11 +81,21 @@ describe("senpi#3306 network blips never strand a session on a fallback", () => 
 		expect(harness.eventsOfType("retry_fallback_reverted")).toEqual([]);
 	});
 
-	it("#given a rate limit that also mentions a timeout #when the next turn starts on a frozen clock #then the primary stays held", async () => {
+	// #3335: provider verdicts and certificate faults must not get a next-turn network retry.
+	it.each([
+		"429 Too Many Requests: rate limit reached, request timed out",
+		"internal error; request timed out",
+		"Internal error: stream terminated",
+		"5xx: timed out",
+		"Error: terminated (rate_limit_error)",
+		"SSL certificate problem: unable to get local issuer certificate",
+		"tls: failed to verify certificate: x509: certificate has expired",
+		"status 429x timeout",
+	])("#given %s #when the next turn starts on a frozen clock #then the primary stays held", async (errorMessage) => {
 		const harness = await flakyHarness(harnesses, 1);
 		harness.setResponses([
-			rateLimitedTimeout(),
-			rateLimitedTimeout(),
+			failure(errorMessage),
+			failure(errorMessage),
 			fauxAssistantMessage("fallback answer"),
 			fauxAssistantMessage("fallback again"),
 		]);
@@ -105,6 +115,7 @@ describe("isPureNetworkTransient", () => {
 		"Request timed out after 60000ms",
 		"socket hang up",
 		"Client network socket disconnected before secure TLS connection was established",
+		"TLS handshake timeout",
 		"write EPIPE",
 	])("#given %s #then it is a network blip", (message) => {
 		expect(isPureNetworkTransient(message)).toBe(true);
@@ -121,6 +132,14 @@ describe("isPureNetworkTransient", () => {
 		"503 upstream connect error or disconnect/reset before headers. reset reason: overflow",
 		"service unavailable: connection error",
 		"model is experiencing high demand; timed out",
+		"internal error; request timed out",
+		"Internal error: stream terminated",
+		"5xx: timed out",
+		"Error: terminated (rate_limit_error)",
+		"SSL certificate problem: unable to get local issuer certificate",
+		"tls: failed to verify certificate: x509: certificate has expired",
+		"ERR_TLS_CERT_ALTNAME_INVALID",
+		"status 429x timeout",
 		undefined,
 	])("#given %s #then it is not a pure network blip", (message) => {
 		expect(isPureNetworkTransient(message)).toBe(false);

@@ -1,3 +1,21 @@
+## 2026-10-18 - Provider verdicts and certificate faults are not network blips (senpi#3335)
+
+### What changed
+
+- `packages/coding-agent/src/core/retry-fallback/transient-network.ts`: recognize internal errors, literal 5xx and underscore rate-limit codes as provider verdicts; match the existing cooldown's 429 precedence; exclude certificate/trust failures from the shared transport predicate.
+
+### Why
+
+- `packages/coding-agent/src/core/retry-fallback/transient-network.ts`: a timeout or terminated stream beside those failures bypassed the circuit and retried the failed primary on the next turn; certificate failures also received the shorter transport cooldown.
+
+### Why an extension could not handle it
+
+- `packages/coding-agent/src/core/retry-fallback/transient-network.ts`: the core controller and cooldown classifier consume this predicate before extension error handling.
+
+### Expected merge conflict zones
+
+- `packages/coding-agent/src/core/retry-fallback/transient-network.ts`: LOW, provider-verdict expressions and the shared transport predicate.
+
 ## 2026-10-16 - The fallback circuit takes one step per open episode and only reroutes sessions it concerns (senpi#3467)
 
 ### What changed

@@ -41,6 +41,10 @@ describe("SelectorCooldowns", () => {
 		["anthropic stream stop", "Anthropic stream ended before message_stop", 60_000],
 		["terminal response event", "stream ended before a terminal response event", 60_000],
 		["http2 no response", "http2 request did not get a response", 60_000],
+		// #3335: trust/configuration errors keep the generic cooldown, not the transport-blip bucket.
+		["SSL issuer certificate", "SSL certificate problem: unable to get local issuer certificate", 5 * 60_000],
+		["TLS certificate expiry", "tls: failed to verify certificate: x509: certificate has expired", 5 * 60_000],
+		["TLS certificate hostname", "ERR_TLS_CERT_ALTNAME_INVALID", 5 * 60_000],
 		["unknown", undefined, 5 * 60_000],
 		["unknown provider hiccup", "weird provider hiccup", 5 * 60_000],
 		["empty", "", 5 * 60_000],
