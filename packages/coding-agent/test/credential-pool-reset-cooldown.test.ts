@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { COOLDOWN_BASE_MS, COOLDOWN_CAP_MS, classifyCredentialFailure } from "../src/core/credential-pool/classify.ts";
+import { usageLimitReset } from "../src/core/credential-pool/reset-time.ts";
 
 // 2026-09-30 12:00 in Asia/Seoul.
 const NOW_MS = Date.UTC(2026, 8, 30, 3, 0, 0);
@@ -96,5 +97,37 @@ describe("a usage limit's reset time becomes that account's cooldown (senpi#1768
 			cooldownMs: COOLDOWN_BASE_MS,
 			retryAfterWasCapped: false,
 		});
+	});
+});
+
+// #3348: callers need both the reset duration and whether it names an instant.
+describe("provider reset prose", () => {
+	const nowMs = Date.parse("2026-09-21T17:17:32Z");
+
+	test.each([
+		[
+			"compact Antigravity duration",
+			"Individual quota reached. Resets in 4h9m10s.",
+			{ ms: 14_950_000, kind: "relative" },
+		],
+		[
+			"Gemini reset after",
+			"You have exhausted your capacity on this model. Your quota will reset after 58s.",
+			{ ms: 58_000, kind: "relative" },
+		],
+		["spaced duration control", "resets in 4 hours 9 minutes", { ms: 14_940_000, kind: "relative" }],
+		[
+			"Z.ai Beijing wall clock",
+			'{"error":{"code":"1308","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-09-22 01:18:11"}}',
+			{ ms: 39_000, kind: "absolute" },
+		],
+		["Z.ai explicit UTC", "Your limit will reset at 2026-09-21T17:18:11Z", { ms: 39_000, kind: "absolute" }],
+		["Z.ai explicit offset", "Your limit will reset at 2026-09-21 13:18:11-04:00", { ms: 39_000, kind: "absolute" }],
+		["past Z.ai reset", "Your limit will reset at 2026-09-21 01:18:11", { ms: 0, kind: "absolute" }],
+		["invalid Z.ai clock", "Your limit will reset at 2026-09-22 99:18:11", undefined],
+		["unrelated zone-less date", "reset at 2026-09-22 01:18:11", undefined],
+		["unit prefix in a word", "resets in 4hourslater", undefined],
+	] as const)("%s", (_label, text, expected) => {
+		expect(usageLimitReset(text, nowMs)).toEqual(expected);
 	});
 });

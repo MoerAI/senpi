@@ -67,6 +67,10 @@ describe("senpi#3303 the circuit honors a usage limit's reset window and nothing
 			"a usage limit resetting in 30 seconds",
 			{ errorMessage: "You've hit your usage limit. Your limit will reset in 30 seconds." },
 		],
+		[
+			"a short retry with a malformed absolute clock",
+			{ errorMessage: "You've hit your usage limit. Retry in 2s. Your limit resets 25pm (UTC)." },
+		],
 	])("#given repeated failures with %s #then the open keeps the doubling cooldown floor", (_label, failure) => {
 		const clock = { mono: 0, wall: WALL_EPOCH };
 		const circuit = circuitAt(clock);
@@ -99,6 +103,22 @@ describe("senpi#3303 the circuit honors a usage limit's reset window and nothing
 		});
 
 		clock.mono += 31_000;
+		expect(circuit.isOpen(SELECTOR)).toBe(false);
+	});
+
+	// #3325: a short retry hint must not hide the actual usage-limit reset.
+	it.each([
+		"Please retry in 5s. Your limit resets 4:49pm (UTC).",
+		"Your limit resets 4:49pm (UTC). Please retry in 5s.",
+		"Please retry in 5 minutes. Your limit resets 4:49pm (UTC).",
+	])("uses the absolute reset in mixed prose: %s", (resetText) => {
+		const clock = { mono: 0, wall: WALL_EPOCH };
+		const circuit = circuitAt(clock);
+		circuit.noteFailure(SELECTOR, { errorMessage: `You've hit your usage limit. ${resetText}` });
+
+		clock.mono = MINUTE;
+		expect(circuit.isOpen(SELECTOR)).toBe(true);
+		clock.mono = 2 * MINUTE;
 		expect(circuit.isOpen(SELECTOR)).toBe(false);
 	});
 

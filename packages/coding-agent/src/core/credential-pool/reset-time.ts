@@ -13,14 +13,18 @@ const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "
 const RESET_AT_KEYS = new Set(["resets_at"]);
 const RESET_AFTER_SECONDS_KEYS = new Set(["reset_after_seconds"]);
 
-// "resets in 3 hours", "try again in 2h 30m", "retry in 45 minutes".
+// "resets in 3 hours", "try again in 2h30m", "reset after 58s".
 const RELATIVE_RE =
-	/\b(?:resets?|try again|retry)\s+in\s+~?((?:\d+(?:\.\d+)?\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b(?:\s*,?\s*(?:and\s+)?)?)+)/i;
-const RELATIVE_PART_RE = /(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b/gi;
+	/\b(?:resets?|try again|retry)\s+(?:in|after)\s+~?((?:\d+(?:\.\d+)?\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)(?![a-z])(?:\s*,?\s*(?:and\s+)?)?)+)/i;
+const RELATIVE_PART_RE = /(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)(?![a-z])/gi;
 
 // "resets 12am (Asia/Seoul)", "resets Oct 2, 9am", "try again at 12:00 AM".
 const CLOCK_RE =
 	/\b(?:resets?|try again)\s+(?:at\s+|on\s+)?(?:([a-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s?m\b\.?(?:\s*\(([A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)*)\))?/i;
+
+// Z.ai 1308/1310 errors print this wall-clock stamp in Beijing time unless a zone is explicit.
+const ZAI_RESET_RE =
+	/\byour limit will reset at (\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(Z|[+-]\d{2}:?\d{2})?(?=$|[\s.,;)"'])/i;
 
 export function usageLimitResetMs(text: string, nowMs: number): number | undefined {
 	return usageLimitReset(text, nowMs)?.ms;
@@ -33,10 +37,10 @@ export function usageLimitReset(
 ): { readonly ms: number; readonly kind: "absolute" | "relative" } | undefined {
 	const json = fromJsonFields(text, nowMs);
 	if (json !== undefined) return { ms: json, kind: "absolute" };
+	const clock = fromClockProse(text, nowMs) ?? fromZaiProse(text, nowMs);
+	if (clock !== undefined) return { ms: clock, kind: "absolute" };
 	const relative = fromRelativeProse(text);
-	if (relative !== undefined) return { ms: relative, kind: "relative" };
-	const clock = fromClockProse(text, nowMs);
-	return clock === undefined ? undefined : { ms: clock, kind: "absolute" };
+	return relative === undefined ? undefined : { ms: relative, kind: "relative" };
 }
 
 function fromJsonFields(text: string, nowMs: number): number | undefined {
@@ -104,6 +108,13 @@ function unitMs(unit: string): number {
 	if (u.startsWith("h")) return HOUR_MS;
 	if (u === "s" || u.startsWith("sec")) return 1000;
 	return MINUTE_MS;
+}
+
+function fromZaiProse(text: string, nowMs: number): number | undefined {
+	const match = ZAI_RESET_RE.exec(text);
+	if (!match) return undefined;
+	const epochMs = Date.parse(`${match[1]}T${match[2]}${match[3] ?? "+08:00"}`);
+	return Number.isNaN(epochMs) ? undefined : Math.max(0, epochMs - nowMs);
 }
 
 function fromClockProse(text: string, nowMs: number): number | undefined {
