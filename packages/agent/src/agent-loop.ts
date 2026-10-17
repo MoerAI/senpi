@@ -825,7 +825,7 @@ type AssistantEventReader = {
 };
 
 function abortError(reason: unknown): Error {
-	return reason instanceof Error ? reason : new Error("Request was aborted");
+	return reason instanceof Error ? reason : new Error(reason === undefined ? "Request was aborted" : String(reason));
 }
 
 function closeAssistantIterator(iterator: AsyncIterator<AssistantMessageEvent>): void {
