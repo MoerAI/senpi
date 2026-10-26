@@ -1,4 +1,4 @@
-// Regression for #3149: a retired runner's non-boundary dispatch must not report its handlers' failures.
+// Regression for #3149: retired-context failures are not genuine extension errors.
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionContext, ExtensionError } from "../../../src/core/extensions/types.ts";
@@ -56,6 +56,10 @@ describe("retired runner non-boundary dispatch (#3149)", () => {
 					pi.on("before_agent_start", (_event, ctx) => touch("before_agent_start", ctx));
 					pi.on("message_end", (_event, ctx) => touch("message_end", ctx));
 					pi.on("agent_end", (_event, ctx) => touch("agent_end", ctx));
+					pi.on("context", (_event, ctx) => touch("context", ctx));
+					pi.on("context_with_system", (_event, ctx) => touch("context_with_system", ctx));
+					pi.on("before_provider_request", (_event, ctx) => touch("before_provider_request", ctx));
+					pi.on("before_provider_headers", (_event, ctx) => touch("before_provider_headers", ctx));
 				},
 			],
 		});
@@ -66,10 +70,56 @@ describe("retired runner non-boundary dispatch (#3149)", () => {
 		harness.setResponses([fauxAssistantMessage("after retirement")]);
 
 		await harness.session.prompt("dispatch after retirement");
+		await runner.emitContext([]);
+		await runner.emitBeforeProviderRequest({});
+		await runner.emitBeforeProviderHeaders({});
 
-		expect(new Set(dispatched)).toEqual(new Set(["input", "before_agent_start", "message_end", "agent_end"]));
+		expect(new Set(dispatched)).toEqual(
+			new Set([
+				"input",
+				"before_agent_start",
+				"message_end",
+				"agent_end",
+				"context",
+				"context_with_system",
+				"before_provider_request",
+				"before_provider_headers",
+			]),
+		);
 		expect(errors).toEqual([]);
 	});
+
+	it.each(["GENUINE_HANDLER_FAILURE", `GENUINE_HANDLER_FAILURE: ${RETIRED}`])(
+		"reports a genuine lifecycle and context failure after retirement: %s",
+		async (failure) => {
+			const errors: ExtensionError[] = [];
+			const fail = (): never => {
+				throw new Error(failure);
+			};
+			const harness = await createHarness({
+				extensionFactories: [
+					(pi) => {
+						pi.on("agent_end", fail);
+						pi.on("context", fail);
+						pi.on("context_with_system", fail);
+					},
+				],
+			});
+			harnesses.push(harness);
+			const runner = harness.getExtensionRunner();
+			runner.invalidate(RETIRED);
+			runner.onError((error) => errors.push(error));
+
+			await runner.emit({ type: "agent_end", messages: [] });
+			await runner.emitContext([]);
+
+			expect(errors).toMatchObject([
+				{ event: "agent_end", error: failure },
+				{ event: "context", error: failure },
+				{ event: "context_with_system", error: failure },
+			]);
+		},
+	);
 
 	it("still reports a non-boundary handler failure while the runner is active", async () => {
 		const errors: ExtensionError[] = [];
