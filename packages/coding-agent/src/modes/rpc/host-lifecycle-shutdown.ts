@@ -6,6 +6,7 @@
 import type { ChildProcess } from "node:child_process";
 import { rm } from "node:fs/promises";
 import type { Server } from "node:net";
+import type { HostAdmission } from "./host-admission.ts";
 import type { HostStopSender } from "./host-crash-record.ts";
 import type { HostDaemonPaths, HostGenerationPaths } from "./host-daemon-paths.ts";
 import { releaseGeneration } from "./host-daemon-registration.ts";
@@ -21,6 +22,7 @@ import {
 	writeStopIntent,
 } from "./host-stop-intent.ts";
 import { errorMessage, supervisorLog, writeStderrLine } from "./host-supervisor-log.ts";
+import type { RpcPublicEndpoint } from "./rpc-public-key.ts";
 import { type SocketFileIdentity, shieldSocketDuringClose, unlinkOwnedSocket } from "./socket-ownership.ts";
 
 export { CHILD_STOP_TIMEOUT_MS } from "./host-stop-intent.ts";
@@ -49,7 +51,9 @@ export interface SupervisorShutdown {
 	readonly child: ChildProcess;
 	readonly activity: SupervisorActivity;
 	readonly drain: SupervisorDrain;
+	readonly admission: HostAdmission;
 	readonly state: SupervisorState;
+	readonly publicEndpoint?: RpcPublicEndpoint;
 	/** Stops the idle ticker, the supersession watch and the win32 identity watchdog. */
 	readonly stopWatchers: () => void;
 }
@@ -66,17 +70,19 @@ export async function performShutdown(context: SupervisorShutdown, reason: strin
 	const { state, child } = context;
 	state.shuttingDown = true;
 	state.shutdownReason = reason;
+	context.admission.stop();
 	let childStopStarted = false;
 	let hardExit: ReturnType<typeof setTimeout> | undefined;
 	try {
 		context.stopWatchers();
 		context.drain.stop();
 		writeStderrLine(`senpi rpc host supervisor: ${reason} shutdown`);
-		context.activity.clients.destroyAll();
 		// No fallible socket/metadata cleanup may bypass the child's observed exit.
 		childStopStarted = true;
 		await stopChild(context, reason);
 		await state.childExitRecorded;
+		await context.admission.flush();
+		context.activity.clients.destroyAll();
 		if (process.platform === "win32")
 			hardExit = setTimeout(() => process.exit(exitCode), WINDOWS_SUPERVISOR_SHUTDOWN_HARD_EXIT_MS);
 		// libuv unlinks the bound NAME when the listening handle closes - which would delete a newer
@@ -110,6 +116,9 @@ export async function performShutdown(context: SupervisorShutdown, reason: strin
 			);
 		}
 	} finally {
+		await context.publicEndpoint?.dispose().catch((cause: unknown) => {
+			supervisorLog(`endpoint key cleanup failed: ${errorMessage(cause)}`);
+		});
 		if (hardExit) clearTimeout(hardExit);
 		// Windows named-pipe handles can outlive their JavaScript wrappers, so cleanup failure must
 		// never leave the supervisor resident or the host orphaned.
@@ -207,8 +216,8 @@ export function waitForChildExit(child: ChildProcess, timeoutMs: number): Promis
 /**
  * External stop (ensureHost replacement, tests, QA) must clean up like idle exit; SIGUSR1 is the
  * gentler request - finish what you are doing and leave - that a generation handoff and
- * `stopHost({ drain: true })` both send. It exists on POSIX only, which is one reason win32 hosts
- * are attach-only: no signal there means anything but "terminate".
+ * `stopHost({ drain: true })` both send to a host from before the drain request. It exists on POSIX
+ * only: on win32 the drain arrives as a drain request (host-stop-intent.ts), never as a signal.
  */
 export function registerSupervisorSignals(
 	shutdown: (reason: string, exitCode: number) => Promise<never>,

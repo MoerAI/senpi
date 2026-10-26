@@ -68,6 +68,7 @@ async function blockedLane(slot: Partial<AccountSlot>, sibling?: AccountSlot): P
 			expires: NOW - MINUTE,
 			source: "login",
 			blockReason: "auth_error",
+			blockedUntil: NOW + MINUTE,
 			...slot,
 		});
 		return sibling ? addAccount(blocked, sibling) : blocked;
@@ -127,7 +128,7 @@ describe("senpi#2926 an auth-blocked slot whose saved grant still refreshes", ()
 		const lane = await blockedLane({ expires });
 
 		// when a request arrives
-		const result = await streamAnthropicSubscription(model, context).result();
+		const result = await streamAnthropicSubscription(model, context, { cwd: process.cwd() }).result();
 
 		// then the grant is redeemed once, the request runs on the new token, and the block is gone
 		expect(result.errorMessage).toBeUndefined();
@@ -144,8 +145,8 @@ describe("senpi#2926 an auth-blocked slot whose saved grant still refreshes", ()
 		lane.refreshOutcome = "rejected";
 
 		// when two requests arrive
-		const first = await streamAnthropicSubscription(model, context).result();
-		const second = await streamAnthropicSubscription(model, context).result();
+		const first = await streamAnthropicSubscription(model, context, { cwd: process.cwd() }).result();
+		const second = await streamAnthropicSubscription(model, context, { cwd: process.cwd() }).result();
 
 		// then only the first tries the grant, and both fail without spawning the SDK
 		expect(first.errorMessage).toContain("blocked");
@@ -154,6 +155,7 @@ describe("senpi#2926 an auth-blocked slot whose saved grant still refreshes", ()
 		expect(lane.spawned).toEqual([]);
 		expect(await storedSlot(lane.store)).toMatchObject({
 			blockReason: "auth_error",
+			blockedUntil: NOW + MINUTE,
 			refresh: "refresh-1",
 			authRecoveryGrant: authGrantDigest("refresh-1"),
 		});
@@ -165,9 +167,9 @@ describe("senpi#2926 an auth-blocked slot whose saved grant still refreshes", ()
 		lane.refreshOutcome = "unavailable";
 
 		// when a request fails on that, and the endpoint recovers before the next request
-		const first = await streamAnthropicSubscription(model, context).result();
+		const first = await streamAnthropicSubscription(model, context, { cwd: process.cwd() }).result();
 		lane.refreshOutcome = "ok";
-		const result = await streamAnthropicSubscription(model, context).result();
+		const result = await streamAnthropicSubscription(model, context, { cwd: process.cwd() }).result();
 
 		// then the first request fails as a retryable server error, and the grant is tried again and recovers
 		expect(first.errorMessage).toMatch(/^server_error:/);
@@ -191,8 +193,8 @@ describe("senpi#2926 an auth-blocked slot whose saved grant still refreshes", ()
 		lane.refreshOutcome = "unavailable";
 
 		// when two requests arrive
-		await streamAnthropicSubscription(model, context).result();
-		await streamAnthropicSubscription(model, context).result();
+		await streamAnthropicSubscription(model, context, { cwd: process.cwd() }).result();
+		await streamAnthropicSubscription(model, context, { cwd: process.cwd() }).result();
 
 		// then the sibling serves both and the blocked grant is never redeemed
 		expect(lane.refreshes).toEqual([]);
@@ -200,6 +202,29 @@ describe("senpi#2926 an auth-blocked slot whose saved grant still refreshes", ()
 			"access-spare",
 			"access-spare",
 		]);
+	});
+
+	it("refreshes a blocked slot whose re-probe is due before anything probes it (senpi#3264)", async () => {
+		// given the block's re-probe time passed while a sibling can still serve
+		const lane = await blockedLane(
+			{ blockedUntil: NOW - 1 },
+			{
+				name: "spare",
+				access: "access-spare",
+				refresh: "refresh-spare",
+				expires: NOW + 60 * MINUTE,
+				source: "login",
+			},
+		);
+
+		// when a request arrives
+		await streamAnthropicSubscription(model, context, { cwd: process.cwd() }).result();
+
+		// then the grant is redeemed first, so no probe ever re-sends the rejected token
+		expect(lane.refreshes).toEqual(["refresh-1"]);
+		expect(lane.spawned.map((options) => options.env?.CLAUDE_CODE_OAUTH_TOKEN)).not.toContain("access-1");
+		expect(await storedSlot(lane.store)).toMatchObject({ access: "access-2", refresh: "refresh-2" });
+		expect((await storedSlot(lane.store))?.blockReason).toBeUndefined();
 	});
 
 	it("clears the recovery marker on a re-login", () => {
@@ -211,6 +236,7 @@ describe("senpi#2926 an auth-blocked slot whose saved grant still refreshes", ()
 			expires: NOW,
 			source: "login",
 			blockReason: "auth_error",
+			blockedUntil: NOW + MINUTE,
 			authRecoveryGrant: authGrantDigest("refresh-1"),
 		});
 
@@ -233,7 +259,7 @@ describe("senpi#2926 an auth-blocked slot whose saved grant still refreshes", ()
 		const lane = await blockedLane({ authRecoveryGrant: authGrantDigest("refresh-1") });
 
 		// when a request arrives
-		const result = await streamAnthropicSubscription(model, context).result();
+		const result = await streamAnthropicSubscription(model, context, { cwd: process.cwd() }).result();
 
 		// then no refresh is attempted and the account still asks for a re-login
 		expect(result.errorMessage).toContain("blocked");
