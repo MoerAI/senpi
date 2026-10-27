@@ -88,9 +88,10 @@ async function setup(options: {
 	chmodSync(executable, 0o755);
 	const recordPath = join(root, "record.jsonl");
 	const store = new InMemoryCredentialStore();
-	if (options.slots) {
+	const seededSlots = options.slots;
+	if (seededSlots) {
 		await store.modify(SCRIPTED_PROVIDER, async () => ({
-			...options.slots!.reduce<AnthropicSubscriptionCredential>(addAccount, emptyCredential()),
+			...seededSlots.reduce<AnthropicSubscriptionCredential>(addAccount, emptyCredential()),
 			...(options.pinned === undefined ? {} : { pinned: options.pinned }),
 			...(options.order === undefined ? {} : { order: options.order }),
 		}));
