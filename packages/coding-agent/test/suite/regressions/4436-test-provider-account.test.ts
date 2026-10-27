@@ -189,11 +189,15 @@ async function startLane(options: {
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 	const send = async (command: Record<string, unknown>): Promise<ParsedOutputLine> => {
 		const id = `c-${Math.random().toString(36).slice(2, 10)}`;
-		rpcIo.lineHandler!(JSON.stringify({ id, ...command }));
+		const lineHandler = rpcIo.lineHandler;
+		if (lineHandler === undefined) throw new Error("the RPC line handler is not registered");
+		lineHandler(JSON.stringify({ id, ...command }));
 		const find = () =>
 			parseOutputLines(rpcIo.outputLines).find((record) => record.id === id && record.type === "response");
 		await vi.waitFor(() => expect(find()).toBeDefined(), { timeout: 10_000 });
-		return find()!;
+		const response = find();
+		if (response === undefined) throw new Error(`no response for ${id}`);
+		return response;
 	};
 	const slots = async () =>
 		((await store.read(SCRIPTED_PROVIDER)) as AnthropicSubscriptionCredential | undefined)?.accounts ?? [];
