@@ -392,6 +392,22 @@ Set the order, or clear it with `names: null`:
 
 `names` may name a subset; accounts it leaves out come after it. The command fails without changing anything when a name is not one of the provider's accounts, appears twice, or the list is empty, and when the provider has no stored credential (the order is kept beside the pin in `auth.json`). Removing an account drops it from the order. Success emits `auth_accounts_changed`. Only account names cross RPC, never credential material.
 
+#### test_provider_account
+
+Re-run the sign-in connection test on one Claude subscription account, for example to retry a failed `check`. Hosts that answer it advertise `provider_account_test` in `get_protocol_info`.
+
+```json
+{"id": "t1", "type": "test_provider_account", "provider": "anthropic-subscription", "name": "work"}
+```
+
+```json
+{"id": "t1", "type": "response", "command": "test_provider_account", "success": true, "data": {"check": {"model": "claude-opus-5-5", "outcome": "ok", "at": 1793000000000}}}
+```
+
+The test is one "Reply with OK" turn pinned to that account with account fallback off, on the model the settings' default resolves for `anthropic-subscription` (the default model when the default provider is `anthropic-subscription`, else that provider's default model). Its result is stored as the account's `check` (the same field `get_provider_accounts` reports) and returned. A failed turn answers `success: true` with `outcome: "failed"` and a short `reason` kind such as `auth_error`, `billing` or `timeout`; it never blocks, pins or reorders an account, and no other account is tried.
+
+Errors: `unsupported_provider` for any provider other than `anthropic-subscription`, `unknown_account` when no stored account has that name, and `unsupported_account` for an account that is not a Claude CLI sign-in (an environment token account).
+
 ## Starting RPC Mode
 
 ### RPC client lifecycle

@@ -51,6 +51,7 @@ it("exempts exactly the reviewed commands from the attach gate", () => {
 			"reclaim_session",
 			"resolve_path",
 			"subscribe_sessions",
+			"test_provider_account",
 			"unsubscribe_sessions",
 			"warm",
 		].sort(),

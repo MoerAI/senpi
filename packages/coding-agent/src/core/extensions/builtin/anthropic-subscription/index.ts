@@ -4,7 +4,6 @@ import { readByProviderId } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../../../../config.ts";
 import { FileAuthStorageBackend } from "../../../auth-storage.ts";
-import { SettingsManager } from "../../../settings-manager.ts";
 import type { ExtensionAPI, ProviderConfig } from "../../types.ts";
 import { toBuiltinProviderContext } from "../provider-context.ts";
 import { registerClaudeAccountCommand } from "./account-command.ts";
@@ -12,6 +11,7 @@ import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./account-management.ts";
 import type { AnthropicSubscriptionCredential } from "./accounts.ts";
 import { CLAUDE_SDK_OAUTH_API_ID } from "./api-id.ts";
 import { plannedContextWindow } from "./context-window.ts";
+import { claudeCliDefaultModel } from "./claude-cli-account-test.ts";
 import { longContextAvailable, onLongContextAvailabilityChange } from "./long-context.ts";
 import { createOAuthConfig } from "./oauth-login.ts";
 import { registerSessionRegistry } from "./session-registry-wiring.ts";
@@ -120,10 +120,7 @@ export function registerAnthropicSubscriptionExtension(
 				cwd: () => cwd,
 				providerSettings: () =>
 					deps.readSettings ? deps.readSettings() : loadAnthropicSubscriptionProviderSettingsFromDisk(cwd),
-				defaultModel: () => {
-					const settings = SettingsManager.create(cwd, getAgentDir());
-					return { provider: settings.getDefaultProvider(), model: settings.getDefaultModel() };
-				},
+				defaultModel: () => claudeCliDefaultModel(cwd),
 			},
 			removeAnthropicCredential: async () => {
 				// The import is a move, not a copy: one single-use grant must never

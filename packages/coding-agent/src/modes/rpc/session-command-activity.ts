@@ -24,6 +24,7 @@ const observations: ReadonlySet<string> = new Set([
 	"get_media",
 	"get_auth_providers",
 	"get_provider_accounts",
+	"test_provider_account",
 	"memory_report",
 	"eval_cells.list",
 	"eval_cells.peek",

@@ -34,6 +34,7 @@ export const ATTACH_GATE_EXEMPT: ReadonlySet<RpcCommand["type"]> = new Set<RpcCo
 	"get_follow_up_messages",
 	"get_auth_providers",
 	"get_provider_accounts",
+	"test_provider_account",
 	"resolve_path",
 	"memory_report",
 	"eval_cells.list",
