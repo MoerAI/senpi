@@ -4,8 +4,8 @@ import { CompactComponentRoots } from "../../../src/modes/rpc/compact-component-
 import { CompactContentStore } from "../../../src/modes/rpc/compact-content-store.ts";
 import { CompactCurrentComponents } from "../../../src/modes/rpc/compact-current-components.ts";
 import type { CompactStorageIo } from "../../../src/modes/rpc/compact-storage-io.ts";
-import { CompactValues, type ValueStep } from "../../../src/modes/rpc/compact-values.ts";
-import { spoolRoot } from "../compact-storage-support.ts";
+import { CompactValues, type ValueRef, type ValueStep } from "../../../src/modes/rpc/compact-values.ts";
+import { memoryIo, spoolRoot } from "../compact-storage-support.ts";
 
 // senpi#4272 S03b-4 (S10-Q2): a value that is legal at the protocol level is owned by the compact store and read
 // back through the component-root reader with owned per-step limits only (one bounded page at a time); the old
@@ -14,26 +14,6 @@ import { spoolRoot } from "../compact-storage-support.ts";
 const MiB = 1024 * 1024;
 const valid = () => {};
 const sha256 = (text: string) => createHash("sha256").update(Buffer.from(text, "utf16le")).digest("hex");
-
-/** The store's own file seam, kept in memory: a 20,000-page value spills in milliseconds instead of 20,000 files. */
-function memoryIo(): CompactStorageIo {
-	const files = new Map<string, Buffer>();
-	const missing = (path: string) => Object.assign(new Error(`ENOENT ${path}`), { code: "ENOENT" });
-	return {
-		async writeFile(path, data) {
-			if (files.has(path)) throw Object.assign(new Error(`EEXIST ${path}`), { code: "EEXIST" });
-			files.set(path, Buffer.from(data));
-		},
-		async readFile(path) {
-			const data = files.get(path);
-			if (!data) throw missing(path);
-			return data;
-		},
-		async unlink(path) {
-			if (!files.delete(path)) throw missing(path);
-		},
-	};
-}
 
 async function withRoots<T extends object>(
 	run: (store: CompactContentStore, roots: CompactComponentRoots<T>) => Promise<void>,
@@ -123,25 +103,98 @@ it("owns a value with 100,001 nodes through component roots and reads it back ex
 	});
 }, 120_000);
 
-it("owns a value nested 20,000 deep through component roots without recursion and reads it back exactly", async () => {
-	let nested: unknown = 1;
-	for (let depth = 0; depth < 20_000; depth++) nested = [nested];
+/** RULING-59 (1): arrays and objects alternate, so both container walks reach this depth; the innermost value is paged. */
+const DEEP = 100_000;
+const DEEP_TAIL = "x".repeat(5000);
+function deepValue(): unknown {
+	let nested: unknown = DEEP_TAIL;
+	for (let level = 0; level < DEEP; level++) nested = level % 2 ? { d: nested } : [nested];
+	return nested;
+}
+/** The first level (outermost 0) where `read` differs from `deepValue()`, or -1; iterative, so no matcher recurses. */
+function deepMismatch(read: unknown): number {
+	for (let level = DEEP - 1; level >= 0; level--) {
+		const inner: unknown =
+			level % 2
+				? typeof read === "object" && read !== null && !Array.isArray(read) && Object.keys(read).join() === "d"
+					? Reflect.get(read, "d")
+					: undefined
+				: Array.isArray(read) && read.length === 1
+					? read[0]
+					: undefined;
+		if (inner === undefined) return DEEP - 1 - level;
+		read = inner;
+	}
+	return read === DEEP_TAIL ? -1 : DEEP;
+}
+async function deepSteps(values: CompactValues, ref: ValueRef) {
+	const kinds = new Map<ValueStep["kind"], number>();
+	let text = "";
+	let tails = 0;
+	for await (const step of values.walk(ref, valid)) {
+		kinds.set(step.kind, (kinds.get(step.kind) ?? 0) + 1);
+		if (step.kind !== "string") continue;
+		text += step.text;
+		if (step.more) continue;
+		if (text === DEEP_TAIL) tails++;
+		text = "";
+	}
+	return { open: kinds.get("open"), close: kinds.get("close"), text: tails === 1 };
+}
+
+it("owns, walks, reads, pins, merges and releases a value nested 100,000 deep with one page resident", async () => {
+	const root = await spoolRoot();
+	const store = new CompactContentStore({ dir: root.dir, io: memoryIo() });
+	try {
+		const ref = new CompactValues(store).own(deepValue());
+		await store.idle();
+		const walker = new CompactValues(store);
+		expect(await deepSteps(walker, ref)).toEqual({ open: DEEP, close: DEEP, text: true });
+		expect(walker.peakResidentPages).toBe(1);
+		const reader = new CompactValues(store);
+		expect(deepMismatch(await reader.read(ref, valid))).toBe(-1);
+		expect(reader.peakResidentPages).toBe(1);
+		// The live reference goes while a cut pin holds the root: the pinned-only transition crosses every level.
+		const { resident, spilled } = store.status().structuredBytes;
+		store.adjust(ref.owner, 0, 1);
+		store.adjust(ref.owner, -1, 0);
+		expect(store.status().structuredBytes.pinned, "every page is pinned-only").toBe(resident + spilled);
+		const pinned = new CompactValues(store);
+		expect(await deepSteps(pinned, ref)).toEqual({ open: DEEP, close: DEEP, text: true });
+		expect(pinned.peakResidentPages).toBe(1);
+		store.adjust(ref.owner, 0, -1);
+		await store.idle();
+		expect(store.status().structuredBytes).toEqual({ resident: 0, spilled: 0, pinned: 0 });
+		expect(store.text.residentNodes).toBe(0);
+		// merge copies the deep field's descriptor; the merged value walks to the same depth plus its own object.
+		const codec = new CompactValues(store);
+		const base = codec.own({ deep: deepValue() });
+		const merged = await codec.merge(base, new Map([["next", { node: 0, owner: 0, value: 1 }]]));
+		store.adjust(base.owner, -1, 0);
+		const after = new CompactValues(store);
+		expect(await deepSteps(after, merged)).toEqual({ open: DEEP + 1, close: DEEP + 1, text: true });
+		expect(after.peakResidentPages).toBe(1);
+		store.adjust(merged.owner, -1, 0);
+		await store.idle();
+		expect(store.status().structuredBytes).toEqual({ resident: 0, spilled: 0, pinned: 0 });
+		expect(store.text.residentNodes).toBe(0);
+	} finally {
+		await store.retire();
+		await root.cleanup();
+	}
+}, 120_000);
+
+it("owns a value nested 100,000 deep through component roots without recursion and reads it back exactly", async () => {
+	const nested = deepValue();
 	await withRoots<{ nested: unknown }>(async (store, roots) => {
 		const root = roots.set({ header: undefined, ref: undefined }, "0000000000000000", { nested });
 		await store.idle();
 		let read: unknown;
 		for await (const [, row] of roots.entries(root.ref, valid)) read = row.nested;
-		for (let depth = 0; depth < 20_000; depth++) {
-			expect(Array.isArray(read) && read.length === 1, `level ${depth} is a one-element array`).toBe(true);
-			read = (read as unknown[])[0];
-		}
-		expect(read).toBe(1);
+		expect(deepMismatch(read)).toBe(-1);
 		const values = new CompactValues(store);
-		const kinds = new Map<ValueStep["kind"], number>();
 		for await (const [, ref] of roots.rows(root.ref, valid))
-			for await (const step of values.walk(ref, valid)) kinds.set(step.kind, (kinds.get(step.kind) ?? 0) + 1);
-		expect(kinds.get("open")).toBe(20_001);
-		expect(kinds.get("close")).toBe(20_001);
+			expect(await deepSteps(values, ref)).toEqual({ open: DEEP + 1, close: DEEP + 1, text: true });
 		expect(values.peakResidentPages).toBe(1);
 		roots.release(root);
 	}, memoryIo());
