@@ -1,5 +1,129 @@
 # Permission System Builtin Extension
 
+## 2026-10-26 - Retain resolved external-directory targets (senpi#4351)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/permission-system/external-dir.ts`: return the symlink-resolved external target and compare directory device/inode identities for case-alias containment, including missing descendants.
+- External rules and remembered scopes now compare their existing literal prefix by device/inode without opening directories or folding case; trailing-slash directory approvals retain the resolved directory scope rather than granting its parent (binding review H1/H2).
+- `packages/coding-agent/src/core/extensions/builtin/permission-system/external-pattern.ts`: verify case aliases after wildcards by component device/inode, preventing glob-deny bypasses while preserving exact case for distinct or missing targets and synchronous no-open matching (binding review H1-GLOB).
+- `packages/coding-agent/src/core/extensions/builtin/permission-system/parsers.ts` and `packages/coding-agent/src/core/extensions/builtin/permission-system/read-permission.ts`: use that target for external request patterns and remembered scopes.
+- `packages/coding-agent/src/core/extensions/builtin/permission-system/types.ts`, `packages/coding-agent/src/core/extensions/builtin/permission-system/index.ts`, and `packages/coding-agent/src/core/extensions/builtin/permission-system/service.ts`: carry lexical spellings separately for display and copy them when listing pending requests.
+- `packages/coding-agent/src/core/extensions/builtin/permission-system/prompt.ts`: show the resolved target alongside its original spelling, without trusting caller-supplied directory metadata or truncating literal stars.
+- Review fold: external-directory rules retain last-match-wins separately for absolute lexical, on-disk case-canonical, and resolved spellings, then take the most restrictive decision. Directory listings and device/inode checks preserve lexical ancestry across case aliases and wildcards before symlinks; raw display paths never affect policy, and remembered scopes stay resolved. Filesystem identity lookups remain evaluation-local, and prompts list every resolved target.
+- Resolution-chain review fold: branch between keeping and following every symlink, preserving intermediate spellings with a 16-spelling/40-hop limit that asks on exhaustion or loops. Component `lstat` identities retain case equivalence below non-listable ancestors without merging distinct symlink routes. Case recovery and directory listings are cached only within one decision; multi-path denials report only the target belonging to a denied alias. Document the intentional difference between a resolved-only configured allow and remembered "Always".
+- Dot-target review fold: normalize followed link targets against their containing directory before storing or walking the absolute spelling, closing intermediate-deny bypasses through `.`, `..`, and `../..`. Refuse new spellings over the bound before case-recovery directory reads. Cover relative-target rule precedence and document that a genuine intermediate spelling's blanket deny can still win when both endpoints allow.
+- Physical-walk review fold (supersedes the branching and lexical normalization above): traverse a component queue from a fully resolved position, applying `..` only to its physical parent and prepending raw link targets. Retain the absolute request, actual physical-prefix symlink routes, final path, and case forms; never synthesize relative targets under unresolved lexical parents. Enforce the 16-spelling bound before every insertion, including case forms, and retain the 40-hop fail-closed limit. Cover absolute/relative `S/..` deny bypasses, phantom-parent false denies, and the linear walk's exact spelling boundary.
+- Wildcard-suffix identity review fold: prove component case equivalence with lexical `lstat` identity, not the followed target, so distinct case-sensitive symlink entries sharing a destination cannot override each other's deny or cause a false denial; retain true case aliases and non-listable-ancestor handling.
+
+### Why
+
+- Classification resolved symlinks but rule evaluation and saved approvals still used the alias, allowing an alias approval to miss a deny on the actual target. Case-preserving string comparison also treated an internal case alias as external. Part of #4311.
+
+### Why an extension could not handle it
+
+- The builtin parser, classifier, and request renderer own the identity that reaches permission evaluation and approval persistence.
+
+### Expected merge conflict zones
+
+- `external-dir.ts` containment, `parsers.ts` external-request construction, `read-permission.ts` external reads, `index.ts` request construction, `types.ts` request fields, `service.ts` defensive copies, and `prompt.ts` external-directory display.
+
+## 2026-10-26 - A refusal is final for what the refused call was meant to do (senpi#4321)
+
+### What changed
+
+- `types.ts`: `RejectedError`, `CorrectedError` and `DeniedError` keep their first sentence, which clients match as a prefix, and then add the rule (`DENIAL_IS_FINAL`, built on `NO_OTHER_ROUTE`). The model must not get the same result another way (another tool, command, path or host), tells the user what was refused, and continues only with work that does not depend on it. With feedback, the model follows the feedback first.
+- `non-interactive.ts`: a no-UI refusal says the call did not run, carries the same rule, and frames the `--permission` override as the user's action.
+- `index.ts`: the deny provenance suffix says the user can edit the rule, instead of telling the model to edit it.
+
+### Why
+
+- "This specific tool call" read as permission to reach the refused result through a different tool. The provenance suffix told the model to edit its own permission rule.
+
+### Why an extension could not handle it
+
+- These texts are the permission builtin's own refusal results; another extension cannot rewrite them.
+
+### Expected merge conflict zones
+
+- `types.ts` (the three error constructors), `non-interactive.ts` (`handleNoUI` message).
+
+## 2026-10-27 - external_directory classifies the path the tool opens (senpi#4311)
+
+### What changed
+
+- `packages/coding-agent/src/core/extensions/builtin/permission-system/parsers.ts`: `withExternalDirectoryRequests` maps each raw argument through the resolver its tool uses before classifying it (write/edit/ls/find/glob: `resolveToCwd`; apply_patch: `resolvePatchPath`; grep: `resolveToCwd` with the same existing-literal-name-first, missing-name/file-prefix selector fallback as the tool; `multiedit`: raw and resolved; monitor: raw). grep `path` arrays are classified element by element. Each opened path then goes through `resolveExternalPath` (the senpi#4351 canonical spelling walk, still the source of truth); the lexical rule alias is taken from the opened path, and `originalPaths` keeps the raw argument. Patterns and Always scopes are de-duplicated by canonical target, while the rule aliases are merged (in order, without duplicates) from every opened spelling, so a rule on a symlink spelling still applies when the same call names the real path first.
+- `packages/coding-agent/src/core/extensions/builtin/permission-system/prompt.ts`: the external-directory prompt uses only the resolved request target, ignoring caller display metadata and preserving literal filename characters.
+- Review fold: selector-shaped grep paths use synchronous stat probes to preserve the synchronous dispatch fence; only ENOENT permits fallback. Tests cover literal names, non-file prefixes, spoofed display metadata, literal `*`, and platform-specific file-URL/UNC behavior.
+
+### Why
+
+- The check classified the raw text while the tools open the normalized path, so `@/abs/x`, `file:///abs/x`, Unicode-space spellings and grep arrays or line selectors reached files outside the workspace with no `external_directory` ask under the narrower presets.
+
+### Why an extension could not handle it
+
+- The parser registry is the permission system's own input to every decision (tool_call hook and codemode dispatch); an extension cannot replace a builtin parser.
+
+### Expected merge conflict zones
+
+- LOW: `parsers.ts` parser registrations and the external-directory branch of `prompt.ts` (fork-only permission system).
+
+## 2026-10-26 - bash permission: evaluate every command segment (senpi#4317)
+
+### What changed
+
+- `bash-command-segments.ts` (new): `analyzeBashCommand(command)` lexes a command the way bash splits it. It returns each simple command the command would run as normalized words, or `unparsed`. It covers `;`, `&&`, `||`, `|`, `|&`, `&` and line breaks; subshells and brace groups; the bodies of `$( … )`, backticks, `<( … )` / `>( … )`, `${ … }` and `$(( … ))`; unquoted here-document bodies; `if`/`while`/`for` bodies; and `[[ … ]]`. Redirections and their targets are dropped. A command name is normalized: leading assignments and reserved words are skipped, and a path becomes its basename. A wrapper (`env`, `command`, `exec`, `builtin`, `nohup`, `time`, `nice`, `timeout`, `stdbuf`, `caffeinate`, `xargs`, `sudo`, `doas`, `eval`, `trap`, `su -c`, `bash`/`sh`/`zsh`/`dash`/`ksh -c`, `find -exec`) yields its own name and the command it runs, recursively. The command becomes `unparsed` on an unterminated quote, `case`, a function definition, a command name built by an expansion, a glob or brace expansion, or an option a wrapper table does not list.
+- `parsers.ts`: the `bash` request carries one pattern per command, its `BashArity` prefix. The same request serves `bash_input`, command `monitor` calls and nested `tool.bash`. The service already requires every pattern to be allowed and refuses on any deny, so the call is as strict as its strictest command. "Allow always" stores exactly those prefixes (`<prefix>` and `<prefix> *` for each). An unparsed command becomes one target, `(unparsed) <command>`, that only a `*` rule (a preset or a blanket setting) can decide, so no single-command grant allows it. Before that target, a deny-only request (`autoApproveAsk`) checks the command's plain words against deny rules.
+- A simple command keeps the single pattern it had before.
+- Limits fail closed: a command longer than 64 KiB, nesting deeper than 12 levels, a lexer step budget overrun, or any error inside the lexer makes the command `unparsed`. Best-effort deny candidates use at most three words each, so their work grows linearly with the command.
+- "Allow always" never stores a target that holds its own `*` or `?` (stored rules are matched as globs, so such a target would widen into a wildcard). That call is allowed once. Request patterns stay raw, so existing allow and deny rules match exactly as before.
+
+### Why
+
+- The decision used only the first command's prefix. The rest of a compound or wrapped command was never judged against the user's rules or grants.
+
+### Why an extension could not handle it
+
+- This builtin's parser registry produces the patterns a call is decided on. Another extension cannot change the requests the permission service evaluates.
+
+### Expected merge conflict zones
+
+- `parsers.ts` (`parseBashLikePermission`, `bashCommandRequests`).
+
+## 2026-10-16 - A wider "Allow always" for tools without a parser (senpi#3403)
+
+### What changed
+
+- `always-scope.ts` (new): `widerAlwaysScope(toolName, argKey, arg)` returns the extra option a prompt may offer when the request came from the fallback parser (a tool with no parser of its own):
+  - a URL argument gets its DOMAIN, "Allow <tool> on <host> always in this project". The grant is ONE literal, `origin=<canonical origin>`, matched by equality. `canonicalUrlOrigin` gives the scheme, the parser's lowercased punycode host, and the port only when it is not the default; no userinfo. A domain origin is given only for raw text every parser reads as the same host: a strict `http(s)://<ASCII DNS host>[:port]` prefix followed by `/`, `?`, `#` or the end; no backslash, `@`, `%`, whitespace or control character anywhere; no IPv6 literal, trailing dot or non-ASCII host; and the same host and port as `new URL()`. Anything else gets no alias and no domain option, so it asks. #3416 review: `https://*/a` became `https://*` and allowed any site; `https://example.invalid\@evil.test/` is example.invalid to WHATWG and evil.test to curl and Python. A parser-less tool parses the URL itself, so the permission layer cannot make it reuse one parse.
+  - a free `input`/`pattern` argument gets the tool, "Allow <tool> always in this project", with pattern `*`;
+  - a command or a path gets nothing wider, and built-in tools never do.
+- `parsers.ts`: the fallback records which argument it used and attaches `widerAlways`. A URL request is decided against `[raw URL, origin=<canonical origin>]` (`ruleAliases`), so the grant applies to every spelling of the origin, and a rule on the raw URL (a deny included) still matches it.
+- `prompt.ts`: the option appears after "Allow always" and replies `always` with the wider patterns.
+- `service.ts` and `index.ts`: the reply's patterns become the session's approvals and are persisted to the agent-dir store, so other open sessions of the project stop asking too.
+
+### Why
+
+"Allow always" stored only the exact argument, so a browser or MCP tool asked again for the next URL or input (sisyphuslabs/omo-desktop-app#2465). A tool-wide allow for a browser would mean "go anywhere", so URLs are scoped to their domain.
+
+### Why an extension could not handle it
+
+The prompt, its options and the stored approvals belong to this builtin's decision path; another extension cannot add an option to a permission prompt or write this store.
+
+### Expected merge conflict zones
+
+`prompt.ts` (the option list and reply mapping), `parsers.ts` (`fallbackPermissionRequestFor`), `types.ts` (`Request`, `ReplyInput`).
+
+### Must not break
+
+`test/permission/tool-scope-allow-always.test.ts`:
+- the same domain stops asking; a look-alike, `@` or port variant asks again;
+- a second open session stops asking;
+- a free-input tool is allowed tool-wide;
+- a command-shaped tool gets no wider option;
+- `*`, `?` and `[` hosts get no domain option;
+- uppercase, `:443`, userinfo and IDN spellings match the grant, while another port or a host named only in the path does not.
+
 ## 2026-10-16 - The legacy approvals import keeps pre-store answers (#3301 review round 2)
 
 ### What changed
@@ -127,25 +251,6 @@ senpi never wrote a `source` field before the store moved. Requiring it made the
 ### Expected merge conflict zones
 
 - `service.ts` `dispatchDecision` / `refreshApproved` and the constructor signature; `index.ts` `authorizeToolCall` block reasons, `loadPermissionRules` signature, and the shutdown append; `settings.ts` `loadPermissionSettings` merge order; `storage.ts` approved-store helpers.
-# Permission System Builtin Extension
-
-## 2026-10-08 - Refuse tools after settings load errors (#2624)
-
-### What changed
-
-- `packages/coding-agent/src/core/extensions/builtin/permission-system/index.ts` checks load errors on its fresh SettingsManager before deriving permission rules. Failed global or project settings loads enter the existing setup-error refusal, with the source scope, path and cause.
-
-### Why
-
-- A parse error otherwise replaces restrictive settings with an empty object and silently derives full-access. Valid JSONC and absent settings retain their existing behavior.
-
-### Why an extension could not handle it
-
-- `packages/coding-agent/src/core/extensions/builtin/permission-system/index.ts` is already the permission builtin and owns the initialization boundary before tool admission.
-
-### Expected merge conflict zones
-
-- `packages/coding-agent/src/core/extensions/builtin/permission-system/index.ts`: settings loading inside loadPermissionRules, after CLI preset validation.
 
 ## 2026-10-06 - Invocation-scoped dispatch authorization (#2843)
 
