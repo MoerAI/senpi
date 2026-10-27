@@ -114,15 +114,29 @@ describe("claude CLI account dir", () => {
 		expect(records()).toEqual([expect.objectContaining({ argv: ["auth", "logout"], configDir: accountDir })]);
 	});
 
-	it("a failed sign-out keeps the dir and its links", async () => {
+	it("a failed sign-out still removes the dir, without following its links, and says so", async () => {
 		const { agentDir, sharedRoot, executable, parentEnv } = setup("logout-fail");
 		const accountDir = ensureAccountDir({ agentDir, dirId: DIR_ID, sharedRoot });
 
-		await expect(removeAccountDir({ agentDir, dirId: DIR_ID, executable, parentEnv })).rejects.toThrow(
-			/sign-out failed/,
+		await expect(removeAccountDir({ agentDir, dirId: DIR_ID, executable, parentEnv })).resolves.toBe(
+			"removed_without_sign_out",
 		);
 
-		expect(lstatSync(join(accountDir, "projects")).isSymbolicLink()).toBe(true);
+		expect(existsSync(accountDir)).toBe(false);
+		expect(readFileSync(join(sharedRoot, "projects", "x.jsonl"), "utf8")).toBe("{}\n");
+	});
+
+	it("with no claude executable the dir is still removed, without a sign-out", async () => {
+		const { agentDir, sharedRoot, parentEnv, records } = setup();
+		const accountDir = ensureAccountDir({ agentDir, dirId: DIR_ID, sharedRoot });
+
+		await expect(removeAccountDir({ agentDir, dirId: DIR_ID, executable: undefined, parentEnv })).resolves.toBe(
+			"removed_without_sign_out",
+		);
+
+		expect(() => records()).toThrow();
+		expect(existsSync(accountDir)).toBe(false);
+		expect(existsSync(join(sharedRoot, "settings.json"))).toBe(true);
 	});
 
 	it("a missing account dir is still signed out by its path, since the CLI store is keyed on it", async () => {

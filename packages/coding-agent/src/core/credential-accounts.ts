@@ -414,9 +414,9 @@ export type RemoveCredentialAccountResult = { readonly notice?: string };
 
 /**
  * A `claude-cli` slot is signed out of the CLI's own store and its account dir removed BEFORE the slot is
- * dropped: a failed sign-out throws and keeps the account, so no store entry outlives the account listing it.
- * A slot that names no valid account dir, or whose dir is a link or file, cannot be signed out safely; it is
- * dropped anyway and the returned notice says so, so a malformed slot can never get stuck.
+ * dropped. Removal never gets stuck on the CLI: when `claude` cannot be resolved or its sign-out fails, the dir is
+ * still removed and the slot dropped, with a notice that the sign-out did not run. A slot that names no valid
+ * account dir, or whose dir is a link or file, cannot be signed out safely; it is dropped anyway with a notice.
  */
 async function signOutClaudeCliSlot(
 	storage: AuthStorage,
@@ -432,12 +432,16 @@ async function signOutClaudeCliSlot(
 	if (dirId === undefined || !isValidAccountDirId(dirId)) {
 		return `Removed Claude account ${name} without a Claude sign-out: it names no valid account dir.`;
 	}
-	const outcome = await removeAccountDir({
-		agentDir,
-		dirId,
-		executable: resolveClaudeCodeExecutable({ ...defaultExecutableDeps(), env: (key) => env[key] }),
-		parentEnv: env,
-	});
+	let executable: string | undefined;
+	try {
+		executable = resolveClaudeCodeExecutable({ ...defaultExecutableDeps(), env: (key) => env[key] });
+	} catch {
+		executable = undefined;
+	}
+	const outcome = await removeAccountDir({ agentDir, dirId, executable, parentEnv: env });
 	if (outcome === "removed") return undefined;
+	if (outcome === "removed_without_sign_out") {
+		return `Removed Claude account ${name}, but the Claude CLI sign-out could not run; its stored sign-in may remain in the Claude CLI's credential store.`;
+	}
 	return `Removed Claude account ${name} without a Claude sign-out: its account dir is a link or a file, left untouched at ${accountDirFor(agentDir, dirId)}.`;
 }

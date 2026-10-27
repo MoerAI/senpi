@@ -114,17 +114,22 @@ export function ensureAccountDir(options: EnsureAccountDirOptions): string {
 export type RemoveAccountDirOptions = {
 	readonly agentDir: string;
 	readonly dirId: string;
-	readonly executable: string;
+	/** The `claude` executable; undefined when it could not be resolved, and the sign-out is then skipped. */
+	readonly executable: string | undefined;
 	readonly parentEnv?: NodeJS.ProcessEnv;
 };
 
-/** `removed`: signed out and the dir is gone. `not_an_account_dir`: the path is a link or a file, left untouched. */
-export type RemoveAccountDirOutcome = "removed" | "not_an_account_dir";
+/**
+ * `removed`: signed out and the dir is gone. `removed_without_sign_out`: `claude auth logout` could not run or
+ * failed, and the dir is gone anyway. `not_an_account_dir`: the path is a link or a file, left untouched.
+ */
+export type RemoveAccountDirOutcome = "removed" | "removed_without_sign_out" | "not_an_account_dir";
 
 /**
  * Signs the account out (`claude auth logout` with `CLAUDE_CONFIG_DIR=<accountDir>`, which deletes that dir's
- * credential store entry), then unlinks the shared links WITHOUT following them and removes the dir. A failed
- * sign-out throws and leaves everything in place, so no credential store entry is orphaned. A missing dir is
+ * credential store entry), then unlinks the shared links WITHOUT following them and removes the dir. Removal never
+ * depends on the CLI: with no executable, or a sign-out that fails, the dir is still removed and the outcome says
+ * the sign-out did not run, so the caller can tell the user. A missing dir is
  * still signed out, because the CLI keys its store entry on the path. A link or file in the dir's place is not
  * an account dir: it is never signed out against, followed or deleted.
  */
@@ -133,16 +138,17 @@ export async function removeAccountDir(options: RemoveAccountDirOptions): Promis
 	// A missing dir is recreated empty: the CLI runs inside its config dir, and its store entry is keyed on the path.
 	if (lstatOrUndefined(accountDir) === undefined) mkdirSync(accountDir, { recursive: true, mode: 0o700 });
 	if (!lstatOrUndefined(accountDir)?.isDirectory()) return "not_an_account_dir";
-	const signedOut = await logoutClaudeCli({
-		executable: options.executable,
-		configDir: accountDir,
-		...(options.parentEnv === undefined ? {} : { parentEnv: options.parentEnv }),
-	});
-	if (!signedOut) throw new Error("Claude sign-out failed; the account was kept");
+	const signedOut =
+		options.executable !== undefined &&
+		(await logoutClaudeCli({
+			executable: options.executable,
+			configDir: accountDir,
+			...(options.parentEnv === undefined ? {} : { parentEnv: options.parentEnv }),
+		}).catch(() => false));
 	for (const entry of CLAUDE_CLI_SHARED_LINKS) {
 		const path = join(accountDir, entry);
 		if (isLink(path)) unlinkSync(path);
 	}
 	rmSync(accountDir, { recursive: true, force: true });
-	return "removed";
+	return signedOut ? "removed" : "removed_without_sign_out";
 }
