@@ -11,8 +11,11 @@ export function signInRequiredNames(accounts: readonly AccountSlot[]): string[] 
 
 /** A turn found only accounts that must sign in again; the message is the prompt, prefixed so it classifies as auth. */
 export class ClaudeSignInRequiredError extends Error {
-	constructor(readonly accountNames: readonly string[]) {
+	readonly accountNames: readonly string[];
+
+	constructor(accountNames: readonly string[]) {
 		super(`authentication_failed: ${signInAgainMessage(accountNames)}`);
 		this.name = "ClaudeSignInRequiredError";
+		this.accountNames = accountNames;
 	}
 }
