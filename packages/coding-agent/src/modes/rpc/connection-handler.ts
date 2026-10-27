@@ -2081,9 +2081,12 @@ export function createRpcConnectionHandler(
 			}
 
 			case "logout": {
-				session.modelRegistry.authStorage.logout(command.provider);
+				// The runtime's logout signs every Claude CLI account out of the CLI before deleting the credential
+				// (senpi#4436); the runtime key is dropped too, as `AuthStorage.logout` did.
+				const { notices } = await session.modelRuntime.logoutProvider(command.provider);
+				session.modelRegistry.authStorage.removeRuntimeApiKey(command.provider);
 				await session.modelRegistry.refresh();
-				return success(id, "logout");
+				return success(id, "logout", notices.length === 0 ? undefined : { notices });
 			}
 
 			case "get_provider_accounts": {

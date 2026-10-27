@@ -243,15 +243,16 @@ describe("senpi#4436 claude-cli account lane", () => {
 		overrideContinuityObservabilityBoundary({ emit: (observation) => observations.push(observation), log: () => {} });
 		await runTurn({ messages: [user1] });
 		const live = getBinding(SESSION_ID);
-		expect(live?.lastAssistantUuid).toBe("assistant-1");
+		if (live === undefined) throw new Error("expected a live binding after the first turn");
+		expect(live.lastAssistantUuid).toBe("assistant-1");
 		closeSession(SESSION_ID, "test_restart");
-		rememberBinding({ ...live!, sentPrefixHash: sentHashPrefixDigest(live!.sentHashes, live!.sentCount) });
+		rememberBinding({ ...live, sentPrefixHash: sentHashPrefixDigest(live.sentHashes, live.sentCount) });
 
 		const turn = await runTurn({ messages: [user1, assistant1 as AssistantMessage, user2] });
 
 		expect(turn.errorMessage).toBeUndefined();
-		expect(reads).toEqual([join(lane.sharedRoot, "projects", `${live!.sdkSessionId}.jsonl`)]);
-		expect(queries.at(-1)?.options).toMatchObject({ resume: live!.sdkSessionId });
+		expect(reads).toEqual([join(lane.sharedRoot, "projects", `${live.sdkSessionId}.jsonl`)]);
+		expect(queries.at(-1)?.options).toMatchObject({ resume: live.sdkSessionId });
 		expect(observations.map((observation) => observation.reason)).not.toContain("cross_root_unsupported");
 		expect(observations.map((observation) => observation.reason)).not.toContain("transcript_missing");
 	});
