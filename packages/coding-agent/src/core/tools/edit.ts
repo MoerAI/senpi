@@ -151,6 +151,7 @@ export function createEditToolDefinition(
 	const filesystemPolicy = options?.filesystemPolicy;
 	const refuseSpecialFiles = !options?.operations;
 	return {
+		...(options?.operations !== undefined || options?.filesystemPolicy !== undefined ? { serverPinned: true } : {}),
 		name: "edit",
 		label: "edit",
 		description:

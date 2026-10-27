@@ -54,6 +54,7 @@ export function createWriteToolDefinition(
 	const refuseSpecialFiles = !options?.operations;
 	const filesystemPolicy = options?.filesystemPolicy;
 	return {
+		...(options?.operations !== undefined || filesystemPolicy !== undefined ? { serverPinned: true } : {}),
 		name: "write",
 		label: "write",
 		description:
