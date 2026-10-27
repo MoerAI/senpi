@@ -4,6 +4,7 @@ import { readByProviderId } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../../../../config.ts";
 import { FileAuthStorageBackend } from "../../../auth-storage.ts";
+import { SettingsManager } from "../../../settings-manager.ts";
 import type { ExtensionAPI, ProviderConfig } from "../../types.ts";
 import { toBuiltinProviderContext } from "../provider-context.ts";
 import { registerClaudeAccountCommand } from "./account-command.ts";
@@ -114,6 +115,15 @@ export function registerAnthropicSubscriptionExtension(
 				return credential && typeof credential.access === "string"
 					? { access: credential.access, refresh: credential.refresh, expires: credential.expires }
 					: undefined;
+			},
+			claudeCli: {
+				cwd: () => cwd,
+				providerSettings: () =>
+					deps.readSettings ? deps.readSettings() : loadAnthropicSubscriptionProviderSettingsFromDisk(cwd),
+				defaultModel: () => {
+					const settings = SettingsManager.create(cwd, getAgentDir());
+					return { provider: settings.getDefaultProvider(), model: settings.getDefaultModel() };
+				},
 			},
 			removeAnthropicCredential: async () => {
 				// The import is a move, not a copy: one single-use grant must never

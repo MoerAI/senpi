@@ -7,7 +7,7 @@ import {
 	type ProviderStreams,
 } from "@earendil-works/pi-ai";
 import { listSlots } from "@earendil-works/pi-ai/auth/pool/slots";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../../../src/core/auth-storage.ts";
 import { renameCredentialAccount } from "../../../src/core/credential-accounts.ts";
 import {
@@ -15,6 +15,7 @@ import {
 	SENTINEL_OAUTH_FIELDS,
 } from "../../../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 import { createOAuthConfig } from "../../../src/core/extensions/builtin/anthropic-subscription/oauth-login.ts";
+import { cleanupFakeClaudeCliLogins, fakeClaudeCliLogin } from "../../support/fake-claude-cli-login.ts";
 import { composedProvider } from "../../support/anthropic-subscription-provider.ts";
 
 const fresh = { type: "oauth" as const, access: "fake-access", refresh: "fake-refresh", expires: 4102444800000 };
@@ -39,6 +40,8 @@ function interaction(receipts: unknown[], answer = "second"): AuthInteraction {
 }
 
 // senpi#1495: receipts must describe the committed slot, not token matches or list order.
+afterEach(() => cleanupFakeClaudeCliLogins());
+
 describe("committed account receipts", () => {
 	it("identifies two OpenAI logins with identical tokens, preserves the first display name", async () => {
 		const storage = AuthStorage.inMemory();
@@ -78,7 +81,7 @@ describe("committed account receipts", () => {
 				readCurrent: async () =>
 					storage.get("anthropic-subscription") as AnthropicSubscriptionCredential | undefined,
 				readAnthropicCredential: async () => (importFirst ? fresh : undefined),
-				loginFlow: flow,
+				claudeCli: fakeClaudeCliLogin(),
 			});
 			models.setProvider(composedProvider(async () => false, { oauth: config }));
 			const receipts: unknown[] = [];

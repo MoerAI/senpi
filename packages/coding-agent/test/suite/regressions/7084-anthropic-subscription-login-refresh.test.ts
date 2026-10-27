@@ -1,31 +1,19 @@
-import type { OAuthAuth } from "@earendil-works/pi-ai";
 import { appendLoginSlot } from "@earendil-works/pi-ai/auth/pool/slots";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	type AccountSlot,
 	type AnthropicSubscriptionCredential,
 	emptyCredential,
+	type LegacyAccountSlot,
 	listAccounts,
 } from "../../../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 import { selectAccount } from "../../../src/core/extensions/builtin/anthropic-subscription/affinity.ts";
 import { createOAuthConfig } from "../../../src/core/extensions/builtin/anthropic-subscription/oauth-login.ts";
+import { cleanupFakeClaudeCliLogins, fakeClaudeCliLogin } from "../../support/fake-claude-cli-login.ts";
 
-function fakeFlow(credential: { access: string; refresh: string; expires: number }): OAuthAuth {
-	return {
-		name: "fake",
-		async login() {
-			return { type: "oauth", ...credential };
-		},
-		async refresh(current) {
-			return current;
-		},
-		async toAuth(current) {
-			return { apiKey: current.access };
-		},
-	};
-}
+afterEach(() => cleanupFakeClaudeCliLogins());
 
-function slot(overrides: Partial<AccountSlot> & { name: string }): AccountSlot {
+function slot(overrides: Partial<LegacyAccountSlot> & { name: string }): LegacyAccountSlot {
 	return {
 		access: `${overrides.name}-access`,
 		refresh: `${overrides.name}-refresh`,
@@ -35,6 +23,11 @@ function slot(overrides: Partial<AccountSlot> & { name: string }): AccountSlot {
 	};
 }
 
+/** The sibling accounts these cases seed are token slots; a re-login must leave their tokens untouched. */
+function legacyAccess(entry: AccountSlot | undefined): string | undefined {
+	return entry?.store === undefined ? entry?.access : undefined;
+}
+
 function credentialWith(
 	slots: AccountSlot[],
 	extra?: Partial<AnthropicSubscriptionCredential>,
@@ -42,7 +35,6 @@ function credentialWith(
 	return { ...emptyCredential(), accounts: slots, ...extra };
 }
 
-const fresh = { access: "new-access", refresh: "new-refresh", expires: Date.now() + 3_600_000 };
 const blockedDefault = slot({
 	name: "default",
 	blockReason: "auth_error",
@@ -54,13 +46,12 @@ describe("re-login refreshes the dead slot instead of appending (omo#7084)", () 
 	it("a single auth_error-blocked slot is refreshed in place and selectable again", async () => {
 		const config = createOAuthConfig({
 			readCurrent: async () => credentialWith([blockedDefault]),
-			loginFlow: fakeFlow(fresh),
+			claudeCli: fakeClaudeCliLogin(),
 		});
 		const credential = await config.login({ onPrompt: async () => "" });
 		const slots = listAccounts(credential as never);
 		expect(slots.map((entry) => entry.name)).toEqual(["default"]);
-		expect(slots[0]?.access).toBe("new-access");
-		expect(slots[0]?.refresh).toBe("new-refresh");
+		expect(slots[0]?.store).toBe("claude-cli");
 		expect(slots[0]?.blockReason).toBeUndefined();
 		expect(slots[0]?.blockedUntil).toBeUndefined();
 		expect(selectAccount(slots).name).toBe("default");
@@ -70,15 +61,16 @@ describe("re-login refreshes the dead slot instead of appending (omo#7084)", () 
 	// Models.login persists through, not only the provider's return value.
 	it("the refreshed slot survives appendLoginSlot, the persistence path Models.login uses", async () => {
 		const stored = credentialWith([blockedDefault]);
-		const config = createOAuthConfig({
-			readCurrent: async () => stored,
-			loginFlow: fakeFlow(fresh),
-		});
+		const claudeCli = fakeClaudeCliLogin();
+		const config = createOAuthConfig({ readCurrent: async () => stored, claudeCli });
 		const loginResult = await config.login({ onPrompt: async () => "" });
-		const persisted = appendLoginSlot(stored, loginResult as AnthropicSubscriptionCredential);
+		// Models.login merges onto what the store holds under its lock at commit time, which already carries the
+		// re-login's in-place write (a CLI slot has no newer `expires` for the merge to prefer).
+		const atCommit = (await claudeCli.store?.().read("anthropic-subscription")) as AnthropicSubscriptionCredential;
+		const persisted = appendLoginSlot(atCommit, loginResult as AnthropicSubscriptionCredential);
 		const slots = listAccounts(persisted as never);
 		expect(slots.map((entry) => entry.name)).toEqual(["default"]);
-		expect(slots[0]?.access).toBe("new-access");
+		expect(slots[0]?.store).toBe("claude-cli");
 		expect(slots[0]?.blockReason).toBeUndefined();
 		expect(selectAccount(slots).name).toBe("default");
 	});
@@ -86,12 +78,12 @@ describe("re-login refreshes the dead slot instead of appending (omo#7084)", () 
 	it("typing the existing name refreshes it instead of throwing 'already exists'", async () => {
 		const config = createOAuthConfig({
 			readCurrent: async () => credentialWith([blockedDefault]),
-			loginFlow: fakeFlow(fresh),
+			claudeCli: fakeClaudeCliLogin(),
 		});
 		const credential = await config.login({ onPrompt: async () => "default" });
 		const slots = listAccounts(credential as never);
 		expect(slots.map((entry) => entry.name)).toEqual(["default"]);
-		expect(slots[0]?.access).toBe("new-access");
+		expect(slots[0]?.store).toBe("claude-cli");
 		expect(slots[0]?.blockReason).toBeUndefined();
 	});
 
@@ -100,13 +92,13 @@ describe("re-login refreshes the dead slot instead of appending (omo#7084)", () 
 		const dead = slot({ name: "default", blockReason: "auth_error", displayName: "Work" });
 		const config = createOAuthConfig({
 			readCurrent: async () => credentialWith([dead, personal]),
-			loginFlow: fakeFlow(fresh),
+			claudeCli: fakeClaudeCliLogin(),
 		});
 		const credential = await config.login({ onPrompt: async () => "default" });
 		const slots = listAccounts(credential as never);
 		expect(slots.map((entry) => entry.name)).toEqual(["default", "personal"]);
 		expect(slots[0]?.displayName).toBe("Work");
-		expect(slots[0]?.access).toBe("new-access");
+		expect(slots[0]?.store).toBe("claude-cli");
 		expect(slots[0]?.blockReason).toBeUndefined();
 		expect(slots[1]).toEqual(personal);
 	});
@@ -116,12 +108,12 @@ describe("re-login refreshes the dead slot instead of appending (omo#7084)", () 
 		const current = credentialWith([blockedDefault, personal], { pinned: "personal" });
 		const config = createOAuthConfig({
 			readCurrent: async () => current,
-			loginFlow: fakeFlow(fresh),
+			claudeCli: fakeClaudeCliLogin(),
 		});
 		const credential = await config.login({ onPrompt: async () => "" });
 		const slots = listAccounts(credential as never);
 		expect(slots.map((entry) => entry.name)).toEqual(["default", "personal"]);
-		expect(slots[0]?.access).toBe("new-access");
+		expect(slots[0]?.store).toBe("claude-cli");
 		expect(slots[0]?.blockReason).toBeUndefined();
 		expect(slots[1]).toEqual(personal);
 		expect((credential as AnthropicSubscriptionCredential).pinned).toBe("personal");
@@ -132,36 +124,36 @@ describe("re-login refreshes the dead slot instead of appending (omo#7084)", () 
 		const personal = slot({ name: "personal" });
 		const config = createOAuthConfig({
 			readCurrent: async () => credentialWith([work, personal]),
-			loginFlow: fakeFlow(fresh),
+			claudeCli: fakeClaudeCliLogin(),
 		});
 		const credential = await config.login({ onPrompt: async () => "" });
 		const slots = listAccounts(credential as never);
 		expect(slots.map((entry) => entry.name)).toEqual(["work", "personal", "account-3"]);
-		expect(slots[0]?.access).toBe("work-access");
-		expect(slots[1]?.access).toBe("personal-access");
+		expect(legacyAccess(slots[0])).toBe("work-access");
+		expect(legacyAccess(slots[1])).toBe("personal-access");
 	});
 
 	it("an explicit new name still appends a separate account and keeps the sibling block", async () => {
 		const config = createOAuthConfig({
 			readCurrent: async () => credentialWith([blockedDefault]),
-			loginFlow: fakeFlow(fresh),
+			claudeCli: fakeClaudeCliLogin(),
 		});
 		const credential = await config.login({ onPrompt: async () => "work" });
 		const slots = listAccounts(credential as never);
 		expect(slots.map((entry) => entry.name)).toEqual(["default", "work"]);
 		expect(slots[0]?.blockReason).toBe("auth_error");
-		expect(slots[1]?.access).toBe("new-access");
+		expect(slots[1]?.store).toBe("claude-cli");
 	});
 
 	it("a headless re-login with a single slot refreshes it in place", async () => {
 		const config = createOAuthConfig({
 			readCurrent: async () => credentialWith([blockedDefault]),
-			loginFlow: fakeFlow(fresh),
+			claudeCli: fakeClaudeCliLogin(),
 		});
 		const credential = await config.login({});
 		const slots = listAccounts(credential as never);
 		expect(slots.map((entry) => entry.name)).toEqual(["default"]);
-		expect(slots[0]?.access).toBe("new-access");
+		expect(slots[0]?.store).toBe("claude-cli");
 		expect(slots[0]?.blockReason).toBeUndefined();
 	});
 
@@ -170,13 +162,13 @@ describe("re-login refreshes the dead slot instead of appending (omo#7084)", () 
 		const personal = slot({ name: "personal" });
 		const config = createOAuthConfig({
 			readCurrent: async () => credentialWith([work, personal]),
-			loginFlow: fakeFlow(fresh),
+			claudeCli: fakeClaudeCliLogin(),
 		});
 		const credential = await config.login({});
 		const slots = listAccounts(credential as never);
 		expect(slots.map((entry) => entry.name)).toEqual(["work", "personal", "account-3"]);
-		expect(slots[0]?.access).toBe("work-access");
-		expect(slots[1]?.access).toBe("personal-access");
+		expect(legacyAccess(slots[0])).toBe("work-access");
+		expect(legacyAccess(slots[1])).toBe("personal-access");
 	});
 });
 
@@ -189,7 +181,7 @@ describe("anthropic import moves the grant instead of forking it (omo#7084)", ()
 			removeAnthropicCredential: async () => {
 				removed++;
 			},
-			loginFlow: fakeFlow(fresh),
+			claudeCli: fakeClaudeCliLogin(),
 		});
 		const credential = await config.login({ onPrompt: async () => "y" });
 		const slots = listAccounts(credential as never);
@@ -206,7 +198,7 @@ describe("anthropic import moves the grant instead of forking it (omo#7084)", ()
 			removeAnthropicCredential: async () => {
 				removed++;
 			},
-			loginFlow: fakeFlow(fresh),
+			claudeCli: fakeClaudeCliLogin(),
 		});
 		const credential = await config.login({ onPrompt: async () => "n" });
 		const slots = listAccounts(credential as never);

@@ -2,30 +2,88 @@ import type {
 	AuthCheck,
 	AuthContext,
 	AuthResult,
-	OAuthAuth,
+	CredentialStore,
 	OAuthCredential,
 	OAuthCredentials,
-	ProviderAuthInteraction,
 } from "@earendil-works/pi-ai";
-import { loadAnthropicOAuth } from "@earendil-works/pi-ai/oauth";
+import { lstatSync, rmSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./account-management.ts";
 import {
 	type AccountSlot,
 	type AnthropicSubscriptionCredential,
 	addAccount,
+	assertValidAccountName,
+	type ClaudeCliAccountCheck,
+	type ClaudeCliAccountSlot,
 	emptyCredential,
 	type LegacyAccountSlot,
 	listAccounts,
 	SENTINEL_OAUTH_FIELDS,
-	upsertAccount,
 } from "./accounts.ts";
+import { activeBoundary } from "./auth-lane-boundary.ts";
 import { readAmbientClaudeAuthStatus } from "./availability.ts";
+import {
+	accountDirFor,
+	CLAUDE_CLI_SHARED_LINKS,
+	claudeCliSharedRoot,
+	ensureAccountDir,
+	newAccountDirId,
+} from "./claude-cli-account-dir.ts";
+import {
+	type ClaudeCliLogin,
+	type ClaudeCliLoginMethod,
+	type ClaudeCliLoginResult,
+	startClaudeCliLogin,
+} from "./claude-cli-auth.ts";
+import { type ClaudeCliProfile, logoutClaudeCli, readClaudeCliAuthStatus } from "./claude-cli-auth-status.ts";
+import {
+	type ClaudeCliConnectionTestInput,
+	connectionTestModel,
+	type DefaultModelSelection,
+	runClaudeCliConnectionTest,
+} from "./claude-cli-connection-test.ts";
+import { recordClaudeCliLoginOutcome } from "./claude-cli-login-outcome.ts";
+import type { ClaudeCliRun } from "./claude-cli-process.ts";
+import { defaultExecutableDeps, resolveClaudeCodeExecutable } from "./executable.ts";
+import type { AnthropicSubscriptionProviderSettings } from "./settings.ts";
 
 export type OAuthLoginCallbacks = {
 	signal?: AbortSignal;
-	onAuth?: (event: { url: string }) => void | Promise<void>;
-	onPrompt?: (prompt: { message: string; placeholder?: string }) => Promise<string>;
+	onAuth?: (event: { url: string; instructions?: string }) => void | Promise<void>;
+	onPrompt?: (prompt: { message: string; placeholder?: string; signal?: AbortSignal }) => Promise<string>;
+	onSelect?: (prompt: {
+		message: string;
+		options: readonly { id: string; label: string }[];
+		signal?: AbortSignal;
+	}) => Promise<string | undefined>;
 	onManualCodeInput?: () => Promise<string>;
 	onProgress?: (message: string) => void;
+};
+
+/** The method select the desktop and remote clients answer by these exact labels. */
+export const ANTHROPIC_LOGIN_METHOD_PROMPT = {
+	message: "Select Anthropic login method:",
+	options: [
+		{ id: "browser", label: "Browser login (default)" },
+		{ id: "copy_code", label: "Copy code login (headless)" },
+	],
+} as const;
+
+/** The paste prompt's title; its placeholder carries the manual sign-in URL ("Get a code instead"). */
+export const ANTHROPIC_PASTE_CODE_MESSAGE = "Paste the code Anthropic shows after you sign in:";
+
+/** Everything the CLI sign-in touches, injectable for tests; defaults are the turn path's own boundary. */
+export type ClaudeCliLoginDeps = {
+	agentDir?: () => string;
+	env?: () => NodeJS.ProcessEnv;
+	store?: () => CredentialStore;
+	executable?: (env: NodeJS.ProcessEnv) => string;
+	defaultModel?: () => DefaultModelSelection | undefined;
+	providerSettings?: () => AnthropicSubscriptionProviderSettings;
+	cwd?: () => string;
+	connectionTest?: (input: ClaudeCliConnectionTestInput) => Promise<ClaudeCliAccountCheck>;
+	now?: () => number;
 };
 
 export type CurrentCredentialReader = () => Promise<AnthropicSubscriptionCredential | undefined>;
@@ -112,6 +170,150 @@ async function promptAccountName(callbacks: OAuthLoginCallbacks, existing: Accou
 	return answer || recovery || fallback;
 }
 
+/** Removes a new account dir that holds no login (a cancelled or failed first sign-in), never following its links. */
+function discardAccountDir(agentDir: string, dirId: string): void {
+	const accountDir = accountDirFor(agentDir, dirId);
+	for (const entry of CLAUDE_CLI_SHARED_LINKS) {
+		const path = join(accountDir, entry);
+		try {
+			if (lstatSync(path).isSymbolicLink()) unlinkSync(path);
+		} catch {
+			// absent entry: nothing to unlink
+		}
+	}
+	rmSync(accountDir, { recursive: true, force: true });
+}
+
+async function selectLoginMethod(callbacks: OAuthLoginCallbacks): Promise<ClaudeCliLoginMethod> {
+	if (!callbacks.onSelect) return "browser";
+	const answer = await callbacks.onSelect({
+		...ANTHROPIC_LOGIN_METHOD_PROMPT,
+		...(callbacks.signal === undefined ? {} : { signal: callbacks.signal }),
+	});
+	if (answer === undefined) throw new Error("Login cancelled");
+	return answer === "copy_code" ? "copy-code" : "browser";
+}
+
+const LOGIN_FAILURE_MESSAGES: Record<Exclude<ClaudeCliLoginResult, { outcome: "success" }>["outcome"], string> = {
+	cancelled: "Login cancelled",
+	timeout: "Claude sign-in timed out without a browser callback or a pasted code. Run the login again.",
+	failed: "Claude sign-in failed",
+};
+
+function loginFailure(result: Exclude<ClaudeCliLoginResult, { outcome: "success" }>): Error {
+	if (result.outcome !== "failed") return new Error(LOGIN_FAILURE_MESSAGES[result.outcome]);
+	if (result.reason === "org_not_allowed")
+		return new Error("Claude sign-in failed: your organization does not allow it");
+	if (result.reason === "spawn_failed") return new Error("Claude sign-in failed: the Claude Code CLI could not start");
+	return new Error(`${LOGIN_FAILURE_MESSAGES.failed} (${result.reason})`);
+}
+
+/**
+ * Runs `claude auth login --claudeai` for one account dir. The auth URL goes to `onAuth` (the captured browser URL,
+ * or the manual URL in copy-code mode), and a paste prompt carrying the manual URL feeds codes to the CLI's stdin
+ * until the login settles. Output, URLs and codes are never logged.
+ */
+async function signInThroughCli(
+	run: ClaudeCliRun,
+	method: ClaudeCliLoginMethod,
+	callbacks: OAuthLoginCallbacks,
+): Promise<void> {
+	const pasteAbort = new AbortController();
+	const loginAbort = new AbortController();
+	let pasteError: unknown;
+	let settled = false;
+	let login: ClaudeCliLogin | undefined;
+	const pasteCodes = async (manualUrl: string) => {
+		if (!callbacks.onPrompt) return;
+		try {
+			while (!settled) {
+				const answer = await callbacks.onPrompt({
+					message: ANTHROPIC_PASTE_CODE_MESSAGE,
+					placeholder: manualUrl,
+					signal: pasteAbort.signal,
+				});
+				// A blank answer pastes nothing: the login keeps waiting for the browser callback.
+				if (settled || answer.trim() === "" || login?.submitCode(answer)) return;
+			}
+		} catch (error) {
+			if (settled) return;
+			pasteError = error;
+			loginAbort.abort();
+		}
+	};
+	login = startClaudeCliLogin({
+		...run,
+		method,
+		signal:
+			callbacks.signal === undefined ? loginAbort.signal : AbortSignal.any([callbacks.signal, loginAbort.signal]),
+		onAutomaticUrl: (url) => {
+			if (method === "browser") void callbacks.onAuth?.({ url });
+		},
+		onManualUrl: (url) => {
+			if (method === "copy-code") void callbacks.onAuth?.({ url });
+			void pasteCodes(url);
+		},
+	});
+	let result: ClaudeCliLoginResult;
+	try {
+		result = await login.result;
+	} finally {
+		settled = true;
+		pasteAbort.abort();
+	}
+	if (result.outcome === "success") return;
+	if (result.outcome === "cancelled" && pasteError !== undefined) {
+		throw pasteError instanceof Error ? pasteError : new Error(String(pasteError));
+	}
+	throw loginFailure(result);
+}
+
+/** Reconnect keeps name, display name, model blocks and (on the credential) pin and order; blocks and sign-in-required clear. */
+function signedInSlot(
+	previous: AccountSlot | undefined,
+	name: string,
+	dirId: string,
+	profile: ClaudeCliProfile,
+	at: number,
+): ClaudeCliAccountSlot {
+	return {
+		name,
+		...(previous?.displayName === undefined ? {} : { displayName: previous.displayName }),
+		source: "login",
+		store: "claude-cli",
+		dirId,
+		signedInAt: at,
+		profile: { ...profile, checkedAt: at },
+		...(previous?.modelBlocks === undefined ? {} : { modelBlocks: previous.modelBlocks }),
+	};
+}
+
+function withSlot(credential: AnthropicSubscriptionCredential, slot: AccountSlot): AnthropicSubscriptionCredential {
+	const accounts = credential.accounts ?? [];
+	return accounts.some((candidate) => candidate.name === slot.name)
+		? { ...credential, accounts: accounts.map((candidate) => (candidate.name === slot.name ? slot : candidate)) }
+		: { ...credential, accounts: [...accounts, slot] };
+}
+
+function withCheck(
+	credential: AnthropicSubscriptionCredential,
+	name: string,
+	check: ClaudeCliAccountCheck,
+): AnthropicSubscriptionCredential {
+	return {
+		...credential,
+		accounts: (credential.accounts ?? []).map((candidate) =>
+			candidate.name === name && candidate.store === "claude-cli" ? { ...candidate, check } : candidate,
+		),
+	};
+}
+
+function storedSubscription(value: unknown): AnthropicSubscriptionCredential | undefined {
+	return typeof value === "object" && value !== null && (value as { type?: unknown }).type === "oauth"
+		? (value as AnthropicSubscriptionCredential)
+		: undefined;
+}
+
 export function createOAuthConfig(deps: {
 	readCurrent: CurrentCredentialReader;
 	readAnthropicCredential?: () => Promise<{ access: string; refresh: string; expires: number } | undefined>;
@@ -119,8 +321,18 @@ export function createOAuthConfig(deps: {
 	removeAnthropicCredential?: () => Promise<void>;
 	readAmbientAuthStatus?: (signal?: AbortSignal) => Promise<boolean>;
 	readSettings?: () => { tokenInjection?: "oauth-slots" | "config-dir" | "ambient"; enabled?: boolean } | undefined;
-	loginFlow?: OAuthAuth;
+	claudeCli?: ClaudeCliLoginDeps;
 }): OAuthConfigShape {
+	const cli = deps.claudeCli ?? {};
+	const agentDir = () => (cli.agentDir ?? activeBoundary.getAgentDir)();
+	const hostEnv = () => (cli.env ?? activeBoundary.env)();
+	const store = () => (cli.store ?? activeBoundary.createStore)();
+	const now = () => (cli.now ?? activeBoundary.now)();
+	const executableFor = (env: NodeJS.ProcessEnv) =>
+		cli.executable
+			? cli.executable(env)
+			: resolveClaudeCodeExecutable({ ...defaultExecutableDeps(), env: (key) => env[key] });
+
 	const claudeEnvironment = async (ctx: AuthContext): Promise<Record<string, string>> => {
 		const entries = await Promise.all(ENV_TOKEN_NAMES.map(async (name) => [name, await ctx.env(name)] as const));
 		return Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => entry[1] !== undefined));
@@ -203,30 +415,73 @@ export function createOAuthConfig(deps: {
 					}
 				}
 			}
-			const interaction: ProviderAuthInteraction = {
-				signal: callbacks.signal ?? new AbortController().signal,
-				prompt: async (prompt) => {
-					if (prompt.type === "select") {
-						// This adapter has no select callback; never answer "" or the
-						// flow's mandatory selector throws. Default to the option the
-						// flow marks "(default)" (the browser login), else the first.
-						const options = prompt.options ?? [];
-						const fallback = options.find((option) => /\(default\)/i.test(option.label)) ?? options[0];
-						return fallback ? fallback.id : "";
-					}
-					return callbacks.onPrompt ? callbacks.onPrompt({ message: prompt.message }) : "";
-				},
-				notify: (event) => {
-					if (event.type === "auth_url" && callbacks.onAuth) void callbacks.onAuth({ url: event.url });
-					if (event.type === "progress" && callbacks.onProgress) callbacks.onProgress(event.message);
-				},
-			};
-			const flow = deps.loginFlow ?? (await loadAnthropicOAuth());
-			const credential = await flow.login(interaction);
+			const name = await promptAccountName(callbacks, existing);
+			assertValidAccountName(name);
+			const method = await selectLoginMethod(callbacks);
+			// A login cancelled while provider_login_start handlers ran (or at a prompt) never spawns the CLI.
+			if (callbacks.signal?.aborted) throw new Error("Login cancelled");
 
-			const existingAfter = listAccounts(current);
-			const name = await promptAccountName(callbacks, existingAfter);
-			return upsertAccount(current, toSlot(credential, name, "login"));
+			const env = hostEnv();
+			const executable = executableFor(env);
+			const previous = existing.find((slot) => slot.name === name);
+			const reconnect = previous?.store === "claude-cli" ? previous : undefined;
+			const dirId = reconnect?.dirId ?? newAccountDirId();
+			const configDir = ensureAccountDir({ agentDir: agentDir(), dirId, sharedRoot: claudeCliSharedRoot(env) });
+			const run: ClaudeCliRun = { executable, configDir, parentEnv: env };
+			const dropNewDir = () => {
+				if (reconnect === undefined) discardAccountDir(agentDir(), dirId);
+			};
+			try {
+				await signInThroughCli(run, method, callbacks);
+			} catch (error) {
+				dropNewDir();
+				throw error;
+			}
+			const status = await readClaudeCliAuthStatus(run);
+			if (status.state !== "signed_in") {
+				// Whatever the CLI stored is not a first-party claude.ai login; never keep it under this account.
+				if (status.state === "rejected") await logoutClaudeCli(run);
+				dropNewDir();
+				throw new Error(
+					status.state === "rejected"
+						? "Claude sign-in did not produce a Claude subscription login (Pro/Max); sign in with your claude.ai account"
+						: "Claude sign-in finished, but Claude Code reports no login for this account",
+				);
+			}
+
+			const slot = signedInSlot(previous, name, dirId, status.profile, now());
+			const credentials = store();
+			await credentials.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (stored) =>
+				withSlot(storedSubscription(stored) ?? current, slot),
+			);
+			const model = connectionTestModel(cli.defaultModel?.());
+			callbacks.onProgress?.(`Testing the account with one turn on ${model}...`);
+			const check = await (cli.connectionTest ?? runClaudeCliConnectionTest)({
+				name,
+				model,
+				executable,
+				cwd: cli.cwd?.() ?? process.cwd(),
+				providerSettings: cli.providerSettings?.() ?? {},
+				...(callbacks.signal === undefined ? {} : { signal: callbacks.signal }),
+				now,
+			});
+			callbacks.onProgress?.(
+				check.outcome === "ok"
+					? `Connection test passed on ${model}`
+					: `Connection test failed on ${model} (${check.reason ?? "unknown"}); the account was kept. Retry from the account list.`,
+			);
+			// A new account's test-time write is taken back so the login commit (Models.login / AuthStorage.set)
+			// adds it and names it in the account receipt; a Reconnect keeps its in-place write.
+			let tested: AccountSlot = slot;
+			const saved = await credentials.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (stored) => {
+				const base = storedSubscription(stored) ?? withSlot(current, slot);
+				tested = base.accounts?.find((candidate) => candidate.name === name) ?? slot;
+				if (previous !== undefined) return withCheck(base, name, check);
+				return { ...base, accounts: (base.accounts ?? []).filter((candidate) => candidate.name !== name) };
+			});
+			if (callbacks.signal !== undefined)
+				recordClaudeCliLoginOutcome(callbacks.signal, { account: { name }, check });
+			return withCheck(withSlot(storedSubscription(saved) ?? current, tested), name, check);
 		},
 
 		async refreshToken(credentials) {

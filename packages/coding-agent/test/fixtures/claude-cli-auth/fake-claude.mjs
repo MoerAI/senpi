@@ -46,7 +46,8 @@ if (group === "auth" && command === "status") {
 		process.stdout.write("not json\n");
 		process.exit(0);
 	}
-	const status = statuses[mode] ?? statuses["status-loggedout"];
+	// FAKE_CLAUDE_STATUS_MODE answers `auth status` after a login scenario ran under FAKE_CLAUDE_MODE.
+	const status = statuses[process.env.FAKE_CLAUDE_STATUS_MODE ?? mode] ?? statuses["status-loggedout"];
 	process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
 	process.exit(status.loggedIn ? 0 : 1);
 }
