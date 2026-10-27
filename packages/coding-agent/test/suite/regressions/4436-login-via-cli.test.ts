@@ -394,6 +394,21 @@ describe("senpi#4436 a login cancelled at any stage leaves no account and no acc
 });
 
 describe("senpi#4436 a cancelled re-login leaves the existing account as it was", () => {
+	it("re-login under an existing CLI name succeeds through the fresh-dir swap, not the token-slot upsert", async () => {
+		const oldDirId = "b".repeat(32);
+		const lane = await setup({ slots: [cliSlot("work", oldDirId), cliSlot("other", "e".repeat(32))] });
+		seedAccountDir(lane.agentDir, oldDirId);
+
+		const credential = (await lane.config.login({
+			onPrompt: async (prompt) => (prompt.message.startsWith(DESKTOP_NAME_PREFIX) ? "work" : heldOpen(prompt)),
+		})) as AnthropicSubscriptionCredential;
+
+		const work = credential.accounts?.find((slot) => slot.name === "work");
+		expect(work?.store).toBe("claude-cli");
+		expect(work?.store === "claude-cli" ? work.dirId : oldDirId).not.toBe(oldDirId);
+		expect(credential.accounts?.map((slot) => slot.name)).toEqual(["work", "other"]);
+	});
+
 	it("re-login cancelled after its CLI login finished: old slot and old dir unchanged, fresh dir gone", async () => {
 		const oldDirId = "a".repeat(32);
 		const existing = cliSlot("work", oldDirId, { profile: { email: "old@example.com", checkedAt: 1 } });
