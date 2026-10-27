@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { CredentialStoreBusyError } from "../../../src/core/lockfile-policy.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import type {
 	AccountSlot,
@@ -108,7 +109,11 @@ function accountDir(lane: Lane, dirId: string): string {
 }
 
 /** Like the real CLI, the fake writes its transcript under `CLAUDE_CONFIG_DIR/projects` and reads the shared root back. */
-function installCliSdk(lane: Lane, init?: unknown): { queries: ScriptedResidentQuery[]; reads: string[] } {
+function installCliSdk(
+	lane: Lane,
+	init?: unknown,
+	initializationResult?: () => Promise<unknown>,
+): { queries: ScriptedResidentQuery[]; reads: string[] } {
 	const queries: ScriptedResidentQuery[] = [];
 	const reads: string[] = [];
 	const script = (sessionId: string, userUuid: string, submission: number) => {
@@ -138,7 +143,8 @@ function installCliSdk(lane: Lane, init?: unknown): { queries: ScriptedResidentQ
 	const query: SdkQuery = ({ prompt, options }) => {
 		if (typeof prompt === "string") throw new Error("Expected streaming input");
 		const handle = new ScriptedResidentQuery(prompt, script, options);
-		if (init !== undefined) Object.assign(handle, { initializationResult: async () => init });
+		if (initializationResult) Object.assign(handle, { initializationResult });
+		else if (init !== undefined) Object.assign(handle, { initializationResult: async () => init });
 		queries.push(handle);
 		return handle;
 	};
@@ -160,11 +166,12 @@ function installCliSdk(lane: Lane, init?: unknown): { queries: ScriptedResidentQ
 	return { queries, reads };
 }
 
-function runTurn(context: Context): Promise<AssistantMessage> {
+function runTurn(context: Context, signal?: AbortSignal): Promise<AssistantMessage> {
 	return streamAnthropicSubscription(model, context, {
 		cwd: process.env.SENPI_CODING_AGENT_DIR,
 		sessionId: SESSION_ID,
 		streamKind: "main",
+		...(signal === undefined ? {} : { signal }),
 	}).result();
 }
 
@@ -204,7 +211,12 @@ describe("senpi#4436 claude-cli account lane", () => {
 			},
 		});
 		const { queries } = installCliSdk(lane, {
-			account: { tokenSource: "none", email: "alice@example.com", subscriptionType: "max" },
+			account: {
+				apiProvider: "firstParty",
+				tokenSource: "none",
+				email: "alice@example.com",
+				subscriptionType: "max",
+			},
 		});
 
 		const turn = await runTurn({ messages: [user1] });
@@ -246,7 +258,9 @@ describe("senpi#4436 claude-cli account lane", () => {
 
 	it("(c) an init account with tokenSource from CLAUDE_CODE_OAUTH_TOKEN fails the attempt closed with ClaudeCliTokenSourceLeak", async () => {
 		const lane = await installCliLane([cliSlot("alice", DIR_A)], { pinned: "alice" });
-		const { queries } = installCliSdk(lane, { account: { tokenSource: "CLAUDE_CODE_OAUTH_TOKEN" } });
+		const { queries } = installCliSdk(lane, {
+			account: { apiProvider: "firstParty", tokenSource: "CLAUDE_CODE_OAUTH_TOKEN" },
+		});
 
 		const turn = await runTurn({ messages: [user1] });
 
@@ -254,6 +268,37 @@ describe("senpi#4436 claude-cli account lane", () => {
 		expect(turn.errorMessage).toMatch(/ClaudeCliTokenSourceLeak/);
 		expect(queries).toHaveLength(1);
 		expect(queries[0]?.submitted).toEqual([]);
+	});
+
+	it("(c2) an abort while the CLI's initialization hangs ends the turn without sending the prompt", async () => {
+		const lane = await installCliLane([cliSlot("alice", DIR_A)], { pinned: "alice" });
+		const controller = new AbortController();
+		// The CLI never finishes initializing; the user aborts once the wait has started.
+		const { queries } = installCliSdk(lane, undefined, () => {
+			controller.abort();
+			return new Promise<never>(() => {});
+		});
+
+		const turn = await runTurn({ messages: [user1] }, controller.signal);
+
+		expect(turn.stopReason === "aborted" || turn.stopReason === "error").toBe(true);
+		expect(queries).toHaveLength(1);
+		expect(queries[0]?.submitted).toEqual([]);
+	});
+
+	it("(c3) a busy store while storing the reported profile never fails a verified turn", async () => {
+		const lane = await installCliLane([cliSlot("alice", DIR_A)], { pinned: "alice" });
+		const { queries } = installCliSdk(lane, {
+			account: { apiProvider: "firstParty", tokenSource: "none", email: "alice@example.com" },
+		});
+		lane.store.modify = async () => {
+			throw new CredentialStoreBusyError("auth.json.lock", 5_000);
+		};
+
+		const turn = await runTurn({ messages: [user1] });
+
+		expect(turn.errorMessage).toBeUndefined();
+		expect(queries[0]?.submitted).toHaveLength(1);
 	});
 
 	it("(d) an auth_error-blocked CLI slot clears only when auth status reports loggedIn", async () => {

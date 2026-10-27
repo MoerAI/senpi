@@ -2,11 +2,17 @@ import type { ClaudeCliAccountProfile } from "./accounts.ts";
 
 /** A `claude-cli` turn whose CLI authenticated from an inherited credential instead of the account's own sign-in. */
 export class ClaudeCliTokenSourceLeak extends Error {
-	readonly field: "tokenSource" | "apiKeySource";
+	readonly field: "tokenSource" | "apiKeySource" | "apiProvider" | "account";
 
-	constructor(field: "tokenSource" | "apiKeySource") {
+	constructor(field: "tokenSource" | "apiKeySource" | "apiProvider" | "account") {
+		const reported =
+			field === "account"
+				? "no signed-in account"
+				: field === "apiProvider"
+					? "an API provider other than first-party claude.ai"
+					: `${field} from an inherited environment credential`;
 		super(
-			`ClaudeCliTokenSourceLeak: the Claude CLI reported ${field} from an inherited environment credential ` +
+			`ClaudeCliTokenSourceLeak: the Claude CLI reported ${reported} ` +
 				"instead of this account's own sign-in; the turn was refused before it was sent",
 		);
 		this.name = "ClaudeCliTokenSourceLeak";
@@ -18,6 +24,7 @@ type InitAccount = {
 	email?: unknown;
 	organization?: unknown;
 	subscriptionType?: unknown;
+	apiProvider?: unknown;
 	tokenSource?: unknown;
 	apiKeySource?: unknown;
 };
@@ -37,13 +44,14 @@ function text(value: unknown): string | undefined {
 /**
  * Checks the account the CLI initialized with (`initializationResult().account`). A `tokenSource` that names an
  * environment variable (`CLAUDE_CODE_OAUTH_TOKEN`, ...) or any `apiKeySource` other than `none` means the turn
- * would bill something other than the account's own claude.ai login, so it throws. Returns the reported profile.
+ * would bill something other than the account's own claude.ai login, so it throws. Like `claude auth status`, only a
+ * first-party account counts: no account, or any `apiProvider` other than `firstParty`, throws too. Returns the
+ * reported profile.
  */
-export function verifyClaudeCliInitialization(
-	initialization: unknown,
-): Omit<ClaudeCliAccountProfile, "checkedAt"> | undefined {
+export function verifyClaudeCliInitialization(initialization: unknown): Omit<ClaudeCliAccountProfile, "checkedAt"> {
 	const account = initAccount(initialization);
-	if (account === undefined) return undefined;
+	if (account === undefined) throw new ClaudeCliTokenSourceLeak("account");
+	if (account.apiProvider !== "firstParty") throw new ClaudeCliTokenSourceLeak("apiProvider");
 	const tokenSource = text(account.tokenSource);
 	if (tokenSource !== undefined && ENV_VARIABLE_NAME.test(tokenSource))
 		throw new ClaudeCliTokenSourceLeak("tokenSource");

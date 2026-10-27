@@ -36,6 +36,8 @@ export type AttemptFactoryInput = {
 	prompt: Parameters<SdkQuery>[0]["prompt"];
 	query: SdkQuery;
 	sessionId?: string;
+	/** The turn's abort signal; an initialization wait never outlives it. */
+	signal?: AbortSignal;
 	onQuery?: (query: ReturnType<SdkQuery>) => void;
 	createAttempt?: (
 		input: AuthenticatedAttemptInput,
@@ -53,13 +55,35 @@ async function* retainedAttemptMessages<TEvent>(attempt: RetainableAttempt<TEven
 	}
 }
 
+/**
+ * Awaits the CLI's `initializationResult()`, rejecting as soon as `signal` aborts, so an abort during a hung
+ * initialization ends the wait (as `awaitInitialization` does for a reattach). A later rejection of the abandoned
+ * wait is handled, never unhandled.
+ */
+export async function initializationOrAbort(initialization: Promise<unknown>, signal?: AbortSignal): Promise<unknown> {
+	if (!signal) return initialization;
+	initialization.catch(() => undefined);
+	let onAbort: () => void = () => {};
+	const aborted = new Promise<never>((_, reject) => {
+		onAbort = () => reject(new Error("Anthropic Subscription initialization aborted"));
+	});
+	if (signal.aborted) onAbort();
+	else signal.addEventListener("abort", onAbort, { once: true });
+	try {
+		return await Promise.race([initialization, aborted]);
+	} finally {
+		signal.removeEventListener("abort", onAbort);
+	}
+}
+
 async function* closingQueryMessages(
 	query: ReturnType<SdkQuery>,
 	verifyInitialization: AuthenticatedAttemptInput["verifyInitialization"],
+	signal: AbortSignal | undefined,
 ): AsyncGenerator<SDKMessage> {
 	try {
 		if (verifyInitialization && query.initializationResult)
-			await verifyInitialization(await query.initializationResult());
+			await verifyInitialization(await initializationOrAbort(query.initializationResult(), signal));
 		for await (const message of query) yield message;
 	} finally {
 		query.close();
@@ -82,7 +106,7 @@ export async function createAttemptMessages(
 			return recordingLimitWindows(retainedAttemptMessages(await input.createAttempt(auth)), auth);
 		const query = input.query({ prompt: input.prompt, options: auth.options });
 		input.onQuery?.(query);
-		return recordingLimitWindows(closingQueryMessages(query, auth.verifyInitialization), auth);
+		return recordingLimitWindows(closingQueryMessages(query, auth.verifyInitialization, input.signal), auth);
 	} catch (error) {
 		rememberAccountContext(error, account);
 		throw error;

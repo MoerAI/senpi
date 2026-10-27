@@ -1,4 +1,5 @@
 import type { Api, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { initializationOrAbort } from "./auth-attempt.ts";
 import { type AuthenticatedAttemptInput, queryWithAuthLane } from "./auth-lane.ts";
 import { coldSeedCalibration, coldSeedOverflow, estimateColdSeedTokens } from "./cold-seed-budget.ts";
 import { buildPromptBlocks } from "./prompt-bridge.ts";
@@ -178,9 +179,14 @@ async function createResidentAttempt(
 	// A claude-cli account checks what its CLI initialized with before any prompt is pushed (senpi#4436).
 	if (auth.verifyInitialization && entry.query.initializationResult) {
 		try {
-			await auth.verifyInitialization(await entry.query.initializationResult());
+			await auth.verifyInitialization(
+				await initializationOrAbort(entry.query.initializationResult(), input.streamOptions.signal),
+			);
 		} catch (error) {
-			closeSession(sessionId, "initialization_refused");
+			closeSession(
+				sessionId,
+				input.streamOptions.signal?.aborted ? "initialization_aborted" : "initialization_refused",
+			);
 			throw error;
 		}
 	}

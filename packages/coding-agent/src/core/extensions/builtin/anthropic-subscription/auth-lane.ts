@@ -24,6 +24,7 @@ import { profileChanged, verifyClaudeCliInitialization } from "./claude-cli-toke
 import { writeConfigDirCredential } from "./config-dir-credentials.ts";
 import { asksLegacyLongContext } from "./context-window.ts";
 import { runFailover } from "./failover.ts";
+import { logContinuityEvent } from "./session-observability.ts";
 import { markLongContextRefused } from "./long-context.ts";
 import { classifyForRequest, retryAtStandardWindowOnce, sdkFailure, visibleSdkMessage } from "./long-context-retry.ts";
 import { isGrantRejected, refreshFailure } from "./refresh-failure.ts";
@@ -171,23 +172,35 @@ function prepareClaudeCliSlot(
 	return { env, credentialDigest: createHash("sha256").update(`claude-cli\0${accountDir}`).digest("hex") };
 }
 
-/** Fails the attempt closed on an inherited credential, and stores the profile the CLI reported when it changed. */
+/**
+ * Fails the attempt closed on an inherited credential. Only after the check passed is the profile the CLI reported
+ * stored when it changed; that write is bookkeeping, so a busy or failing store is logged and never fails the turn.
+ */
 function claudeCliInitializationCheck(pool: ManagedPool, slot: ClaudeCliAccountSlot) {
 	return async (initialization: unknown): Promise<void> => {
 		const reported = verifyClaudeCliInitialization(initialization);
-		if (reported === undefined || !profileChanged(slot.profile, reported)) return;
+		if (!profileChanged(slot.profile, reported)) return;
 		const profile = { ...reported, checkedAt: activeBoundary.now() };
-		await pool.store.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (current) => {
-			if (current?.type !== "oauth") return current;
-			const credential = current as AnthropicSubscriptionCredential;
-			return {
-				...credential,
-				accounts: (credential.accounts ?? []).map((candidate) =>
-					candidate.name === slot.name && candidate.store === "claude-cli" ? { ...candidate, profile } : candidate,
-				),
-			};
-		});
 		slot.profile = profile;
+		try {
+			await pool.store.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (current) => {
+				if (current?.type !== "oauth") return current;
+				const credential = current as AnthropicSubscriptionCredential;
+				return {
+					...credential,
+					accounts: (credential.accounts ?? []).map((candidate) =>
+						candidate.name === slot.name && candidate.store === "claude-cli"
+							? { ...candidate, profile }
+							: candidate,
+					),
+				};
+			});
+		} catch (error) {
+			logContinuityEvent("claude_cli_profile_write_failed", {
+				accountName: slot.name,
+				reason: error instanceof CredentialStoreBusyError ? "store_busy" : "store_error",
+			});
+		}
 	};
 }
 
