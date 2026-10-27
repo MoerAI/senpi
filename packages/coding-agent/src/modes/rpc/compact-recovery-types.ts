@@ -92,13 +92,12 @@ export type RecoveryOutcome<T> =
 
 /**
  * One peer + session stream as a holder may read it (RULING-42 Q2 A): the session incarnation it materializes, its
- * generation (the number every token of it carries), the admissions routed through it and whether it closed.
+ * generation (the number every token of it carries) and the admissions routed through it.
  */
 export interface RecoveryStreamState {
 	readonly sessionEpoch: string;
 	readonly generation: number;
 	readonly routes: readonly string[];
-	readonly closed: boolean;
 }
 
 /** The owner's counters: open tokens, live streams, tokens frozen, roots reclaimed without a release, refusals by reason. */

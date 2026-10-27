@@ -1,5 +1,5 @@
 import type { CompactDialog } from "./compact-current-components.ts";
-import { CompactReadError } from "./compact-read-lease.ts";
+import type { RetainedRoot } from "./compact-recovery-state.ts";
 import { type RecoveryOutcome, type RefusalReason, refusalReason } from "./compact-recovery-types.ts";
 import type { ActiveBlockView, ActiveMessageView } from "./compact-state-view.ts";
 import { serializeJsonLine } from "./jsonl.ts";
@@ -208,11 +208,12 @@ export function legacyAttachView(
 
 /**
  * The message slot of a session's `resync_required` frame: C's active message, or null when it has none. A cut the
- * host could not serve (`storage_unavailable`) is reported once; a retired lane has nothing to report.
+ * host could not serve (`storage_unavailable`) is reported once; a retired lane has nothing to report. The cut reads
+ * only a root it retained at the freeze, so no reclaim before its delivery can take the message from it.
  */
 export async function legacyResyncMessage(
 	sessionId: string,
-	source: RecoveryOutcome<LegacyViewSource> | undefined,
+	source: RecoveryOutcome<RetainedRoot> | undefined,
 ): Promise<unknown> {
 	if (!source) return null;
 	if (!source.ok) {
@@ -220,20 +221,14 @@ export async function legacyResyncMessage(
 		return null;
 	}
 	const { value } = source;
-	try {
-		return await value.hold(async () => {
-			try {
-				const message = await activeMessage(value);
-				return (message && legacyMessage(message, "current")) ?? null;
-			} catch (cause) {
-				// Under the hold only the lane itself can release the root (a retirement): nothing to report then.
-				if (value.lane.holds(value.root)) unavailable(sessionId, cause);
-				return null;
-			}
-		});
-	} catch (cause) {
-		// The hold refused before the read began: the cut was reclaimed first (superseded, route retired, peer gone).
-		if (cause instanceof CompactReadError && cause.reason === "released") return null;
-		throw cause;
-	}
+	return value.hold(async () => {
+		try {
+			const message = await activeMessage(value);
+			return (message && legacyMessage(message, "current")) ?? null;
+		} catch (cause) {
+			// Under the hold only the lane itself can release the root (a retirement): nothing to report then.
+			if (value.lane.holds(value.root)) unavailable(sessionId, cause);
+			return null;
+		}
+	});
 }

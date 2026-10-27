@@ -271,7 +271,7 @@ it("RULING-56 (1) SECURITY a token minted for another peer or another session an
 	const onT = unwrap(checkpoints.freeze({ ...route, ...incarnation }, elsewhere)).token;
 	const closed = { ...caller, sessionId: "u" };
 	const onU = unwrap(checkpoints.freeze({ ...route, ...closed }, lane)).token;
-	checkpoints.close("u");
+	checkpoints.forgetSession("u");
 	const rewrite = (token: CheckpointToken, scope: RecoveryCaller): CheckpointToken => ({
 		...token,
 		admission: { ...token.admission, ...scope },
@@ -322,7 +322,7 @@ it("RULING-56 (4) retiring a route is idempotent: the admission's token is recla
 	checkpoints.retireRoute(caller, route.admissionId);
 	const once = snapshot();
 	expect(once).toEqual({
-		stream: { sessionEpoch: lane.sessionEpoch, generation: 1, routes: [], closed: false },
+		stream: { sessionEpoch: lane.sessionEpoch, generation: 1, routes: [] },
 		status: { open: 0, streams: 1, frozen: 1, reclaimed: 1, refused: {} },
 		liveRoots: 0,
 	});

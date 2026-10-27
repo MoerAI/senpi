@@ -26,6 +26,19 @@ export interface FrozenCheckpoint {
 	readonly root: FrozenAcceptedRoot;
 	/** Runs a direct read of `root` as an operation in flight on this checkpoint: a reclaim waits for it to unwind. */
 	hold<T>(read: () => Promise<T>): Promise<T>;
+	/**
+	 * Keeps `root` for one consumer from now until `end`: a reclaim meanwhile (a supersession, a retired route, the
+	 * peer's end) invalidates the token but never takes the root from that consumer, whose reads never refuse.
+	 */
+	retain(): RetainedRoot;
+}
+
+/** A checkpoint's root kept for one consumer (the shed's resync cut) until it calls `end`. */
+export interface RetainedRoot {
+	readonly lane: SessionAcceptanceLane;
+	readonly root: FrozenAcceptedRoot;
+	hold<T>(read: () => Promise<T>): Promise<T>;
+	end(): void;
 }
 
 interface Checkpoint extends FrozenCheckpoint {
@@ -60,7 +73,7 @@ export class RecoveryCheckpoints {
 		return [...this.checkpoints.values()].map(({ token }) => token);
 	}
 
-	/** The stream a caller's admissions share, as a bounded description; undefined once its peer incarnation ended. */
+	/** The stream a caller's admissions share, as a bounded description; undefined once its peer or session ended. */
 	stream(caller: RecoveryCaller): RecoveryStreamState | undefined {
 		return this.streams.describe(caller);
 	}
@@ -109,7 +122,14 @@ export class RecoveryCheckpoints {
 				if (stale) throw new RecoveryRefusedError(stale);
 			},
 		);
-		const checkpoint: Checkpoint = { token, lane, root, lease, hold: (read) => lease.hold(read) };
+		const checkpoint: Checkpoint = {
+			token,
+			lane,
+			root,
+			lease,
+			hold: (read) => lease.hold(read),
+			retain: () => ({ lane, root, hold: (read) => read(), end: lease.retain() }),
+		};
 		this.issued.set(token, admission);
 		this.checkpoints.set(token.id, checkpoint);
 		this.frozen += 1;
@@ -133,19 +153,26 @@ export class RecoveryCheckpoints {
 			if (token.admission.socketEpoch === socketEpoch) this.reclaim(token.id);
 	}
 
-	/** The session closed: its streams keep a closed description and refuse live token access from now on. */
-	close(sessionId: string): void {
-		this.streams.close(sessionId);
+	/**
+	 * The routing session ended for good (RULING-56 (2)): its stream records go on every peer, since a sealed handle is
+	 * never re-attached. Its tokens keep their lifetime (a queued attach view reads its root to delivery, RULING-51
+	 * Q2 A); live access to one is refused as `session_closed`, read from its retired lane.
+	 */
+	forgetSession(sessionId: string): void {
+		this.streams.forgetSession(sessionId);
 	}
 
 	/**
 	 * An admission ended (a detach today; S14 extends this): its route leaves the stream, the counter stays, and the
-	 * token it minted is reclaimed like a superseded one (RULING-56 (4)). Idempotent.
+	 * token it minted is reclaimed like a superseded one (RULING-56 (4)), with or without its stream record. Idempotent.
 	 */
 	retireRoute(caller: RecoveryCaller, admissionId: string): void {
-		const current = this.streams.retireRoute(caller, admissionId);
-		const checkpoint = current === undefined ? undefined : this.checkpoints.get(current);
-		if (checkpoint?.token.admission.admissionId === admissionId) this.reclaim(current);
+		this.streams.retireRoute(caller, admissionId);
+		for (const { token } of [...this.checkpoints.values()]) {
+			const { socketEpoch, sessionId, admissionId: minter } = token.admission;
+			if (socketEpoch === caller.socketEpoch && sessionId === caller.sessionId && minter === admissionId)
+				this.reclaim(token.id);
+		}
 	}
 
 	/** The pinned transcript root (version, leaf, accepted ids, base identity); its bytes are read by S11's page route. */
@@ -223,7 +250,6 @@ export class RecoveryCheckpoints {
 	private describe(admission: RecoveryAdmission): RecoveryFailure {
 		const stream = this.streams.get(admission);
 		if (!stream) return { kind: "repair_needed", reason: "unknown_token" };
-		if (stream.closed) return { kind: "repair_needed", reason: "session_closed" };
 		if (stream.sessionEpoch !== admission.sessionEpoch) return { kind: "repair_needed", reason: "stale_epoch" };
 		if (stream.generation !== admission.generation)
 			return { kind: "repair_needed", reason: "superseded_token", newerGeneration: stream.generation };
@@ -233,9 +259,9 @@ export class RecoveryCheckpoints {
 	/** Why a once-valid token no longer names a readable cut; undefined while it still does. */
 	private staleness(token: CheckpointToken, lane: SessionAcceptanceLane): RecoveryFailure | undefined {
 		const stream = this.streams.get(token.admission);
-		if (!stream) return { kind: "repair_needed", reason: "peer_gone" };
-		if (stream.closed) return { kind: "repair_needed", reason: "session_closed" };
+		if (!stream && lane.retirement === "close") return { kind: "repair_needed", reason: "session_closed" };
 		if (lane.retired) return { kind: "repair_needed", reason: "lane_retired" };
+		if (!stream) return { kind: "repair_needed", reason: "peer_gone" };
 		if (lane.sessionEpoch !== token.cut.sessionEpoch || stream.sessionEpoch !== token.admission.sessionEpoch)
 			return { kind: "repair_needed", reason: "stale_epoch" };
 		if (stream.generation !== token.admission.generation)

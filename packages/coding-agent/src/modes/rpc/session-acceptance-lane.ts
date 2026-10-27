@@ -109,6 +109,10 @@ export class SessionAcceptanceLane {
 		return this.retiredAs !== undefined;
 	}
 
+	get retirement(): "close" | "worker_failed" | undefined {
+		return this.retiredAs;
+	}
+
 	get liveRoots(): number {
 		return this.live.size;
 	}

@@ -3,8 +3,8 @@ import type { RecoveryCaller, RecoveryStreamState } from "./compact-recovery-typ
 
 /**
  * One peer + session stream (RULING-42 Q2 A): the session incarnation it materializes, S08a's generation counter,
- * the admissions routed through it (RULING-46 item 1) and its current token; `closed` is the bounded terminal
- * description a close leaves until the peer incarnation ends.
+ * the admissions routed through it (RULING-46 item 1) and its current token. It lives while both its peer
+ * incarnation and its routing session do (RULING-56 (2)).
  */
 export interface RecoveryStreamRecord {
 	readonly sessionId: string;
@@ -12,7 +12,6 @@ export interface RecoveryStreamRecord {
 	readonly generation: number;
 	readonly routes: ReadonlySet<string>;
 	readonly current: string | undefined;
-	readonly closed: boolean;
 }
 
 interface RecoveryStream extends RecoveryStreamRecord {
@@ -20,12 +19,14 @@ interface RecoveryStream extends RecoveryStreamRecord {
 	generation: number;
 	readonly routes: Set<string>;
 	current: string | undefined;
-	closed: boolean;
 }
 
 const keyOf = ({ socketEpoch, sessionId }: RecoveryCaller): string => `${socketEpoch}\u0000${sessionId}`;
 
-/** The stream records of one host: one per peer incarnation and routing session, replaced by a new session incarnation. */
+/**
+ * The stream records of one host: one per peer incarnation and routing session, replaced by a new session
+ * incarnation, freed when the peer incarnation or the routing session ends.
+ */
 export class RecoveryStreams {
 	private readonly streams = new Map<string, RecoveryStream>();
 
@@ -37,12 +38,12 @@ export class RecoveryStreams {
 		return this.streams.get(keyOf(caller));
 	}
 
-	/** The bounded description a caller may hold: undefined once the peer incarnation ended. */
+	/** The bounded description a caller may hold: undefined once its peer incarnation or its session ended. */
 	describe(caller: RecoveryCaller): RecoveryStreamState | undefined {
 		const stream = this.get(caller);
 		if (!stream) return undefined;
-		const { sessionEpoch, generation, closed } = stream;
-		return { sessionEpoch, generation, routes: [...stream.routes], closed };
+		const { sessionEpoch, generation } = stream;
+		return { sessionEpoch, generation, routes: [...stream.routes] };
 	}
 
 	/**
@@ -61,7 +62,6 @@ export class RecoveryStreams {
 						generation: 0,
 						routes: new Set(),
 						current: undefined,
-						closed: false,
 					};
 		this.streams.set(key, stream);
 		stream.generation += 1;
@@ -75,18 +75,13 @@ export class RecoveryStreams {
 		for (const key of this.streams.keys()) if (key.startsWith(`${socketEpoch}\u0000`)) this.streams.delete(key);
 	}
 
-	/** The session closed: its streams keep a closed description and refuse live token access from now on. */
-	close(sessionId: string): void {
-		for (const stream of this.streams.values()) if (stream.sessionId === sessionId) stream.closed = true;
+	/** The routing session ended for good: its record goes on every peer (a sealed handle is never re-attached). */
+	forgetSession(sessionId: string): void {
+		for (const [key, stream] of this.streams) if (stream.sessionId === sessionId) this.streams.delete(key);
 	}
 
-	/**
-	 * An admission ended (a detach today; S14 extends this): its route leaves the stream, the counter stays. Returns
-	 * the stream's current token, which the owner reclaims when this admission minted it.
-	 */
-	retireRoute(caller: RecoveryCaller, admissionId: string): string | undefined {
-		const stream = this.streams.get(keyOf(caller));
-		stream?.routes.delete(admissionId);
-		return stream?.current;
+	/** An admission ended (a detach today; S14 extends this): its route leaves the stream, the counter stays. */
+	retireRoute(caller: RecoveryCaller, admissionId: string): void {
+		this.streams.get(keyOf(caller))?.routes.delete(admissionId);
 	}
 }

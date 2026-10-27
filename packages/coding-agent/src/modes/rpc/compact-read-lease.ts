@@ -48,6 +48,21 @@ export class CompactReadLease {
 		}
 	}
 
+	/**
+	 * One operation in flight from now until the returned `end` (idempotent): a consumer that was handed the snapshot
+	 * keeps the references across a release meanwhile.
+	 */
+	retain(): () => void {
+		if (this.released) throw new CompactReadError("released");
+		this.operations++;
+		let ended = false;
+		return () => {
+			if (ended) return;
+			ended = true;
+			if (--this.operations === 0 && this.released) this.dispose();
+		};
+	}
+
 	/** True only for the call that released it: a later release, or one after another owner's, is a no-op. */
 	release(): boolean {
 		if (this.released) return false;

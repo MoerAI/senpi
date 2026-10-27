@@ -253,9 +253,12 @@ export class SessionEventFanout {
 		if (!this.acceptance.has(sessionId)) this.replay.remember(sessionId, value, line, placeholderLine);
 	}
 
-	/** A seal or forget: the lane retires (a queued attach view keeps its root) and the session's streams close. */
+	/**
+	 * A seal or forget ends the routing session for good (its handle is never reissued or re-attached): the lane retires
+	 * (a queued attach view keeps its root) and the session's stream records go on every peer (RULING-56 (2)).
+	 */
 	forgetSession(sessionId: string): void {
-		this.checkpoints.close(sessionId);
+		this.checkpoints.forgetSession(sessionId);
 		this.acceptance.get(sessionId)?.retire("close", this.attachViews);
 		this.acceptance.delete(sessionId);
 		this.replay.forget(sessionId);

@@ -1,6 +1,6 @@
 import { legacyResyncMessage } from "./compact-legacy-view.ts";
 import type { FrozenCheckpoint, RecoveryCheckpoints } from "./compact-recovery-state.ts";
-import type { RecoveryOutcome } from "./compact-recovery-types.ts";
+import { type RecoveryOutcome, recovered } from "./compact-recovery-types.ts";
 import { MEDIA_PLACEHOLDERS_CAPABILITY } from "./custom-capability.ts";
 import { resyncCut } from "./legacy-resync-view.ts";
 import type { LegacyReplayStore } from "./legacy-replay-store.ts";
@@ -86,14 +86,17 @@ export class SessionRecoveryPins {
 
 	/**
 	 * The shed's recovery: checkpoints frozen at the shed, before the actor awaits its drain (R3.C1.5), as the next
-	 * generation of each held admission; released when the recovery ends.
+	 * generation of each held admission; released when the recovery ends. The cut owns each root from the freeze to
+	 * that end: a detach, re-attach or supersession before its gap is delivered retires the token, never the root.
 	 */
 	resync(id: string, reason: ResyncReason, carried: readonly string[] = []): ResyncCut {
 		const capture = this.shedMode === "capture";
 		const attached = [...(this.peers.ordinals(id)?.keys() ?? [])];
 		const ordinals = new Map(this.peers.ordinals(id));
 		const pinned = this.pin(id, attached);
-		const roots = new Map(pinned.map((pin) => [pin.sessionId, pin]));
+		const roots = new Map(
+			pinned.map(({ sessionId, outcome }) => [sessionId, outcome.ok ? recovered(outcome.value.retain()) : outcome]),
+		);
 		const view = {
 			reason,
 			placeholders: this.peers.has(id, MEDIA_PLACEHOLDERS_CAPABILITY),
@@ -102,7 +105,10 @@ export class SessionRecoveryPins {
 				capture
 					? this.peers.ordinals(id)?.get(sessionId) !== ordinals.get(sessionId) || !ordinals.has(sessionId)
 					: !(this.peers.ordinals(id)?.has(sessionId) ?? false),
-			onRelease: () => this.unpin(pinned),
+			onRelease: () => {
+				for (const root of roots.values()) if (root.ok) root.value.end();
+				this.unpin(pinned);
+			},
 		};
 		const sessions = capture ? [...new Set([...carried, ...attached])] : attached;
 		return resyncCut(
@@ -110,7 +116,7 @@ export class SessionRecoveryPins {
 			capture ? () => sessions : () => [...new Set([...sessions, ...(this.peers.ordinals(id)?.keys() ?? [])])],
 			(sessionId) =>
 				this.acceptance.has(sessionId)
-					? legacyResyncMessage(sessionId, roots.get(sessionId)?.outcome)
+					? legacyResyncMessage(sessionId, roots.get(sessionId))
 					: Promise.resolve(this.replay.latestMessage(sessionId)),
 			view,
 			this.replay.track,
