@@ -126,37 +126,60 @@ describe.each(["chatgpt-subscription", "anthropic-subscription"])("%s display na
 		const saved = AuthStorage.create(path).get(provider) as PooledCredential;
 		expect(listSlots(saved).filter((slot) => slot.displayName === "Shared")).toHaveLength(1);
 	});
+});
 
-	it("exposes only safe descriptors and keeps labels through named refresh", async () => {
-		const { storage } = fixture(provider);
-		await renameCredentialAccount(storage, provider, "default", "Personal");
-		const claude = provider === "anthropic-subscription";
-		if (!claude) {
-			await storage.modify(provider, async (current) =>
-				mergeRefreshedSlot(current!, "default", {
-					type: "oauth",
-					access: "fake-rotated",
-					refresh: "fake-next",
-					expires: 4102444800001,
-				}),
-			);
-		}
-		const summaries = await getCredentialAccounts(storage, provider, {});
-		const expected = [
-			{ name: "default", displayName: "Personal", source: "login", blocked: false, pinned: true },
-			{
-				name: "second",
-				source: claude ? "login" : "import",
-				blocked: true,
-				blockedUntil: 4102444800000,
-				pinned: false,
-			},
-		];
-		if (claude) expect(summaries).toMatchObject(expected);
-		else expect(summaries).toEqual(expected);
-		if (claude) expect(getProviderAccounts(storage, provider, {})).toMatchObject(expected);
-		expect(JSON.stringify(summaries)).not.toMatch(/fake-|access|refresh|expires|headers/);
-	});
+it("chatgpt-subscription exposes only safe descriptors and keeps labels through named refresh", async () => {
+	const provider = "chatgpt-subscription";
+	const { storage } = fixture(provider);
+	await renameCredentialAccount(storage, provider, "default", "Personal");
+	await storage.modify(provider, async (current) =>
+		mergeRefreshedSlot(current!, "default", {
+			type: "oauth",
+			access: "fake-rotated",
+			refresh: "fake-next",
+			expires: 4102444800001,
+		}),
+	);
+	const summaries = await getCredentialAccounts(storage, provider, {});
+	expect(summaries).toEqual([
+		{ name: "default", displayName: "Personal", source: "login", blocked: false, pinned: true },
+		{ name: "second", source: "import", blocked: true, blockedUntil: 4102444800000, pinned: false },
+	]);
+	expect(JSON.stringify(summaries)).not.toMatch(/fake-|access|refresh|expires|headers/);
+});
+
+// A stored Claude account is a Claude CLI account: it holds no token, so there is no refresh to keep a label through
+// (senpi#4436). Both listings must still agree exactly on every field they share.
+it("anthropic-subscription exposes only safe descriptors after a rename and both account listings agree", async () => {
+	const provider = "anthropic-subscription";
+	const { storage } = fixture(provider);
+	await renameCredentialAccount(storage, provider, "default", "Personal");
+	const summaries = await getCredentialAccounts(storage, provider, {});
+	expect(summaries).toEqual([
+		{
+			name: "default",
+			displayName: "Personal",
+			source: "login",
+			blocked: false,
+			pinned: true,
+			store: "claude-cli",
+			signIn: "signed_in",
+		},
+		{
+			name: "second",
+			source: "login",
+			blocked: true,
+			blockedUntil: 4102444800000,
+			pinned: false,
+			store: "claude-cli",
+			signIn: "signed_in",
+		},
+	]);
+	// The provider listing carries no CLI sign-in fields; on everything else it equals the generic listing exactly.
+	expect(getProviderAccounts(storage, provider, {})).toEqual(
+		summaries.map(({ store: _store, signIn: _signIn, ...shared }) => shared),
+	);
+	expect(JSON.stringify(summaries)).not.toMatch(/fake-|access|refresh|expires|headers/);
 });
 
 it("promotes a legacy saved flat slot only on rename and never materializes environment credentials", async () => {

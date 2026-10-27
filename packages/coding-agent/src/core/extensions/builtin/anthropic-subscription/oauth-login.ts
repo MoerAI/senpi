@@ -274,19 +274,15 @@ export function createOAuthConfig(deps: {
 		signal?: AbortSignal,
 		environment?: Record<string, string>,
 	): Promise<boolean> => {
-		// Only the accounts the lane lists count: a hidden token-holding slot must not make the provider configured
-		// and then fail every turn with no account to serve (senpi#4436).
+		// Only the accounts the lane lists count, exactly as `listAccounts` lists them: a hidden token-holding slot, or a
+		// flat credential whose top-level tokens are real (a legacy login, or a token slot projected by slot-scoped
+		// resolution; a Claude CLI slot projects to nothing), must not make the provider configured and then fail every
+		// turn with no account to serve (senpi#4436).
 		const storedAccounts =
 			stored?.type === "oauth" && Array.isArray(stored.accounts) ? stored.accounts.filter(isListedStoredSlot) : [];
-		// Slot-scoped resolution projects one account onto the flat credential shape,
-		// stripping `accounts`; its concrete (non-sentinel) tokens are that account.
-		const selectedStoredAccount =
-			stored?.type === "oauth" &&
-			stored.access !== SENTINEL_OAUTH_FIELDS.access &&
-			stored.refresh !== SENTINEL_OAUTH_FIELDS.refresh;
 		const effectiveEnvironment = environment ?? (await claudeEnvironment(ctx));
 		const environmentTokenCount = Object.values(effectiveEnvironment).filter(Boolean).length;
-		const accountCount = storedAccounts.length + (selectedStoredAccount ? 1 : 0) + environmentTokenCount;
+		const accountCount = storedAccounts.length + environmentTokenCount;
 		const settings = deps.readSettings?.();
 		const lane = settings?.tokenInjection ?? (accountCount > 0 ? "oauth-slots" : "ambient");
 		if (lane === "ambient") {

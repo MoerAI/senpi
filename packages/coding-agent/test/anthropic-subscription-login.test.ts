@@ -1,7 +1,9 @@
+import { projectSlot } from "@earendil-works/pi-ai/auth/pool/slots";
 import { afterEach, describe, expect, it } from "vitest";
 import { listAccounts, SENTINEL_OAUTH_FIELDS } from "../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 import { createOAuthConfig } from "../src/core/extensions/builtin/anthropic-subscription/oauth-login.ts";
 import { authContext } from "./support/anthropic-subscription-provider.ts";
+import { cliSlot } from "./support/claude-cli-test-slots.ts";
 import { cleanupFakeClaudeCliLogins, fakeClaudeCliLogin } from "./support/fake-claude-cli-login.ts";
 
 afterEach(() => cleanupFakeClaudeCliLogins());
@@ -68,15 +70,28 @@ describe("claude-sdk-oauth oauth login config", () => {
 		expect(await config.refreshToken(credential)).toBe(credential);
 	});
 
-	it("check accepts a concrete oauth slot projected by credential rotation", async () => {
+	it("check does not count a lone legacy flat token credential, which the lane never lists (senpi#4436)", async () => {
 		const config = createOAuthConfig({ readCurrent: async () => undefined, claudeCli: fakeClaudeCliLogin() });
+		const legacy = { type: "oauth" as const, access: "fake-a", refresh: "fake-r", expires: 4_102_444_800_000 };
+		expect(listAccounts(legacy)).toEqual([]);
+
+		const check = await config.check({ ctx: authContext(), credential: legacy });
+
+		expect(check).toBeUndefined();
+	});
+
+	it("slot-scoped resolution projects no credential for a Claude CLI account, so check never counts a projection", async () => {
+		const config = createOAuthConfig({ readCurrent: async () => undefined, claudeCli: fakeClaudeCliLogin() });
+		const pool = { type: "oauth" as const, ...SENTINEL_OAUTH_FIELDS, accounts: [cliSlot("work")] };
+		const projected = projectSlot(pool, "work");
+		expect(projected).toBeUndefined();
 
 		const check = await config.check({
 			ctx: authContext(),
-			credential: { type: "oauth", access: "slot-access", refresh: "slot-refresh", expires: Date.now() + 60_000 },
+			credential: projected?.type === "oauth" ? projected : undefined,
 		});
 
-		expect(check).toEqual({ source: "Anthropic Subscription", type: "oauth" });
+		expect(check).toBeUndefined();
 	});
 
 	it("check does not count a stored account that still holds tokens, which the lane never lists (senpi#4436)", async () => {
