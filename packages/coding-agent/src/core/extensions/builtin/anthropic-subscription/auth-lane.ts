@@ -61,6 +61,11 @@ export type AuthenticatedQueryInput = {
 	model?: string;
 	/** Request-scoped CLI pin; takes precedence over persistent settings and account pins. */
 	pinnedAccount?: string;
+	/**
+	 * A connection test of `pinnedAccount` alone (senpi#4436): no auth-block recovery across the pool, the account
+	 * is tried even while blocked, and no block is stored or cleared. Requires `pinnedAccount`.
+	 */
+	probe?: boolean;
 	/** The account this session's SDK transcript lives under; preferred while it can serve (senpi#2891). */
 	preferredAccount?: string;
 	onQuery?: (query: ReturnType<SdkQuery>) => void;
@@ -265,22 +270,30 @@ export async function* queryWithAuthLane(input: AuthenticatedQueryInput): AsyncG
 		yield* retryAtStandardWindowOnce(ambientAttempt, () => askedLegacyLongContext);
 		return;
 	}
-	pool.accounts = await recoverAuthBlockedSlots({
-		store: pool.store,
-		providerId: ANTHROPIC_SUBSCRIPTION_PROVIDER_ID,
-		accounts: pool.accounts,
-		refresher: activeBoundary.refresher,
-		signal,
-		isGrantRejected,
-		reload: async () => storedAccounts(await pool.store.read(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID), pool),
-		isUsable: (account) => !isBlockedFor(account, activeBoundary.now(), input.model),
-		now: activeBoundary.now(),
-		transientError: (error) => (error instanceof CredentialStoreBusyError ? error : refreshFailure(error)),
-		claudeCliSignedIn: async (slot) => {
-			const configDir = accountDirFor(activeBoundary.getAgentDir(), slot.dirId);
-			return (await activeBoundary.claudeCliAuthStatus(configDir, pool.environment)).state === "signed_in";
-		},
-	});
+	if (input.probe === true) {
+		const probed = pool.accounts.find((account) => account.name === input.pinnedAccount);
+		if (probed === undefined)
+			throw new Error(`authentication_failed: no stored account named ${input.pinnedAccount}`);
+		const { blockedUntil: _until, blockReason: _reason, blockedAt: _at, modelBlocks: _model, ...unblocked } = probed;
+		pool.accounts = [unblocked as AccountSlot];
+	} else {
+		pool.accounts = await recoverAuthBlockedSlots({
+			store: pool.store,
+			providerId: ANTHROPIC_SUBSCRIPTION_PROVIDER_ID,
+			accounts: pool.accounts,
+			refresher: activeBoundary.refresher,
+			signal,
+			isGrantRejected,
+			reload: async () => storedAccounts(await pool.store.read(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID), pool),
+			isUsable: (account) => !isBlockedFor(account, activeBoundary.now(), input.model),
+			now: activeBoundary.now(),
+			transientError: (error) => (error instanceof CredentialStoreBusyError ? error : refreshFailure(error)),
+			claudeCliSignedIn: async (slot) => {
+				const configDir = accountDirFor(activeBoundary.getAgentDir(), slot.dirId);
+				return (await activeBoundary.claudeCliAuthStatus(configDir, pool.environment)).state === "signed_in";
+			},
+		});
+	}
 	// A slot that must sign in again is never selected, like a removed one; with none left the turn says so.
 	pool.accounts = pool.accounts.filter((account) => account.store !== "claude-cli" || !account.signInRequired);
 	if (pool.accounts.length === 0) throw new Error(SIGN_IN_AGAIN_ERROR);
@@ -330,7 +343,9 @@ export async function* queryWithAuthLane(input: AuthenticatedQueryInput): AsyncG
 		errorFromEvent: sdkFailure,
 		isVisibleDelta: visibleSdkMessage,
 		signal,
+		...(input.probe === true ? { persistBlocks: false } : {}),
 		onFailover: ({ account, nextAccount, classification }) => {
+			if (input.probe === true) return;
 			emitProviderAccountsChanged(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID);
 			if (nextAccount) {
 				emitProviderAccountFailover(

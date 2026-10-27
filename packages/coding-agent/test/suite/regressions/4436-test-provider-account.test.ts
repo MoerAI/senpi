@@ -73,6 +73,7 @@ beforeEach(() => {
 
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0)) await cleanup();
+	vi.unstubAllEnvs();
 	resetScriptedSdk();
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -81,7 +82,7 @@ function cliSlot(name: string, dirId: string, extra: Record<string, unknown> = {
 	return { name, source: "login", store: "claude-cli", dirId, ...extra } as AccountSlot;
 }
 
-function fakeQuery(turn: Turn, queries: Options[]): SdkQuery {
+function fakeQuery(turn: Turn, queries: Options[], duringTurn?: () => Promise<void>): SdkQuery {
 	return ({ options }) => {
 		queries.push(options ?? {});
 		const messages =
@@ -103,11 +104,16 @@ function fakeQuery(turn: Turn, queries: Options[]): SdkQuery {
 					]
 				: [sdkMessage({ type: "result", subtype: "success", is_error: false, result: "OK", session_id: "s" })];
 		const iterator = messages[Symbol.iterator]();
+		let started = false;
 		return {
 			[Symbol.asyncIterator]() {
 				return this;
 			},
 			async next() {
+				if (!started) {
+					started = true;
+					await duringTurn?.();
+				}
 				return iterator.next();
 			},
 			async interrupt() {
@@ -129,7 +135,13 @@ function fakeQuery(turn: Turn, queries: Options[]): SdkQuery {
 	};
 }
 
-async function startLane(options: { turn: Turn; pinned?: string }) {
+async function startLane(options: {
+	turn: Turn;
+	pinned?: string;
+	work?: Record<string, unknown>;
+	other?: Record<string, unknown>;
+	duringTurn?: (store: CredentialStore) => Promise<void>;
+}) {
 	rpcIo.outputLines = [];
 	rpcIo.lineHandler = undefined;
 	const root = mkdtempSync(join(tmpdir(), "senpi-4436-test-provider-account-"));
@@ -145,25 +157,33 @@ async function startLane(options: { turn: Turn; pinned?: string }) {
 	// A plain file: the executable resolver only checks it exists, and the scripted SDK never spawns it.
 	const executable = join(root, "claude-stub");
 	writeFileSync(executable, "not a program\n", { mode: 0o644 });
-	process.env.SENPI_CODING_AGENT_DIR = agentDir;
+	vi.stubEnv("SENPI_CODING_AGENT_DIR", agentDir);
 
 	const host = await createFakeRuntimeHost({ withSwapSession: false, withAuth: true, responseDelayMs: 0 });
 	cleanups.push(host.cleanup);
 	const store = host.runtimeHost.session.modelRegistry.authStorage as unknown as CredentialStore;
 	await store.modify(SCRIPTED_PROVIDER, async () => ({
 		...[
-			cliSlot("work", WORK_DIR_ID),
-			cliSlot("other", OTHER_DIR_ID, { blockReason: "rate_limit" }),
+			cliSlot("work", WORK_DIR_ID, options.work),
+			cliSlot("other", OTHER_DIR_ID, options.other ?? { blockReason: "rate_limit" }),
 		].reduce<AnthropicSubscriptionCredential>(addAccount, emptyCredential()),
 		...(options.pinned === undefined ? {} : { pinned: options.pinned }),
 	}));
+	const statusProbes: string[] = [];
 	overrideAuthLaneBoundary({
 		createStore: () => store,
+		claudeCliAuthStatus: async (configDir) => {
+			statusProbes.push(configDir);
+			return { state: "signed_in" } as never;
+		},
 		env: () => ({ PATH: "/usr/bin", HOME: root, CLAUDE_CONFIG_DIR: sharedRoot, CLAUDE_CODE_EXECUTABLE: executable }),
 		getAgentDir: () => agentDir,
 	});
 	const queries: Options[] = [];
-	overrideSdkBoundary({ query: fakeQuery(options.turn, queries) });
+	const duringTurn = options.duringTurn;
+	overrideSdkBoundary({
+		query: fakeQuery(options.turn, queries, duringTurn === undefined ? undefined : () => duringTurn(store)),
+	});
 
 	void runRpcMode(host.runtimeHost);
 	await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
@@ -178,7 +198,7 @@ async function startLane(options: { turn: Turn; pinned?: string }) {
 	const slots = async () =>
 		((await store.read(SCRIPTED_PROVIDER)) as AnthropicSubscriptionCredential | undefined)?.accounts ?? [];
 	const stored = async () => (await store.read(SCRIPTED_PROVIDER)) as AnthropicSubscriptionCredential | undefined;
-	return { agentDir, queries, send, slots, stored };
+	return { agentDir, queries, send, slots, stored, statusProbes };
 }
 
 describe("senpi#4436 test_provider_account re-tests one Claude CLI account", () => {
@@ -226,6 +246,46 @@ describe("senpi#4436 test_provider_account re-tests one Claude CLI account", () 
 		expect(work).not.toHaveProperty("blockReason");
 		expect(work).not.toHaveProperty("blockedUntil");
 		expect(work).not.toHaveProperty("blockedAt");
+	});
+
+	it("a blocked account is still tested, keeps its block, and no other account is re-probed", async () => {
+		const block = { blockedUntil: 4_102_444_000_000, blockReason: "auth_error", blockedAt: 1 };
+		const lane = await startLane({
+			turn: "ok",
+			work: block,
+			other: { blockedUntil: 1, blockReason: "auth_error", blockedAt: 1 },
+		});
+		const response = await lane.send({ type: "test_provider_account", provider: SCRIPTED_PROVIDER, name: "work" });
+
+		expect((response.data as { check: Record<string, unknown> }).check).toMatchObject({ outcome: "ok" });
+		expect(lane.queries).toHaveLength(1);
+		expect(lane.queries[0]?.env?.CLAUDE_CONFIG_DIR).toBe(accountDirFor(lane.agentDir, WORK_DIR_ID));
+		expect(lane.statusProbes).toEqual([]);
+		const after = await lane.slots();
+		expect(after.find((slot) => slot.name === "work")).toMatchObject(block);
+		expect(after.find((slot) => slot.name === "other")).toMatchObject({ blockReason: "auth_error", blockedUntil: 1 });
+	});
+
+	it("a block another session stores during the test stays", async () => {
+		const elsewhere = { blockedUntil: 4_102_444_000_000, blockReason: "billing", blockedAt: 2 };
+		const lane = await startLane({
+			turn: "ok",
+			duringTurn: async (store) => {
+				await store.modify(SCRIPTED_PROVIDER, async (current) => {
+					const credential = current as AnthropicSubscriptionCredential;
+					return {
+						...credential,
+						accounts: (credential.accounts ?? []).map((slot) =>
+							slot.name === "work" ? { ...slot, ...elsewhere } : slot,
+						),
+					};
+				});
+			},
+		});
+		await lane.send({ type: "test_provider_account", provider: SCRIPTED_PROVIDER, name: "work" });
+
+		const work = (await lane.slots()).find((slot) => slot.name === "work");
+		expect(work).toMatchObject({ ...elsewhere, check: { outcome: "ok" } });
 	});
 
 	it("an unknown account answers unknown_account and another provider unsupported_provider, with no turn", async () => {

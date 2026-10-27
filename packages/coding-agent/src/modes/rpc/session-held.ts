@@ -33,7 +33,6 @@ const READ_ONLY_OR_CONTROL = new Set<RpcInboundRecord["type"]>([
 	"get_loaded_surfaces",
 	"get_auth_providers",
 	"get_provider_accounts",
-	"test_provider_account",
 	"memory_report",
 	"eval_cells.list",
 	"eval_cells.peek",

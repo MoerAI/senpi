@@ -41,28 +41,21 @@ export type ClaudeCliAccountTestInput = {
 	readonly connectionTest?: (input: ClaudeCliConnectionTestInput) => Promise<ClaudeCliAccountCheck>;
 };
 
-const BLOCK_FIELDS = ["blockedUntil", "blockReason", "blockedAt", "modelBlocks"] as const;
-
 function subscription(value: unknown): AnthropicSubscriptionCredential | undefined {
 	return typeof value === "object" && value !== null && (value as { type?: unknown }).type === "oauth"
 		? (value as AnthropicSubscriptionCredential)
 		: undefined;
 }
 
-function checkedSlot(current: AccountSlot, before: AccountSlot, check: ClaudeCliAccountCheck): AccountSlot {
-	if (current.store !== "claude-cli") return current;
-	const next: Record<string, unknown> = { ...current, check };
-	for (const field of BLOCK_FIELDS) {
-		if (field in before) next[field] = before[field];
-		else delete next[field];
-	}
-	return next as AccountSlot;
+function checkedSlot(current: AccountSlot, check: ClaudeCliAccountCheck): AccountSlot {
+	return current.store === "claude-cli" ? { ...current, check } : current;
 }
 
 /**
  * Re-runs the sign-in connection test (one pinned "Reply with OK" turn, account fallback off) on one stored Claude
- * CLI account and stores its outcome as `check`. Retrying is not a turn: whatever the failover path wrote about the
- * tested account's blocks during the test is put back, so only `check` changes.
+ * CLI account and stores its outcome as `check`. The turn is a probe (`queryWithAuthLane` `probe`): it runs on that
+ * account even while it is blocked, recovers no other account, and stores or clears no block, so the one write is
+ * `check`, applied to the slot as it is under the lock (blocks other sessions wrote meanwhile stay).
  */
 export async function testClaudeCliAccount(input: ClaudeCliAccountTestInput): Promise<ClaudeCliAccountCheck> {
 	if (input.provider !== ANTHROPIC_SUBSCRIPTION_PROVIDER_ID)
@@ -91,7 +84,7 @@ export async function testClaudeCliAccount(input: ClaudeCliAccountTestInput): Pr
 		return {
 			...credential,
 			accounts: (credential.accounts ?? []).map((slot) =>
-				slot.name === input.name ? checkedSlot(slot, before, check) : slot,
+				slot.name === input.name ? checkedSlot(slot, check) : slot,
 			),
 		};
 	});

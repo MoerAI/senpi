@@ -53,6 +53,11 @@ export type FailoverOptions<TEvent> = {
 	onLongContextRefused?: () => void;
 	/** The session this turn belongs to: blocks that bind only this session are remembered under it. */
 	sessionKey?: string;
+	/**
+	 * False for a probe (the account connection test): its outcome is reported to the caller and never written as
+	 * account state, so it neither stores nor clears a block (senpi#4436).
+	 */
+	persistBlocks?: boolean;
 };
 
 type BlockFields = Pick<AccountSlot, "blockedUntil" | "blockReason" | "blockedAt" | "modelBlocks">;
@@ -432,9 +437,11 @@ export async function* runFailover<TEvent>(options: FailoverOptions<TEvent>): As
 			const blocked = blockedAccount(account, classification, now(), attempt, baseBlockMs, error, options.model);
 			// With no session to hold it, a block is shared as before: dropping it would re-send every
 			// sessionless request to the spent account until its window resets.
+			const persists = options.persistBlocks !== false;
 			const shared = isSharedVerdict(classification, error) || options.sessionKey === undefined;
-			if (!shared) rememberSessionBlock(options.sessionKey, blocked);
-			const superseded = shared ? await persistBlock(options.store, options.providerId, blocked, now()) : undefined;
+			if (persists && !shared) rememberSessionBlock(options.sessionKey, blocked);
+			const superseded =
+				persists && shared ? await persistBlock(options.store, options.providerId, blocked, now()) : undefined;
 			if (
 				superseded &&
 				!visibleDeltaEmitted &&
@@ -465,6 +472,7 @@ export async function* runFailover<TEvent>(options: FailoverOptions<TEvent>): As
 			if (visibleDeltaEmitted) throw classified;
 		}
 		if (completed) {
+			if (options.persistBlocks === false) return;
 			forgetSessionBlock(options.sessionKey, account.name);
 			// Outside the attempt's try: clearing is best-effort hygiene after a finished turn, so a store
 			// failure is logged and the block stays for the next success; it never fails or replays the turn.
