@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { readByProviderId } from "@earendil-works/pi-ai";
 import { getModels } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../../../../config.ts";
-import { FileAuthStorageBackend } from "../../../auth-storage.ts";
 import { SettingsManager } from "../../../settings-manager.ts";
 import type { ExtensionAPI, ProviderConfig } from "../../types.ts";
 import { toBuiltinProviderContext } from "../provider-context.ts";
@@ -110,12 +109,6 @@ export function registerAnthropicSubscriptionExtension(
 					return undefined;
 				}
 			},
-			readAnthropicCredential: async () => {
-				const credential = readStoredCredential("anthropic");
-				return credential && typeof credential.access === "string"
-					? { access: credential.access, refresh: credential.refresh, expires: credential.expires }
-					: undefined;
-			},
 			claudeCli: {
 				cwd: () => cwd,
 				providerSettings: () =>
@@ -124,18 +117,6 @@ export function registerAnthropicSubscriptionExtension(
 					const settings = SettingsManager.create(cwd, getAgentDir());
 					return { provider: settings.getDefaultProvider(), model: settings.getDefaultModel() };
 				},
-			},
-			removeAnthropicCredential: async () => {
-				// The import is a move, not a copy: one single-use grant must never
-				// live in two stores that refresh it independently (omo#7084).
-				const backend = new FileAuthStorageBackend();
-				await backend.withLockAsync(async (current) => {
-					if (current === undefined) return { result: undefined };
-					const data = JSON.parse(current) as Record<string, unknown>;
-					if (!("anthropic" in data)) return { result: undefined };
-					delete data.anthropic;
-					return { result: undefined, next: JSON.stringify(data, null, 2) };
-				});
 			},
 		}),
 	});

@@ -31,6 +31,7 @@ import { isGrantRejected, refreshFailure } from "./refresh-failure.ts";
 import type { AnthropicSubscriptionAuthLane } from "./options.ts";
 import type { Options, SDKMessage, SdkQuery } from "./sdk-boundary.ts";
 import type { AnthropicSubscriptionProviderSettings, AnthropicSubscriptionTokenInjection } from "./settings.ts";
+import { ClaudeSignInRequiredError, signInRequiredNames } from "./sign-in-again.ts";
 
 export { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./account-management.ts";
 export { authLaneRefresher, overrideAuthLaneBoundary, resetAuthLaneBoundary } from "./auth-lane-boundary.ts";
@@ -41,10 +42,6 @@ export const EXPIRING_WITHIN_MS = 5 * 60_000;
 const NO_MANAGED_ACCOUNTS_ERROR =
 	"authentication_failed: No Anthropic Subscription accounts configured for the managed lane; " +
 	"run /login anthropic-subscription or set CLAUDE_CODE_OAUTH_TOKEN";
-
-/** Every configured account still needs its sign-in moved to the Claude CLI (senpi#4436). */
-const SIGN_IN_AGAIN_ERROR =
-	"authentication_failed: Sign in with Claude again: run /login anthropic-subscription to sign each account in again";
 
 export type { AuthenticatedAttemptInput } from "./auth-attempt.ts";
 
@@ -281,9 +278,10 @@ export async function* queryWithAuthLane(input: AuthenticatedQueryInput): AsyncG
 			return (await activeBoundary.claudeCliAuthStatus(configDir, pool.environment)).state === "signed_in";
 		},
 	});
-	// A slot that must sign in again is never selected, like a removed one; with none left the turn says so.
+	// A slot that must sign in again is never selected, like a removed one; with none left the turn names them.
+	const signedOut = signInRequiredNames(pool.accounts);
 	pool.accounts = pool.accounts.filter((account) => account.store !== "claude-cli" || !account.signInRequired);
-	if (pool.accounts.length === 0) throw new Error(SIGN_IN_AGAIN_ERROR);
+	if (pool.accounts.length === 0) throw new ClaudeSignInRequiredError(signedOut);
 	let askedLegacyLongContext = false;
 	yield* runFailover({
 		accounts: pool.accounts,

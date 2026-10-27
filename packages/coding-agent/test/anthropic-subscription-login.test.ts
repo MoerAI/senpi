@@ -7,36 +7,6 @@ import { cleanupFakeClaudeCliLogins, fakeClaudeCliLogin } from "./support/fake-c
 afterEach(() => cleanupFakeClaudeCliLogins());
 
 describe("claude-sdk-oauth oauth login config", () => {
-	it("offers the existing anthropic credential as an import before a fresh login", async () => {
-		const config = createOAuthConfig({
-			readCurrent: async () => undefined,
-			readAnthropicCredential: async () => ({ access: "ia", refresh: "ir", expires: 1 }),
-			claudeCli: fakeClaudeCliLogin(),
-		});
-		const credential = await config.login({ onPrompt: async () => "y" });
-		const slots = listAccounts(credential as never);
-		expect(slots.map((slot) => slot.name)).toEqual(["imported-anthropic"]);
-		expect(slots[0]?.source).toBe("import");
-	});
-
-	it("declining the import falls through to a fresh login without the import slot", async () => {
-		const config = createOAuthConfig({
-			readCurrent: async () => undefined,
-			readAnthropicCredential: async () => ({ access: "ia", refresh: "ir", expires: 1 }),
-			claudeCli: fakeClaudeCliLogin(),
-		});
-		const prompts: string[] = [];
-		const credential = await config.login({
-			onPrompt: async (prompt) => {
-				prompts.push(prompt.message);
-				return prompts.length === 1 ? "n" : "work";
-			},
-		});
-		const slots = listAccounts(credential as never);
-		expect(slots.map((slot) => slot.name)).toEqual(["default"]);
-		expect(slots.every((slot) => slot.source !== "import")).toBe(true);
-	});
-
 	it("second login adds a prompted account name without dropping slots", async () => {
 		const existing = await createOAuthConfig({
 			readCurrent: async () => undefined,

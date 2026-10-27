@@ -337,7 +337,7 @@ describe("senpi#4436 claude-cli account lane", () => {
 		const only = await installCliLane([retired], { pinned: "retired" });
 		const onlyRetired = installCliSdk(only);
 		const turn = await runTurn({ messages: [user1] });
-		expect(turn.errorMessage).toMatch(/sign in with Claude again/i);
+		expect(turn.errorMessage).toMatch(/Sign in again with Claude to keep using: retired\./);
 		expect(onlyRetired.queries).toEqual([]);
 	});
 });

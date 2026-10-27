@@ -12,12 +12,10 @@ import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./account-management.ts";
 import {
 	type AccountSlot,
 	type AnthropicSubscriptionCredential,
-	addAccount,
 	assertValidAccountName,
 	type ClaudeCliAccountCheck,
 	type ClaudeCliAccountSlot,
 	emptyCredential,
-	type LegacyAccountSlot,
 	listAccounts,
 	SENTINEL_OAUTH_FIELDS,
 } from "./accounts.ts";
@@ -127,14 +125,6 @@ function requestClaudeEnvironment(value: unknown): Record<string, string> {
 		if (ENV_TOKEN_NAME_SET.has(name) && typeof entry === "string") environment[name] = entry;
 	}
 	return environment;
-}
-
-function toSlot(
-	credential: { access: string; refresh: string; expires: number },
-	name: string,
-	source: LegacyAccountSlot["source"],
-): LegacyAccountSlot {
-	return { name, access: credential.access, refresh: credential.refresh, expires: credential.expires, source };
 }
 
 /**
@@ -316,9 +306,6 @@ function storedSubscription(value: unknown): AnthropicSubscriptionCredential | u
 
 export function createOAuthConfig(deps: {
 	readCurrent: CurrentCredentialReader;
-	readAnthropicCredential?: () => Promise<{ access: string; refresh: string; expires: number } | undefined>;
-	/** Moves the imported grant out of the anthropic provider so two stores never refresh one single-use token (omo#7084). */
-	removeAnthropicCredential?: () => Promise<void>;
 	readAmbientAuthStatus?: (signal?: AbortSignal) => Promise<boolean>;
 	readSettings?: () => { tokenInjection?: "oauth-slots" | "config-dir" | "ambient"; enabled?: boolean } | undefined;
 	claudeCli?: ClaudeCliLoginDeps;
@@ -398,23 +385,6 @@ export function createOAuthConfig(deps: {
 		async login(callbacks) {
 			const current = (await deps.readCurrent()) ?? emptyCredential();
 			const existing = listAccounts(current);
-			if (existing.length === 0 && deps.readAnthropicCredential && callbacks.onPrompt) {
-				const imported = await deps.readAnthropicCredential();
-				if (imported) {
-					const answer = (
-						await callbacks.onPrompt({
-							message:
-								"An Anthropic OAuth login already exists. Move it here (the anthropic provider is logged out) instead of a new login? [y/N]",
-						})
-					)
-						.trim()
-						.toLowerCase();
-					if (answer === "y" || answer === "yes") {
-						await deps.removeAnthropicCredential?.();
-						return addAccount(current, toSlot(imported, "imported-anthropic", "import"));
-					}
-				}
-			}
 			const name = await promptAccountName(callbacks, existing);
 			assertValidAccountName(name);
 			const method = await selectLoginMethod(callbacks);

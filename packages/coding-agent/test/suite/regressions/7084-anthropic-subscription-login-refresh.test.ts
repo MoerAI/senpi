@@ -172,41 +172,6 @@ describe("re-login refreshes the dead slot instead of appending (omo#7084)", () 
 	});
 });
 
-describe("anthropic import moves the grant instead of forking it (omo#7084)", () => {
-	it("accepting the import removes the anthropic provider credential", async () => {
-		let removed = 0;
-		const config = createOAuthConfig({
-			readCurrent: async () => undefined,
-			readAnthropicCredential: async () => ({ access: "ia", refresh: "ir", expires: 1 }),
-			removeAnthropicCredential: async () => {
-				removed++;
-			},
-			claudeCli: fakeClaudeCliLogin(),
-		});
-		const credential = await config.login({ onPrompt: async () => "y" });
-		const slots = listAccounts(credential as never);
-		expect(slots.map((entry) => entry.name)).toEqual(["imported-anthropic"]);
-		expect(slots[0]?.source).toBe("import");
-		expect(removed).toBe(1);
-	});
-
-	it("declining the import keeps the anthropic credential in place", async () => {
-		let removed = 0;
-		const config = createOAuthConfig({
-			readCurrent: async () => undefined,
-			readAnthropicCredential: async () => ({ access: "ia", refresh: "ir", expires: 1 }),
-			removeAnthropicCredential: async () => {
-				removed++;
-			},
-			claudeCli: fakeClaudeCliLogin(),
-		});
-		const credential = await config.login({ onPrompt: async () => "n" });
-		const slots = listAccounts(credential as never);
-		expect(slots.map((entry) => entry.name)).toEqual(["default"]);
-		expect(removed).toBe(0);
-	});
-});
-
 describe("AllAccountsBlockedError names the dominant block reason (omo#8383)", () => {
 	it("carries auth_error when every slot is auth-blocked", () => {
 		let caught: unknown;
