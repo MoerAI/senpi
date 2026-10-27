@@ -2117,6 +2117,7 @@ export function createRpcConnectionHandler(
 						provider: command.provider,
 						name: command.name,
 						cwd: session.cwd,
+						store: session.modelRegistry.authStorage,
 					});
 					return success(id, "test_provider_account", { check });
 				} catch (testError) {

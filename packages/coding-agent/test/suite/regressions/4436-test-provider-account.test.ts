@@ -202,6 +202,9 @@ describe("senpi#4436 test_provider_account re-tests one Claude CLI account", () 
 		const work = (await lane.slots()).find((slot) => slot.name === "work");
 		expect(work?.store === "claude-cli" ? work.check : undefined).toEqual(check);
 		expect((await lane.stored())?.pinned).toBe("other");
+		const listing = await lane.send({ type: "get_provider_accounts", provider: SCRIPTED_PROVIDER });
+		const listed = (listing.data as { accounts: { name: string; check?: unknown }[] }).accounts;
+		expect(listed.find((account) => account.name === "work")?.check).toEqual(check);
 	});
 
 	it("a 401 on that slot gives outcome failed reason auth and touches no other slot", async () => {

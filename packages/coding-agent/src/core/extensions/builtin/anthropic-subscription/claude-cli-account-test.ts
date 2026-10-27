@@ -1,3 +1,4 @@
+import type { CredentialStore } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../../../../config.ts";
 import { SettingsManager } from "../../../settings-manager.ts";
 import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./account-management.ts";
@@ -32,6 +33,8 @@ export function claudeCliDefaultModel(cwd: string): DefaultModelSelection {
 
 export type ClaudeCliAccountTestInput = {
 	readonly provider: string;
+	/** Where `check` is read and written: the caller's own store, so its next listing shows the new check. */
+	readonly store: CredentialStore;
 	readonly name: string;
 	readonly cwd: string;
 	readonly signal?: AbortSignal;
@@ -64,7 +67,7 @@ function checkedSlot(current: AccountSlot, before: AccountSlot, check: ClaudeCli
 export async function testClaudeCliAccount(input: ClaudeCliAccountTestInput): Promise<ClaudeCliAccountCheck> {
 	if (input.provider !== ANTHROPIC_SUBSCRIPTION_PROVIDER_ID)
 		throw new ProviderAccountTestError("unsupported_provider");
-	const store = activeBoundary.createStore();
+	const store = input.store;
 	const before = subscription(await store.read(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID))?.accounts?.find(
 		(slot) => slot.name === input.name,
 	);
