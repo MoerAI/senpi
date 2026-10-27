@@ -27,19 +27,32 @@ export class CompactReadLease {
 
 	async run<T>(read: () => Promise<T>): Promise<T> {
 		this.assert();
-		this.operations++;
-		try {
+		return this.hold(async () => {
 			const result = await read();
 			this.assert();
 			return result;
+		});
+	}
+
+	/**
+	 * Runs `read` as an operation in flight without the validity check: a reader of the frozen snapshot itself (a
+	 * legacy view) keeps the references until it unwinds even if the lease is released meanwhile.
+	 */
+	async hold<T>(read: () => Promise<T>): Promise<T> {
+		if (this.released) throw new CompactReadError("released");
+		this.operations++;
+		try {
+			return await read();
 		} finally {
 			if (--this.operations === 0 && this.released) this.dispose();
 		}
 	}
 
-	release(): void {
-		if (this.released) return;
+	/** True only for the call that released it: a later release, or one after another owner's, is a no-op. */
+	release(): boolean {
+		if (this.released) return false;
 		this.released = true;
 		if (this.operations === 0) this.dispose();
+		return true;
 	}
 }

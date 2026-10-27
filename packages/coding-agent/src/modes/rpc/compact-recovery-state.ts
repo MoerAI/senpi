@@ -11,7 +11,9 @@ import {
 	RecoveryRefusedError,
 	type RecoveryStreamState,
 	type RecoveryToken,
+	type RefusalReason,
 	recovered,
+	refusalReason,
 	repairNeeded,
 	storageUnavailable,
 } from "./compact-recovery-types.ts";
@@ -22,6 +24,8 @@ export interface FrozenCheckpoint {
 	readonly token: CheckpointToken;
 	readonly lane: SessionAcceptanceLane;
 	readonly root: FrozenAcceptedRoot;
+	/** Runs a direct read of `root` as an operation in flight on this checkpoint: a reclaim waits for it to unwind. */
+	hold<T>(read: () => Promise<T>): Promise<T>;
 }
 
 interface Checkpoint extends FrozenCheckpoint {
@@ -40,8 +44,10 @@ export type RecoveryRoute = Omit<RecoveryAdmission, "sessionEpoch" | "generation
  */
 export class RecoveryCheckpoints {
 	private readonly checkpoints = new Map<string, Checkpoint>();
+	/** Every token minted here, with the admission it was minted for; a holder's copy or a forgery is not in it. */
+	private readonly issued = new WeakMap<RecoveryToken, RecoveryAdmission>();
 	private readonly streams = new RecoveryStreams();
-	private readonly refusals = new Map<string, number>();
+	private readonly refusals = new Map<RefusalReason, number>();
 	private minted = 0;
 	private frozen = 0;
 	private reclaimed = 0;
@@ -79,34 +85,32 @@ export class RecoveryCheckpoints {
 		}
 		const id = `${route.socketEpoch}:${++this.minted}`;
 		const { generation, retired } = this.streams.next(route, root.sessionEpoch, id);
-		const token: CheckpointToken = {
+		const admission: RecoveryAdmission = Object.freeze({ ...route, sessionEpoch: root.sessionEpoch, generation });
+		const token: CheckpointToken = Object.freeze({
 			kind: "checkpoint",
 			id,
-			admission: { ...route, sessionEpoch: root.sessionEpoch, generation },
-			cut: {
+			admission,
+			cut: Object.freeze({
 				sessionEpoch: root.sessionEpoch,
 				sequence: root.sequence,
 				historyVersion: root.transcript.historyVersion,
 				leafId: root.transcript.leafId,
 				activeMessageId: root.activeMessageId,
 				turnId: root.turnId,
+			}),
+		});
+		const lease = new CompactReadLease(
+			() => {
+				lane.release(root);
+				this.checkpoints.delete(token.id);
 			},
-		};
-		const checkpoint: Checkpoint = {
-			token,
-			lane,
-			root,
-			lease: new CompactReadLease(
-				() => {
-					lane.release(root);
-					this.checkpoints.delete(token.id);
-				},
-				() => {
-					const stale = this.staleness(token, lane);
-					if (stale) throw new RecoveryRefusedError(stale);
-				},
-			),
-		};
+			() => {
+				const stale = this.staleness(token, lane);
+				if (stale) throw new RecoveryRefusedError(stale);
+			},
+		);
+		const checkpoint: Checkpoint = { token, lane, root, lease, hold: (read) => lease.hold(read) };
+		this.issued.set(token, admission);
 		this.checkpoints.set(token.id, checkpoint);
 		this.frozen += 1;
 		this.reclaim(retired);
@@ -134,9 +138,14 @@ export class RecoveryCheckpoints {
 		this.streams.close(sessionId);
 	}
 
-	/** An admission ended (a detach today; S14 extends this): its route leaves the stream, the counter stays. */
+	/**
+	 * An admission ended (a detach today; S14 extends this): its route leaves the stream, the counter stays, and the
+	 * token it minted is reclaimed like a superseded one (RULING-56 (4)). Idempotent.
+	 */
 	retireRoute(caller: RecoveryCaller, admissionId: string): void {
-		this.streams.retireRoute(caller, admissionId);
+		const current = this.streams.retireRoute(caller, admissionId);
+		const checkpoint = current === undefined ? undefined : this.checkpoints.get(current);
+		if (checkpoint?.token.admission.admissionId === admissionId) this.reclaim(current);
 	}
 
 	/** The pinned transcript root (version, leaf, accepted ids, base identity); its bytes are read by S11's page route. */
@@ -184,20 +193,24 @@ export class RecoveryCheckpoints {
 		}
 	}
 
-	/** Invalidates a token the owner retires (superseded, replaced, or its peer gone): the root goes after its leases. */
+	/**
+	 * Invalidates a token the owner retires (superseded, replaced, route retired, or its peer gone): the root goes after
+	 * its in-flight operations. Counted only when this is what released it, never after its holder's own release.
+	 */
 	private reclaim(id: string | undefined): void {
-		const checkpoint = id === undefined ? undefined : this.checkpoints.get(id);
-		if (!checkpoint) return;
-		this.reclaimed += 1;
-		checkpoint.lease.release();
+		if (id !== undefined && this.checkpoints.get(id)?.lease.release()) this.reclaimed += 1;
 	}
 
-	/** Owner and routing session first, then the token: a retired token is described by its stream before any I/O. */
+	/**
+	 * Only a token minted here for the asking peer + session is looked at (RULING-56 (1)): anything else is
+	 * `unknown_token` with no state. A retired one is then described by the asker's own stream before any I/O.
+	 */
 	private claim(token: RecoveryToken, caller: RecoveryCaller): RecoveryOutcome<Checkpoint> {
-		if (token.admission.socketEpoch !== caller.socketEpoch) return this.refuse(repairNeeded("foreign_peer"));
-		if (token.admission.sessionId !== caller.sessionId) return this.refuse(repairNeeded("foreign_session"));
+		const admission = this.issued.get(token);
+		if (admission?.socketEpoch !== caller.socketEpoch || admission.sessionId !== caller.sessionId)
+			return this.refuse(repairNeeded("unknown_token"));
 		const checkpoint = this.checkpoints.get(token.id);
-		if (!checkpoint || checkpoint.token !== token) return this.refuse(this.describe(token));
+		if (!checkpoint) return this.refuse(this.describe(admission));
 		try {
 			checkpoint.lease.assert();
 		} catch (cause) {
@@ -206,13 +219,13 @@ export class RecoveryCheckpoints {
 		return recovered(checkpoint);
 	}
 
-	/** What a token's stream says about a token no longer owned here: the bounded description its holder gets. */
-	private describe(token: CheckpointToken): RecoveryFailure {
-		const stream = this.streams.get(token.admission);
+	/** What the asker's stream says about its own token no longer owned here: the bounded description it gets. */
+	private describe(admission: RecoveryAdmission): RecoveryFailure {
+		const stream = this.streams.get(admission);
 		if (!stream) return { kind: "repair_needed", reason: "unknown_token" };
 		if (stream.closed) return { kind: "repair_needed", reason: "session_closed" };
-		if (stream.sessionEpoch !== token.admission.sessionEpoch) return { kind: "repair_needed", reason: "stale_epoch" };
-		if (stream.generation !== token.admission.generation)
+		if (stream.sessionEpoch !== admission.sessionEpoch) return { kind: "repair_needed", reason: "stale_epoch" };
+		if (stream.generation !== admission.generation)
 			return { kind: "repair_needed", reason: "superseded_token", newerGeneration: stream.generation };
 		return { kind: "repair_needed", reason: "unknown_token" };
 	}
@@ -242,7 +255,7 @@ export class RecoveryCheckpoints {
 
 	/** Every typed failure leaves through here, counted by its reason. */
 	private refuse(failure: RecoveryFailure): RecoveryOutcome<never> {
-		const reason = failure.kind === "storage_unavailable" ? failure.kind : failure.reason;
+		const reason = refusalReason(failure);
 		this.refusals.set(reason, (this.refusals.get(reason) ?? 0) + 1);
 		return { ok: false, failure };
 	}

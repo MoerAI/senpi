@@ -1,16 +1,37 @@
 import type { CompactDialog } from "./compact-current-components.ts";
-import type { RecoveryOutcome } from "./compact-recovery-types.ts";
+import { CompactReadError } from "./compact-read-lease.ts";
+import { type RecoveryOutcome, type RefusalReason, refusalReason } from "./compact-recovery-types.ts";
 import type { ActiveBlockView, ActiveMessageView } from "./compact-state-view.ts";
 import { serializeJsonLine } from "./jsonl.ts";
 import { GeneratedFramesCursor, type LegacyViewCursor } from "./legacy-view-cursor.ts";
 import { omitNormalInlineMedia } from "./media-placeholders.ts";
 import type { FrozenAcceptedRoot, SessionAcceptanceLane } from "./session-acceptance-lane.ts";
 
-/** A lane and the root it froze for one legacy view (R3.C1.5); absent when the lane had no readable root. */
+/**
+ * A lane and the root it froze for one legacy view (R3.C1.5); absent when the lane had no readable root. Every read
+ * of `root` runs inside `hold`, as an operation in flight on the root's checkpoint, so a reclaim (a supersession, a
+ * retired route, the peer's end) waits for it instead of releasing the root under it.
+ */
 export interface LegacyViewSource {
 	readonly lane: SessionAcceptanceLane;
 	readonly root: FrozenAcceptedRoot;
+	hold<T>(read: () => Promise<T>): Promise<T>;
 }
+
+/**
+ * Which refused cuts the resync reports on stderr: only a store that could not serve the cut. Every repair reason is
+ * the consumer's to repair, and a new reason must be classified here before it compiles.
+ */
+const REPORTED = {
+	storage_unavailable: true,
+	unknown_token: false,
+	released: false,
+	lane_retired: false,
+	stale_epoch: false,
+	peer_gone: false,
+	session_closed: false,
+	superseded_token: false,
+} as const satisfies Record<RefusalReason, boolean>;
 
 export interface LegacyAttachView {
 	readonly placeholders: boolean;
@@ -131,17 +152,23 @@ async function* attachFrames(
 	view: LegacyAttachView,
 	cancelled: () => boolean,
 ) {
-	let components: Awaited<ReturnType<SessionAcceptanceLane["readCurrentComponents"]>>;
-	let message: ActiveMessageView | undefined;
-	let resolved: ResolvedNames = new Map();
+	let read: {
+		readonly components: Awaited<ReturnType<SessionAcceptanceLane["readCurrentComponents"]>>;
+		readonly message: ActiveMessageView | undefined;
+		readonly resolved: ResolvedNames;
+	};
 	try {
-		components = await source.lane.readCurrentComponents(source.root);
-		message = await activeMessage(source);
-		if (message) resolved = await resolvedNames(source, message.messageId);
+		read = await source.hold(async () => {
+			const components = await source.lane.readCurrentComponents(source.root);
+			const message = await activeMessage(source);
+			const resolved = message ? await resolvedNames(source, message.messageId) : new Map<number, string>();
+			return { components, message, resolved };
+		});
 	} catch (cause) {
 		if (!cancelled()) unavailable(sessionId, cause);
 		return;
 	}
+	const { components, message, resolved } = read;
 	const encode = (frame: Frame) => serializeJsonLine(view.placeholders ? omitNormalInlineMedia(frame) : frame);
 	const tag = (frame: Frame): Frame => ({ ...frame, sessionId });
 	if (isFrame(components.lifecycle)) yield encode(tag(components.lifecycle));
@@ -189,14 +216,24 @@ export async function legacyResyncMessage(
 ): Promise<unknown> {
 	if (!source) return null;
 	if (!source.ok) {
-		if (source.failure.kind === "storage_unavailable") unavailable(sessionId, source.failure.reason);
+		if (REPORTED[refusalReason(source.failure)]) unavailable(sessionId, source.failure.reason);
 		return null;
 	}
+	const { value } = source;
 	try {
-		const message = await activeMessage(source.value);
-		return (message && legacyMessage(message, "current")) ?? null;
+		return await value.hold(async () => {
+			try {
+				const message = await activeMessage(value);
+				return (message && legacyMessage(message, "current")) ?? null;
+			} catch (cause) {
+				// Under the hold only the lane itself can release the root (a retirement): nothing to report then.
+				if (value.lane.holds(value.root)) unavailable(sessionId, cause);
+				return null;
+			}
+		});
 	} catch (cause) {
-		unavailable(sessionId, cause);
-		return null;
+		// The hold refused before the read began: the cut was reclaimed first (superseded, route retired, peer gone).
+		if (cause instanceof CompactReadError && cause.reason === "released") return null;
+		throw cause;
 	}
 }

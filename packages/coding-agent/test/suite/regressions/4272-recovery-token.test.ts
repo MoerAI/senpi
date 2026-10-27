@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { COMPACT_LEAF_CODE_UNITS as LEAF } from "../../../src/modes/rpc/compact-content-store.ts";
 import type { RecoveryRoute } from "../../../src/modes/rpc/compact-recovery-state.ts";
-import type { RecoveryOutcome } from "../../../src/modes/rpc/compact-recovery-types.ts";
+import type {
+	CheckpointToken,
+	RecoveryCaller,
+	RecoveryOutcome,
+} from "../../../src/modes/rpc/compact-recovery-types.ts";
 import { SessionAcceptanceLane } from "../../../src/modes/rpc/session-acceptance-lane.ts";
 import { SessionEventWriter } from "../../../src/modes/rpc/session-event-writer.ts";
 import { controlledIo } from "../compact-storage-support.ts";
@@ -33,6 +37,21 @@ const caller = { socketEpoch: "socket-1", sessionId: "s" };
 function unwrap<T>(outcome: RecoveryOutcome<T>): T {
 	if (!outcome.ok) throw new Error(`refused: ${JSON.stringify(outcome.failure)}`);
 	return outcome.value;
+}
+
+const unknownToken = { ok: false, failure: { kind: "repair_needed", reason: "unknown_token" } };
+
+/** Settles `promise`, or fails after `ms`: an operation that never ends is a failure of this test, not a hang. */
+async function within<T>(promise: Promise<T>, ms = 5_000): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`still pending after ${ms} ms`)), ms);
+	});
+	try {
+		return await Promise.race([promise, deadline]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 const start = { role: "assistant", content: [], api: "faux", provider: "faux", model: "fixture", usage };
@@ -68,14 +87,14 @@ it("T5 a release is idempotent and per token: a new generation reclaims the olde
 		ok: false,
 		failure: { kind: "repair_needed", reason: "superseded_token", newerGeneration: 2 },
 	});
-	expect(await checkpoints.readActive(newer, { ...caller, socketEpoch: "socket-2" })).toEqual({
-		ok: false,
-		failure: { kind: "repair_needed", reason: "foreign_peer" },
-	});
-	expect(await checkpoints.readActive(newer, { ...caller, sessionId: "t" })).toEqual({
-		ok: false,
-		failure: { kind: "repair_needed", reason: "foreign_session" },
-	});
+	expect(
+		await checkpoints.readActive(newer, { ...caller, socketEpoch: "socket-2" }),
+		"RULING-56 (1): another peer's token is unknown to the asker",
+	).toEqual(unknownToken);
+	expect(
+		await checkpoints.readActive(newer, { ...caller, sessionId: "t" }),
+		"RULING-56 (1): another session's token is unknown to the asker",
+	).toEqual(unknownToken);
 	expect(lane.liveRoots, "a refused lookup releases nothing").toBe(1);
 	expect(unwrap(await checkpoints.readActive(newer, caller))).toHaveLength(1);
 	checkpoints.release(newer);
@@ -235,6 +254,135 @@ it("RULING-50 (2) a forgotten session's lane releases the roots its tokens pinne
 		failure: { kind: "repair_needed", reason: "lane_retired" },
 	});
 	checkpoints.release(token);
+	await lane.idle();
+});
+
+it("RULING-56 (1) SECURITY a token minted for another peer or another session answers unknown_token with no generation and no state, however its admission is rewritten", async () => {
+	const checkpoints = owner();
+	const lane = streamedLane();
+	const elsewhere = streamedLane();
+	const older = unwrap(checkpoints.freeze(route, lane)).token;
+	const newer = unwrap(checkpoints.freeze(route, lane)).token;
+	const peer = { ...caller, socketEpoch: "socket-2" };
+	const other = unwrap(checkpoints.freeze({ ...route, ...peer }, lane)).token;
+	const otherNewer = unwrap(checkpoints.freeze({ ...route, ...peer }, lane)).token;
+	expect(otherNewer.admission.generation, "the asking peer's own stream is at generation 2").toBe(2);
+	const incarnation = { ...caller, sessionId: "t" };
+	const onT = unwrap(checkpoints.freeze({ ...route, ...incarnation }, elsewhere)).token;
+	const closed = { ...caller, sessionId: "u" };
+	const onU = unwrap(checkpoints.freeze({ ...route, ...closed }, lane)).token;
+	checkpoints.close("u");
+	const rewrite = (token: CheckpointToken, scope: RecoveryCaller): CheckpointToken => ({
+		...token,
+		admission: { ...token.admission, ...scope },
+	});
+	const before = { open: checkpoints.open, streams: checkpoints.status().streams };
+	const roots = lane.liveRoots + elsewhere.liveRoots;
+	const probes: readonly (readonly [string, CheckpointToken, RecoveryCaller])[] = [
+		["another peer's live token", newer, peer],
+		["another peer's superseded token", older, peer],
+		["another peer's live token rewritten to the asker", rewrite(newer, peer), peer],
+		["another peer's superseded token rewritten to the asker (no superseded_token)", rewrite(older, peer), peer],
+		["another session's token", newer, incarnation],
+		[
+			"another session's token rewritten to a session at another incarnation (no stale_epoch)",
+			rewrite(newer, incarnation),
+			incarnation,
+		],
+		["another session's token rewritten to a closed session (no session_closed)", rewrite(older, closed), closed],
+	];
+	for (const [name, token, asker] of probes)
+		expect(await checkpoints.readActive(token, asker), name).toEqual(unknownToken);
+	expect(await checkpoints.readActive(other, peer), "the asker's own superseded token is still described").toEqual({
+		ok: false,
+		failure: { kind: "repair_needed", reason: "superseded_token", newerGeneration: 2 },
+	});
+	expect(lane.liveRoots + elsewhere.liveRoots, "a probe pins and releases nothing").toBe(roots);
+	expect(checkpoints.status()).toMatchObject({
+		...before,
+		refused: { unknown_token: probes.length, superseded_token: 1 },
+	});
+	for (const token of [newer, otherNewer, onT, onU]) checkpoints.release(token);
+	expect(lane.liveRoots + elsewhere.liveRoots).toBe(0);
+	for (const retired of [lane, elsewhere]) {
+		retired.retire("close");
+		await retired.idle();
+	}
+});
+
+it("RULING-56 (4) retiring a route is idempotent: the admission's token is reclaimed once, a second retirement changes nothing", async () => {
+	const checkpoints = owner();
+	const lane = streamedLane();
+	const token = unwrap(checkpoints.freeze(route, lane)).token;
+	const snapshot = () => ({
+		stream: checkpoints.stream(caller),
+		status: checkpoints.status(),
+		liveRoots: lane.liveRoots,
+	});
+	checkpoints.retireRoute(caller, route.admissionId);
+	const once = snapshot();
+	expect(once).toEqual({
+		stream: { sessionEpoch: lane.sessionEpoch, generation: 1, routes: [], closed: false },
+		status: { open: 0, streams: 1, frozen: 1, reclaimed: 1, refused: {} },
+		liveRoots: 0,
+	});
+	checkpoints.retireRoute(caller, route.admissionId);
+	expect(snapshot(), "retire twice = retire once").toEqual(once);
+	expect(await checkpoints.readActive(token, caller)).toEqual(unknownToken);
+	checkpoints.release(token);
+	expect(checkpoints.status()).toMatchObject({ open: 0, reclaimed: 1 });
+	lane.retire("close");
+	await lane.idle();
+});
+
+it("RULING-56 (4) an operation in flight on a retired route ends in a typed refusal, never a crash or a hang: its root goes once the read unwinds", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "senpi-4272-s08b-retire-"));
+	cleanups.push(() => rm(dir, { recursive: true, force: true }));
+	const control = controlledIo();
+	const hold = control.hold("read", (path) => /[/\\]leaf-/.test(path));
+	const checkpoints = owner();
+	const lane = streamedLane({ dir, spillAboveBytes: 0, spillTargetBytes: 0, io: control.io });
+	await lane.idle();
+	const token = unwrap(checkpoints.freeze(route, lane)).token;
+	const reading = checkpoints.readActive(token, caller);
+	await hold.entered;
+	checkpoints.retireRoute(caller, route.admissionId);
+	checkpoints.retireRoute(caller, route.admissionId);
+	expect(lane.liveRoots, "the read in flight defers the reclaim").toBe(1);
+	hold.release();
+	expect(await within(reading)).toEqual({ ok: false, failure: { kind: "repair_needed", reason: "released" } });
+	expect(lane.liveRoots, "reclaimed once the read unwound").toBe(0);
+	expect(checkpoints.status()).toMatchObject({ open: 0, reclaimed: 1 });
+	lane.retire("close");
+	await lane.idle();
+});
+
+it("review LOW the reclaimed counter counts only roots reclaimed without their holder's release", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "senpi-4272-s08b-count-"));
+	cleanups.push(() => rm(dir, { recursive: true, force: true }));
+	const control = controlledIo();
+	const hold = control.hold("read", (path) => /[/\\]leaf-/.test(path));
+	const checkpoints = owner();
+	const lane = streamedLane({ dir, spillAboveBytes: 0, spillTargetBytes: 0, io: control.io });
+	await lane.idle();
+	const older = unwrap(checkpoints.freeze(route, lane)).token;
+	const reading = checkpoints.readActive(older, caller);
+	await hold.entered;
+	checkpoints.release(older);
+	const newer = unwrap(checkpoints.freeze(route, lane)).token;
+	expect(checkpoints.status(), "the holder released it before the supersession").toMatchObject({
+		open: 2,
+		reclaimed: 0,
+	});
+	hold.release();
+	expect(await within(reading)).toEqual({
+		ok: false,
+		failure: { kind: "repair_needed", reason: "superseded_token", newerGeneration: 2 },
+	});
+	expect(checkpoints.status()).toMatchObject({ open: 1, reclaimed: 0 });
+	checkpoints.release(newer);
+	expect(lane.liveRoots).toBe(0);
+	lane.retire("close");
 	await lane.idle();
 });
 

@@ -7,9 +7,9 @@ import { type HeldPeer, LaneProducer, usage } from "./4272-legacy-view-support.t
 
 export const start = { role: "assistant", content: [], api: "faux", provider: "faux", model: "fixture", usage };
 
-/** A producer streaming one assistant message with an open text block on session `s`. */
-export function streaming(writer: SessionEventWriter, lane: SessionAcceptanceLane): LaneProducer {
-	const producer = new LaneProducer(writer, lane, "s");
+/** A producer streaming one assistant message with an open text block on `sessionId` (`s` by default). */
+export function streaming(writer: SessionEventWriter, lane: SessionAcceptanceLane, sessionId = "s"): LaneProducer {
+	const producer = new LaneProducer(writer, lane, sessionId);
 	producer.assistant({ type: "message_start", message: start }, { type: "message_start", message: start });
 	producer.blockStart("text", 0);
 	return producer;
@@ -20,8 +20,8 @@ export interface RecoveryRig {
 	readonly lane: SessionAcceptanceLane;
 	readonly checkpoints: RecoveryCheckpoints;
 	readonly producer: () => LaneProducer;
-	/** A held peer's attach of `s`: the one cut it freezes, released once the peer drains. */
-	readonly attach: (peer: HeldPeer, id?: string) => Promise<RecoveryAdmission>;
+	/** A held peer's attach of `sessionId` (`s` by default): the one cut it freezes, released once the peer drains. */
+	readonly attach: (peer: HeldPeer, id?: string, sessionId?: string) => Promise<RecoveryAdmission>;
 	/** Streams until the held peer sheds: the one cut the shed freezes, released once the recovery is delivered. */
 	readonly shed: (peer: HeldPeer, id?: string) => Promise<RecoveryAdmission>;
 	/** The next session incarnation (a replacement's bootstrap), streaming again from its start. */
@@ -52,7 +52,8 @@ export function recoveryRig(): RecoveryRig {
 		lane,
 		checkpoints,
 		producer: () => producer,
-		attach: (peer, id = "held") => frozenBy(peer, () => writer.attachConnectionToSession(id, "s")),
+		attach: (peer, id = "held", sessionId = "s") =>
+			frozenBy(peer, () => writer.attachConnectionToSession(id, sessionId)),
 		shed: (peer) =>
 			frozenBy(peer, () => {
 				for (let index = 0; index < 200 && checkpoints.open === 0; index++)

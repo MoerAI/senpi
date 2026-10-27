@@ -39,11 +39,13 @@ export interface CheckpointToken {
 
 export type RecoveryToken = CheckpointToken;
 
+/**
+ * Why a token needs repair. A token minted for another peer or session is `unknown_token` (RULING-56 (1)): the
+ * asker learns nothing about a stream that is not its own.
+ */
 export type RepairReason =
 	| "unknown_token"
 	| "released"
-	| "foreign_peer"
-	| "foreign_session"
 	| "lane_retired"
 	| "stale_epoch"
 	| "peer_gone"
@@ -66,6 +68,24 @@ export type RecoveryFailure =
 	| SupersededToken
 	| { readonly kind: "storage_unavailable"; readonly reason: string };
 
+/** Every reason a token operation is refused with: a repair reason, a superseded token, or unavailable storage. */
+export type RefusalReason = RepairReason | SupersededToken["reason"] | "storage_unavailable";
+
+function assertNever(value: never): never {
+	throw new Error(`unexpected recovery failure: ${JSON.stringify(value)}`);
+}
+
+export function refusalReason(failure: RecoveryFailure): RefusalReason {
+	switch (failure.kind) {
+		case "storage_unavailable":
+			return failure.kind;
+		case "repair_needed":
+			return failure.reason;
+		default:
+			return assertNever(failure);
+	}
+}
+
 export type RecoveryOutcome<T> =
 	| { readonly ok: true; readonly value: T }
 	| { readonly ok: false; readonly failure: RecoveryFailure };
@@ -87,7 +107,7 @@ export interface RecoveryCounters {
 	readonly streams: number;
 	readonly frozen: number;
 	readonly reclaimed: number;
-	readonly refused: Readonly<Record<string, number>>;
+	readonly refused: Readonly<Partial<Record<RefusalReason, number>>>;
 }
 
 export const recovered = <T>(value: T): RecoveryOutcome<T> => ({ ok: true, value });

@@ -80,8 +80,13 @@ export class RecoveryStreams {
 		for (const stream of this.streams.values()) if (stream.sessionId === sessionId) stream.closed = true;
 	}
 
-	/** An admission ended (a detach today; S14 extends this): its route leaves the stream, the counter stays. */
-	retireRoute(caller: RecoveryCaller, admissionId: string): void {
-		this.streams.get(keyOf(caller))?.routes.delete(admissionId);
+	/**
+	 * An admission ended (a detach today; S14 extends this): its route leaves the stream, the counter stays. Returns
+	 * the stream's current token, which the owner reclaims when this admission minted it.
+	 */
+	retireRoute(caller: RecoveryCaller, admissionId: string): string | undefined {
+		const stream = this.streams.get(keyOf(caller));
+		stream?.routes.delete(admissionId);
+		return stream?.current;
 	}
 }

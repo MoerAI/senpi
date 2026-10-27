@@ -1,7 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { SessionAcceptanceLane } from "../../../src/modes/rpc/session-acceptance-lane.ts";
 import { EVENT_RESYNC_CAPABILITY } from "../../../src/modes/rpc/socket-peer-recovery.ts";
 import { heldPeer } from "./4272-legacy-view-support.ts";
-import { recoveryRig } from "./4272-recovery-support.ts";
+import { recoveryRig, streaming } from "./4272-recovery-support.ts";
 
 // Part of #4272 (S08b, R3.C1.2-C1.5, RULING-42 Q2 A, RULING-46 item 1): one stream record per peer + session
 // incarnation carries S08a's generation counter and its admitted routes; the first admission and a reset advance it,
@@ -175,7 +176,9 @@ it("T5 X04 a re-attach that supersedes an attach baseline mid-read reclaims its 
 	const late = heldPeer(writer, "late");
 	writer.attachConnectionToSession("late", "s");
 	await writer.flush();
-	expect(owned, "the re-attach's generation reclaimed the first one's token under its read").toEqual([2]);
+	expect(owned, "the re-attach invalidated the first token; its root waits for the view's read in flight").toEqual([
+		1, 2,
+	]);
 	expect(
 		late.lines.filter((line) => line.includes('"message_start"')),
 		"the new baseline, once",
@@ -187,4 +190,86 @@ it("T5 X04 a re-attach that supersedes an attach baseline mid-read reclaims its 
 	writer.unregisterConnection("late");
 	lane.retire("close");
 	await lane.idle();
+});
+
+it.each(["before the lane read starts", "while the lane read is pending"] as const)(
+	"review MEDIUM a detach and re-attach %s keeps the shed's resync root until its read unwinds: the cut's message, no closed flag, no stderr line",
+	async (timing) => {
+		vi.useFakeTimers();
+		const { writer, lane, checkpoints, producer, attach } = recoveryRig();
+		const held = heldPeer(writer, "held", [EVENT_RESYNC_CAPABILITY]);
+		await attach(held);
+		const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		const read = lane.readCurrentActive.bind(lane);
+		let raced = false;
+		vi.spyOn(lane, "readCurrentActive").mockImplementation(async (root) => {
+			if (raced) return read(root);
+			raced = true;
+			const reattach = () => {
+				writer.detachConnectionFromSession("held", "s");
+				writer.attachConnectionToSession("held", "s");
+			};
+			if (timing === "before the lane read starts") {
+				reattach();
+				return read(root);
+			}
+			const pending = read(root);
+			reattach();
+			return pending;
+		});
+		held.hold();
+		for (let index = 0; index < 200 && checkpoints.open === 0; index++) producer().blockDelta("text", 0, "x", index);
+		expect(checkpoints.open, "the shed froze its cut").toBe(1);
+		held.release();
+		await writer.flush();
+		expect(raced, "the resync read raced the re-attach").toBe(true);
+		const resync = held.lines.find((line) => line.includes('"resync_required"') && line.includes('"sessionId":"s"'));
+		const frame = JSON.parse(resync ?? "{}");
+		expect(frame, "the cut's active message, as at the S08a base").toMatchObject({
+			sessionId: "s",
+			message: { role: "assistant", content: [{ type: "text" }] },
+		});
+		expect(frame.message.content[0].text).toMatch(/^x+$/);
+		expect(frame).not.toHaveProperty("closed");
+		expect(stderr.mock.calls.filter(([line]) => String(line).includes("legacy view"))).toEqual([]);
+		expect(checkpoints.open).toBe(0);
+		expect(lane.liveRoots).toBe(0);
+		writer.unregisterConnection("held");
+		lane.retire("close");
+		await lane.idle();
+	},
+);
+
+it("RULING-56 (2) a peer's end frees every stream record it holds: one record per session it attached, however often it detaches or meets a replacement", async () => {
+	vi.useFakeTimers();
+	const { writer, lane, checkpoints, attach, replace } = recoveryRig();
+	const second = new SessionAcceptanceLane();
+	second.bootstrap({ transcript: [] });
+	writer.registerAcceptance("t", second);
+	streaming(writer, second, "t");
+	const held = heldPeer(writer, "held");
+	const other = heldPeer(writer, "other");
+	const onS = await attach(held);
+	const onT = await attach(held, "held", "t");
+	const others = await attach(other, "other");
+	const records = () => [onS, onT].filter((admission) => checkpoints.stream(admission) !== undefined).length;
+	for (let round = 0; round < 3; round++) {
+		for (const sessionId of ["s", "t"]) writer.detachConnectionFromSession("held", sessionId);
+		replace();
+		await attach(held);
+		await attach(held, "held", "t");
+		expect(records(), "the bound: one record per session the peer attached").toBe(2);
+		expect(checkpoints.status().streams, "held on s and t, other on s").toBe(3);
+	}
+	writer.unregisterConnection("held");
+	expect(records(), "the peer's end freed every record it held").toBe(0);
+	expect(checkpoints.tokens().filter(({ admission }) => admission.socketEpoch === onS.socketEpoch)).toEqual([]);
+	expect(checkpoints.stream(others), "another peer's record is untouched").toBeDefined();
+	expect(checkpoints.status()).toMatchObject({ open: 0, streams: 1 });
+	writer.unregisterConnection("other");
+	expect(checkpoints.status()).toMatchObject({ open: 0, streams: 0 });
+	for (const retired of [lane, second]) {
+		retired.retire("close");
+		await retired.idle();
+	}
 });

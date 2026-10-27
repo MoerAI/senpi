@@ -82,6 +82,13 @@ it.each(["unregistered", "dropped by its failed queue"] as const)(
 		const [token] = checkpoints.tokens();
 		if (!token) return expect.unreachable();
 		expect(lane.liveRoots).toBe(1);
+		const rootsReleased = new Promise<void>((resolve) => {
+			const release = lane.release.bind(lane);
+			vi.spyOn(lane, "release").mockImplementation((root) => {
+				release(root);
+				if (lane.liveRoots === 0) resolve();
+			});
+		});
 		const reading = checkpoints.readActive(token, token.admission);
 		if (how === "unregistered") writer.unregisterConnection("late");
 		else {
@@ -91,6 +98,8 @@ it.each(["unregistered", "dropped by its failed queue"] as const)(
 			expect(writer.hasConnection("late"), "the plain peer's overflow failed its queue").toBe(false);
 		}
 		expect(await reading).toEqual({ ok: false, failure: { kind: "repair_needed", reason: "peer_gone" } });
+		// The queued attach view's own read is an operation in flight too (S08b review MEDIUM): the root goes once it unwinds.
+		await rootsReleased;
 		expect(checkpoints.open).toBe(0);
 		expect(lane.liveRoots).toBe(0);
 		expect(await checkpoints.readActive(token, token.admission)).toEqual({
