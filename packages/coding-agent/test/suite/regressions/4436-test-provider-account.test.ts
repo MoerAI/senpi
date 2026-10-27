@@ -297,6 +297,16 @@ describe("senpi#4436 test_provider_account re-tests one Claude CLI account", () 
 		expect(lane.queries).toHaveLength(0);
 	});
 
+	it("an account that must sign in again answers needs_sign_in, with no turn and no write", async () => {
+		const lane = await startLane({ turn: "ok", work: { signInRequired: "legacy_sign_in_retired" } });
+		const before = await lane.slots();
+		const response = await lane.send({ type: "test_provider_account", provider: SCRIPTED_PROVIDER, name: "work" });
+
+		expect(response).toMatchObject({ command: "test_provider_account", success: false, error: "needs_sign_in" });
+		expect(lane.queries).toHaveLength(0);
+		expect(await lane.slots()).toEqual(before);
+	});
+
 	it("capability provider_account_test is advertised", async () => {
 		const lane = await startLane({ turn: "ok" });
 		const classic = await lane.send({ type: "get_protocol_info" });

@@ -8,7 +8,6 @@ import type {
 } from "@earendil-works/pi-ai";
 import { lstatSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./account-management.ts";
 import {
 	type AccountSlot,
@@ -36,12 +35,7 @@ import {
 	type ClaudeCliLoginResult,
 	startClaudeCliLogin,
 } from "./claude-cli-auth.ts";
-import {
-	type ClaudeCliAuthStatus,
-	type ClaudeCliProfile,
-	logoutClaudeCli,
-	readClaudeCliAuthStatus,
-} from "./claude-cli-auth-status.ts";
+import { type ClaudeCliAuthStatus, logoutClaudeCli, readClaudeCliAuthStatus } from "./claude-cli-auth-status.ts";
 import {
 	type ClaudeCliConnectionTestInput,
 	connectionTestModel,
@@ -50,6 +44,7 @@ import {
 } from "./claude-cli-connection-test.ts";
 import { recordClaudeCliLoginOutcome } from "./claude-cli-login-outcome.ts";
 import type { ClaudeCliRun } from "./claude-cli-process.ts";
+import { signedInSlot, storedSubscription, withCheck, withoutThisLogin, withSlot } from "./claude-cli-login-slots.ts";
 import { defaultExecutableDeps, resolveClaudeCodeExecutable } from "./executable.ts";
 import type { AnthropicSubscriptionProviderSettings } from "./settings.ts";
 
@@ -250,79 +245,6 @@ async function signInThroughCli(
 	throw loginFailure(result);
 }
 
-/** Reconnect keeps name, display name, model blocks and (on the credential) pin and order; blocks and sign-in-required clear. */
-function signedInSlot(
-	previous: AccountSlot | undefined,
-	name: string,
-	dirId: string,
-	profile: ClaudeCliProfile,
-	at: number,
-): ClaudeCliAccountSlot {
-	return {
-		name,
-		...(previous?.displayName === undefined ? {} : { displayName: previous.displayName }),
-		source: "login",
-		store: "claude-cli",
-		dirId,
-		signedInAt: at,
-		profile: { ...profile, checkedAt: at },
-		...(previous?.modelBlocks === undefined ? {} : { modelBlocks: previous.modelBlocks }),
-	};
-}
-
-function withSlot(credential: AnthropicSubscriptionCredential, slot: AccountSlot): AnthropicSubscriptionCredential {
-	const accounts = credential.accounts ?? [];
-	return accounts.some((candidate) => candidate.name === slot.name)
-		? { ...credential, accounts: accounts.map((candidate) => (candidate.name === slot.name ? slot : candidate)) }
-		: { ...credential, accounts: [...accounts, slot] };
-}
-
-function withCheck(
-	credential: AnthropicSubscriptionCredential,
-	name: string,
-	check: ClaudeCliAccountCheck,
-): AnthropicSubscriptionCredential {
-	return {
-		...credential,
-		accounts: (credential.accounts ?? []).map((candidate) =>
-			candidate.name === name && candidate.store === "claude-cli" ? { ...candidate, check } : candidate,
-		),
-	};
-}
-
-/**
- * The accounts with this login taken back. Only a slot that still points at this login's dir is touched: a new
- * account's slot is removed; for a re-login each field this login wrote is restored to its previous value unless
- * another writer changed it meanwhile, so blocks, model blocks or a check stored during the login survive.
- */
-function withoutThisLogin(
-	accounts: readonly AccountSlot[],
-	written: ClaudeCliAccountSlot,
-	previous: AccountSlot | undefined,
-): AccountSlot[] {
-	return accounts.flatMap((candidate) => {
-		if (candidate.name !== written.name || candidate.store !== "claude-cli" || candidate.dirId !== written.dirId)
-			return [candidate];
-		if (previous === undefined) return [];
-		const restored: Record<string, unknown> = { ...candidate };
-		const current = candidate as Record<string, unknown>;
-		const ours = written as Record<string, unknown>;
-		const before = previous as Record<string, unknown>;
-		for (const key of new Set([...Object.keys(ours), ...Object.keys(before)])) {
-			if (!isDeepStrictEqual(current[key], ours[key])) continue;
-			if (before[key] === undefined) delete restored[key];
-			else restored[key] = before[key];
-		}
-		return [restored as AccountSlot];
-	});
-}
-
-function storedSubscription(value: unknown): AnthropicSubscriptionCredential | undefined {
-	return typeof value === "object" && value !== null && (value as { type?: unknown }).type === "oauth"
-		? (value as AnthropicSubscriptionCredential)
-		: undefined;
-}
-
 export function createOAuthConfig(deps: {
 	readCurrent: CurrentCredentialReader;
 	readAmbientAuthStatus?: (signal?: AbortSignal) => Promise<boolean>;
@@ -412,10 +334,10 @@ export function createOAuthConfig(deps: {
 
 			const env = hostEnv();
 			const executable = executableFor(env);
-			const previous = existing.find((slot) => slot.name === name);
 			// A re-login signs into a fresh dir and takes the account over only once it succeeded, so a cancel or error
-			// can never leave the existing account's dir holding a different login.
-			const retiring = previous?.store === "claude-cli" ? previous : undefined;
+			// can never leave the existing account's dir holding a different login. The slot it replaces is read under
+			// the lock of that write, so the dir it retires and the fields an undo restores are the ones it replaced.
+			let previous: AccountSlot | undefined;
 			const dirId = newAccountDirId();
 			const configDir = ensureAccountDir({ agentDir: agentDir(), dirId, sharedRoot: claudeCliSharedRoot(env) });
 			const run: ClaudeCliRun = { executable, configDir, parentEnv: env };
@@ -424,6 +346,7 @@ export function createOAuthConfig(deps: {
 				if (callbacks.signal?.aborted) throw new Error("Login cancelled");
 			};
 			let loginStarted = false;
+			let loginSaved = false;
 			let signedInCredential: AnthropicSubscriptionCredential;
 			let written: ClaudeCliAccountSlot | undefined;
 			// One guarded step from the moment the dir exists to the end of login(): any throw or cancel undoes it all.
@@ -443,9 +366,13 @@ export function createOAuthConfig(deps: {
 				}
 				if (loginStarted) {
 					const signedOut = await logoutClaudeCli(run).catch(() => false);
+					// Before the CLI reported success it may have saved nothing, and logout also fails when there is nothing
+					// to sign out, so only a finished CLI login is reported as a login that could not be signed out.
 					if (!signedOut)
 						callbacks.onProgress?.(
-							"Claude sign-in was undone, but the Claude login it made could not be signed out (claude auth logout failed); its account dir was removed",
+							loginSaved
+								? "Claude sign-in was undone, but the Claude login it made could not be signed out (claude auth logout failed); its account dir was removed"
+								: "Claude sign-in was undone and its account dir was removed; claude auth logout failed, so a Claude login the CLI may have saved before it stopped is not confirmed signed out",
 						);
 				}
 				discardAccountDir(agentDir(), dirId);
@@ -453,6 +380,7 @@ export function createOAuthConfig(deps: {
 			try {
 				loginStarted = true;
 				await signInThroughCli(run, method, callbacks);
+				loginSaved = true;
 				const status = await (cli.authStatus ?? readClaudeCliAuthStatus)(run);
 				cancelled();
 				if (status.state !== "signed_in") {
@@ -463,11 +391,17 @@ export function createOAuthConfig(deps: {
 					);
 				}
 
-				const slot = signedInSlot(previous, name, dirId, status.profile, now());
-				written = slot;
-				await credentials.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (stored) =>
-					withSlot(storedSubscription(stored) ?? current, slot),
-				);
+				const signedInAt = now();
+				const claimed: { slot?: ClaudeCliAccountSlot } = {};
+				await credentials.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (stored) => {
+					const base = storedSubscription(stored) ?? current;
+					previous = base.accounts?.find((candidate) => candidate.name === name);
+					claimed.slot = signedInSlot(previous, name, dirId, status.profile, signedInAt);
+					written = claimed.slot;
+					return withSlot(base, claimed.slot);
+				});
+				const slot = claimed.slot;
+				if (slot === undefined) throw new Error("Claude sign-in could not store its account");
 				cancelled();
 				const model = connectionTestModel(cli.defaultModel?.());
 				callbacks.onProgress?.(`Testing the account with one turn on ${model}...`);
@@ -505,6 +439,7 @@ export function createOAuthConfig(deps: {
 				}
 				throw error;
 			}
+			const retiring = previous?.store === "claude-cli" ? previous : undefined;
 			if (retiring !== undefined) {
 				// The account now lives in the fresh dir: the old dir's login is signed out and the dir removed.
 				const retired = await removeAccountDir({

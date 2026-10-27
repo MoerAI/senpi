@@ -13,7 +13,11 @@ import {
 import { defaultExecutableDeps, resolveClaudeCodeExecutable } from "./executable.ts";
 import { loadAnthropicSubscriptionProviderSettingsFromDisk } from "./settings.ts";
 
-export type ProviderAccountTestErrorCode = "unsupported_provider" | "unknown_account" | "unsupported_account";
+export type ProviderAccountTestErrorCode =
+	| "unsupported_provider"
+	| "unknown_account"
+	| "unsupported_account"
+	| "needs_sign_in";
 
 /** A refusal before any turn runs; `message` is the bare code the RPC error carries. */
 export class ProviderAccountTestError extends Error {
@@ -54,8 +58,10 @@ function checkedSlot(current: AccountSlot, check: ClaudeCliAccountCheck): Accoun
 /**
  * Re-runs the sign-in connection test (one pinned "Reply with OK" turn, account fallback off) on one stored Claude
  * CLI account and stores its outcome as `check`. The turn is a probe (`queryWithAuthLane` `probe`): it runs on that
- * account even while it is blocked, recovers no other account, and stores or clears no block, so the one write is
- * `check`, applied to the slot as it is under the lock (blocks other sessions wrote meanwhile stay).
+ * account even while it is blocked, recovers no other account, and stores or clears no block. It writes `check`,
+ * applied to the slot as it is under the lock (blocks other sessions wrote meanwhile stay), plus the slot's `profile`
+ * when the CLI reports a changed one (`claudeCliInitializationCheck` in auth-lane.ts, as on every turn). An account
+ * that must sign in again is refused before any turn: no test can pass until it signs in.
  */
 export async function testClaudeCliAccount(input: ClaudeCliAccountTestInput): Promise<ClaudeCliAccountCheck> {
 	if (input.provider !== ANTHROPIC_SUBSCRIPTION_PROVIDER_ID)
@@ -66,6 +72,7 @@ export async function testClaudeCliAccount(input: ClaudeCliAccountTestInput): Pr
 	);
 	if (before === undefined) throw new ProviderAccountTestError("unknown_account");
 	if (before.store !== "claude-cli") throw new ProviderAccountTestError("unsupported_account");
+	if (before.signInRequired !== undefined) throw new ProviderAccountTestError("needs_sign_in");
 
 	const env = activeBoundary.env();
 	const model = connectionTestModel(claudeCliDefaultModel(input.cwd));

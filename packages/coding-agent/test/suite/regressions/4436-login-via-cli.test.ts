@@ -574,4 +574,81 @@ describe("senpi#4436 no Claude CLI login outlives the account that owns it", () 
 		expect(readFileSync(join(oldDir, "old-login-marker"), "utf8")).toBe("old");
 		expect(lane.accountDirs()).toEqual([oldDirId]);
 	});
+
+	it("an undone re-login takes back the profile and check another writer stored for its discarded login", async () => {
+		const oldDirId = "a".repeat(32);
+		const oldProfile = { email: "old@example.com", checkedAt: 1 };
+		const oldCheck = { model: "claude-sonnet-5-5", outcome: "failed", reason: "auth_error", at: 1 };
+		const controller = new AbortController();
+		const lane = await setup({
+			slots: [cliSlot("work", oldDirId, { profile: oldProfile, check: oldCheck })],
+			cli: (store) => ({
+				connectionTest: async ({ model }) => {
+					// A turn on the fresh dir records what that dir's login reports, then the user cancels.
+					await store.modify(SCRIPTED_PROVIDER, async (stored) => {
+						const credential = stored as AnthropicSubscriptionCredential;
+						return {
+							...credential,
+							accounts: (credential.accounts ?? []).map((slot) =>
+								slot.name === "work"
+									? {
+											...slot,
+											profile: { email: "fresh@example.com", checkedAt: 2 },
+											check: { model, outcome: "ok", at: 2 },
+										}
+									: slot,
+							),
+						};
+					});
+					controller.abort();
+					return { model, outcome: "failed", reason: "cancelled", at: 0 };
+				},
+			}),
+		});
+		seedAccountDir(lane.agentDir, oldDirId);
+
+		const login = lane.config.login({
+			onPrompt: async (prompt) => (prompt.message.startsWith(DESKTOP_NAME_PREFIX) ? "work" : heldOpen(prompt)),
+			signal: controller.signal,
+		});
+
+		await expect(login).rejects.toThrow(/cancelled/i);
+		const [work] = await lane.slots();
+		expect(work).toEqual(cliSlot("work", oldDirId, { profile: oldProfile, check: oldCheck }));
+	});
+
+	it("a write to the account while its re-login runs survives the sign-in", async () => {
+		const oldDirId = "a".repeat(32);
+		const blockedUntil = Date.now() + 3_600_000;
+		const lane = await setup({
+			slots: [cliSlot("work", oldDirId)],
+			cli: (store) => ({
+				authStatus: async (run) => {
+					// Another client renames the account and a turn blocks a model on it while the CLI login runs.
+					await store.modify(SCRIPTED_PROVIDER, async (stored) => {
+						const credential = stored as AnthropicSubscriptionCredential;
+						return {
+							...credential,
+							accounts: (credential.accounts ?? []).map((slot) =>
+								slot.name === "work"
+									? { ...slot, displayName: "Renamed", modelBlocks: { opus: { blockedUntil } } }
+									: slot,
+							),
+						};
+					});
+					return readClaudeCliAuthStatus(run);
+				},
+			}),
+		});
+		seedAccountDir(lane.agentDir, oldDirId);
+
+		await lane.config.login({
+			onPrompt: async (prompt) => (prompt.message.startsWith(DESKTOP_NAME_PREFIX) ? "work" : heldOpen(prompt)),
+		});
+
+		const [work] = await lane.slots();
+		expect(work).toMatchObject({ name: "work", displayName: "Renamed", modelBlocks: { opus: { blockedUntil } } });
+		expect(work?.store === "claude-cli" ? work.dirId : oldDirId).not.toBe(oldDirId);
+		expect(lane.accountDirs()).not.toContain(oldDirId);
+	});
 });
