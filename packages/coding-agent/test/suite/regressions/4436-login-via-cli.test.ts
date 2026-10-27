@@ -23,9 +23,11 @@ import type {
 } from "../../../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 import { addAccount, emptyCredential } from "../../../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 import { overrideAuthLaneBoundary } from "../../../src/core/extensions/builtin/anthropic-subscription/auth-lane.ts";
+import { readClaudeCliAuthStatus } from "../../../src/core/extensions/builtin/anthropic-subscription/claude-cli-auth-status.ts";
 import { connectionTestModel } from "../../../src/core/extensions/builtin/anthropic-subscription/claude-cli-connection-test.ts";
 import { takeClaudeCliLoginOutcome } from "../../../src/core/extensions/builtin/anthropic-subscription/claude-cli-login-outcome.ts";
 import {
+	type ClaudeCliLoginDeps,
 	createOAuthConfig,
 	type OAuthLoginCallbacks,
 } from "../../../src/core/extensions/builtin/anthropic-subscription/oauth-login.ts";
@@ -61,6 +63,8 @@ async function setup(options: {
 	pinned?: string;
 	order?: string[];
 	turn?: Turn;
+	onQuery?: () => void;
+	cli?: (store: InMemoryCredentialStore) => Partial<ClaudeCliLoginDeps>;
 }) {
 	const root = mkdtempSync(join(tmpdir(), "senpi-4436-login-via-cli-"));
 	roots.push(root);
@@ -95,6 +99,7 @@ async function setup(options: {
 	const queries: Options[] = [];
 	const query: SdkQuery = ({ options: queryOptions }) => {
 		queries.push(queryOptions ?? {});
+		options.onQuery?.();
 		const messages =
 			options.turn === "auth_error"
 				? [
@@ -146,7 +151,12 @@ async function setup(options: {
 	const config = createOAuthConfig({
 		readCurrent: async () => (await store.read(SCRIPTED_PROVIDER)) as AnthropicSubscriptionCredential | undefined,
 		loginFlow,
-		claudeCli: { executable: () => executable, defaultModel: () => DEFAULTS, cwd: () => root },
+		claudeCli: {
+			executable: () => executable,
+			defaultModel: () => DEFAULTS,
+			cwd: () => root,
+			...options.cli?.(store),
+		},
 	} as Parameters<typeof createOAuthConfig>[0]);
 	const records = (): Recorded[] =>
 		existsSync(recordPath)
@@ -306,5 +316,60 @@ describe("senpi#4436 sign-in runs claude auth login, then the connection test", 
 		expect(lane.records().some((record) => record.argv?.[1] === "login")).toBe(true);
 		expect(lane.accountDirs()).toEqual([]);
 		expect(await lane.slots()).toEqual([]);
+	});
+});
+
+type CancelStage = "sign-in" | "status read" | "first write" | "connection test";
+
+describe("senpi#4436 a login cancelled at any stage leaves no account and no account dir", () => {
+	const rows: Array<{ stage: CancelStage; signedIn: boolean }> = [
+		{ stage: "sign-in", signedIn: false },
+		{ stage: "status read", signedIn: true },
+		{ stage: "first write", signedIn: true },
+		{ stage: "connection test", signedIn: true },
+	];
+
+	it.each(rows)("cancel during $stage", async ({ stage, signedIn }) => {
+		const controller = new AbortController();
+		const lane = await setup({
+			mode: stage === "sign-in" ? "login-hang" : "login-auto",
+			onQuery: stage === "connection test" ? () => controller.abort() : undefined,
+			cli: (store) => ({
+				...(stage === "status read"
+					? {
+							authStatus: async (run) => {
+								const status = await readClaudeCliAuthStatus(run);
+								controller.abort();
+								return status;
+							},
+						}
+					: {}),
+				...(stage === "first write"
+					? {
+							store: () => ({
+								read: (provider) => store.read(provider),
+								list: () => store.list(),
+								delete: (provider) => store.delete(provider),
+								modify: async (provider, update) => {
+									const written = await store.modify(provider, update);
+									controller.abort();
+									return written;
+								},
+							}),
+						}
+					: {}),
+			}),
+		});
+		const login = lane.config.login({
+			onPrompt: heldOpen,
+			...(stage === "sign-in" ? { onAuth: () => controller.abort() } : {}),
+			signal: controller.signal,
+		});
+
+		await expect(login).rejects.toThrow(/cancelled/i);
+		expect(await lane.slots()).toEqual([]);
+		expect(lane.accountDirs()).toEqual([]);
+		const signedOut = lane.records().some((record) => record.argv?.join(" ") === "auth logout");
+		expect(signedOut).toBe(signedIn);
 	});
 });
