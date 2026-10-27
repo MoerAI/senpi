@@ -17,7 +17,11 @@ import { type ModelBlocks, pruneModelBlocks } from "./credential-pool/model-scop
 import { CredentialSlotRepository, type CredentialSlotState, slotHealth } from "./credential-pool/state-store.ts";
 import { emitProviderAccountsChanged } from "./extensions/builtin/anthropic-subscription/account-events.ts";
 import { SENTINEL_OAUTH_FIELDS } from "./extensions/builtin/anthropic-subscription/accounts.ts";
-import { removeAccountDir } from "./extensions/builtin/anthropic-subscription/claude-cli-account-dir.ts";
+import {
+	accountDirFor,
+	isValidAccountDirId,
+	removeAccountDir,
+} from "./extensions/builtin/anthropic-subscription/claude-cli-account-dir.ts";
 import {
 	defaultExecutableDeps,
 	resolveClaudeCodeExecutable,
@@ -382,7 +386,7 @@ export async function removeCredentialAccount(
 	name: string,
 	env: NodeJS.ProcessEnv = process.env,
 	repository?: CredentialSlotRepository,
-): Promise<void> {
+): Promise<RemoveCredentialAccountResult> {
 	const repo = repository ?? credentialPoolRepository(storage);
 	const accounts = await getCredentialAccounts(storage, provider, env, repo);
 	const account = accounts.find((candidate) => candidate.name === name);
@@ -392,34 +396,48 @@ export async function removeCredentialAccount(
 	}
 	const next = await storage.read(provider);
 	if (next === undefined) throw new Error(`No stored credential for provider: ${provider}`);
-	if (normalizeProviderId(provider) === "anthropic-subscription") await signOutClaudeCliSlot(storage, next, name, env);
+	const notice =
+		normalizeProviderId(provider) === "anthropic-subscription"
+			? await signOutClaudeCliSlot(storage, next, name, env)
+			: undefined;
 	const removed = removeSlot(next, name);
 	const remaining = removed === undefined ? undefined : withoutOrderedAccount(removed, name);
 	if (remaining === undefined) await storage.delete(provider);
 	else await storage.modify(provider, async () => remaining);
 	await repo.mutateSlotState(provider, "stored", name, () => undefined);
 	emitProviderAccountsChanged(provider);
+	return notice === undefined ? {} : { notice };
 }
+
+/** `notice`: the account was removed, but something about it could not be cleaned up and the user should know. */
+export type RemoveCredentialAccountResult = { readonly notice?: string };
 
 /**
  * A `claude-cli` slot is signed out of the CLI's own store and its account dir removed BEFORE the slot is
  * dropped: a failed sign-out throws and keeps the account, so no store entry outlives the account listing it.
+ * A slot that names no valid account dir, or whose dir is a link or file, cannot be signed out safely; it is
+ * dropped anyway and the returned notice says so, so a malformed slot can never get stuck.
  */
 async function signOutClaudeCliSlot(
 	storage: AuthStorage,
 	credential: Credential,
 	name: string,
 	env: NodeJS.ProcessEnv,
-): Promise<void> {
+): Promise<string | undefined> {
 	const slot = listSlots(credential).find((candidate) => candidate.name === name);
-	if (slot === undefined || stringField(slot, "store") !== "claude-cli") return;
+	if (slot === undefined || stringField(slot, "store") !== "claude-cli") return undefined;
 	const dirId = stringField(slot, "dirId");
-	if (dirId === undefined) throw new Error(`Claude account ${name} names no account dir; sign-out failed`);
 	const authPath = storage.getStoragePath();
-	await removeAccountDir({
-		agentDir: authPath ? dirname(authPath) : getAgentDir(),
+	const agentDir = authPath ? dirname(authPath) : getAgentDir();
+	if (dirId === undefined || !isValidAccountDirId(dirId)) {
+		return `Removed Claude account ${name} without a Claude sign-out: it names no valid account dir.`;
+	}
+	const outcome = await removeAccountDir({
+		agentDir,
 		dirId,
 		executable: resolveClaudeCodeExecutable({ ...defaultExecutableDeps(), env: (key) => env[key] }),
 		parentEnv: env,
 	});
+	if (outcome === "removed") return undefined;
+	return `Removed Claude account ${name} without a Claude sign-out: its account dir is a link or a file, left untouched at ${accountDirFor(agentDir, dirId)}.`;
 }

@@ -115,4 +115,16 @@ describe("CLI-store slot removal", () => {
 		expect(existsSync(accountDirFor(join(root, "agent"), DIR_ID))).toBe(true);
 		expect((await getCredentialAccounts(storage, PROVIDER, {}, repository)).map((a) => a.name)).toEqual(["work"]);
 	});
+
+	it.each([
+		["no dir id", { ...CLI_SLOT, dirId: undefined }],
+		["a malformed dir id", { ...CLI_SLOT, dirId: "../escape" }],
+	])("a slot with %s is dropped and reported, never stuck", async (_label, slot) => {
+		await storage.modify(PROVIDER, async () => ({ ...emptyCredential(), accounts: [slot] }));
+
+		const result = await removeCredentialAccount(storage, PROVIDER, "work", cliEnv("logout-fail"), repository);
+
+		expect(result.notice).toMatch(/without a Claude sign-out/);
+		expect(await getCredentialAccounts(storage, PROVIDER, {}, repository)).toEqual([]);
+	});
 });

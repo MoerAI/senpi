@@ -2,6 +2,7 @@ import { type CredentialStore, InMemoryCredentialStore } from "@earendil-works/p
 import { describe, expect, it } from "vitest";
 import {
 	type AccountSlot,
+	type LegacyAccountSlot,
 	type AnthropicSubscriptionCredential,
 	addAccount,
 	emptyCredential,
@@ -18,7 +19,7 @@ import { subscriptionLimits } from "../../../src/core/subscription-limits/limit-
 const PROVIDER = "anthropic-subscription";
 const T0 = Date.UTC(2026, 9, 16, 10, 0, 0);
 const HOUR = 3_600_000;
-function poolNamed(tag: string): AccountSlot[] {
+function poolNamed(tag: string): LegacyAccountSlot[] {
 	return [
 		{ name: `primary-${tag}`, refresh: "r-1", access: "a-1", expires: 1, source: "login" },
 		{ name: `secondary-${tag}`, refresh: "r-2", access: "a-2", expires: 1, source: "login" },

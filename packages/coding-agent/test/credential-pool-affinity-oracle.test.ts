@@ -6,7 +6,7 @@ import {
 	selectSlot,
 } from "@earendil-works/pi-ai/auth/pool/select";
 import { describe, expect, test } from "vitest";
-import type { AccountSlot } from "../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
+import type { AccountSlot, LegacyAccountSlot } from "../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 import {
 	rendezvousOrder as sdkRendezvousOrder,
 	selectAccount,
@@ -16,7 +16,7 @@ import { TURN_RETRY_SUPPRESSION_PREFIX as SDK_PREFIX } from "../src/core/extensi
 /** The exact hash the anthropic-subscription oracle uses, injected into the pool engine. */
 const sha256Hasher: SlotHasher = (input) => createHash("sha256").update(input).digest().readBigUInt64BE(0);
 
-function account(name: string, extra?: Partial<AccountSlot>): AccountSlot {
+function account(name: string, extra?: Partial<LegacyAccountSlot>): AccountSlot {
 	return {
 		name,
 		access: `${name}-access`,

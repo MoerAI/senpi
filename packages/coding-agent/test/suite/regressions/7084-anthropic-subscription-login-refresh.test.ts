@@ -3,6 +3,7 @@ import { appendLoginSlot } from "@earendil-works/pi-ai/auth/pool/slots";
 import { describe, expect, it } from "vitest";
 import {
 	type AccountSlot,
+	type LegacyAccountSlot,
 	type AnthropicSubscriptionCredential,
 	emptyCredential,
 	listAccounts,
@@ -25,7 +26,7 @@ function fakeFlow(credential: { access: string; refresh: string; expires: number
 	};
 }
 
-function slot(overrides: Partial<AccountSlot> & { name: string }): AccountSlot {
+function slot(overrides: Partial<LegacyAccountSlot> & { name: string }): AccountSlot {
 	return {
 		access: `${overrides.name}-access`,
 		refresh: `${overrides.name}-refresh`,

@@ -7,7 +7,10 @@ import { AUTH_BLOCK_REPROBE_MS } from "../../../src/core/credential-pool/auth-re
 import { classifyCredentialFailure } from "../../../src/core/credential-pool/classify.ts";
 import { listRotationSlots, streamWithCredentialRotation } from "../../../src/core/credential-pool/rotation-stream.ts";
 import { CredentialSlotRepository, slotHealth } from "../../../src/core/credential-pool/state-store.ts";
-import type { AccountSlot } from "../../../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
+import type {
+	AccountSlot,
+	LegacyAccountSlot,
+} from "../../../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 import {
 	AllAccountsBlockedError,
 	selectAccount,
@@ -16,7 +19,7 @@ import { runFailover } from "../../../src/core/extensions/builtin/anthropic-subs
 
 const NOW = 1_800_000_000_000;
 
-function account(name: string, extra: Partial<AccountSlot> = {}): AccountSlot {
+function account(name: string, extra: Partial<LegacyAccountSlot> = {}): AccountSlot {
 	return {
 		name,
 		refresh: `refresh-${name}`,
