@@ -2,7 +2,7 @@
  * senpi#4436 (S7): Claude sign-in runs through the bundled Claude Code CLI, so senpi ships no Anthropic OAuth
  * flow of its own: no PKCE login, no copy-code login, no loopback callback listener, no token refresh.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import * as loaderModule from "../src/auth/oauth/load.ts";
@@ -31,14 +31,14 @@ describe("senpi#4436 the bundled OAuth loaders expose no anthropic flow", () => 
 	});
 
 	it("exports no anthropic loader from the loader module or the oauth entry point", () => {
-		expect(Object.keys(loaderModule)).not.toContain("loadAnthropicOAuth");
-		expect(Object.keys(oauthEntry)).not.toContain("loadAnthropicOAuth");
+		const anthropicExports = (module: object) => Object.keys(module).filter((name) => /anthropic/i.test(name));
+		expect(anthropicExports(loaderModule)).toEqual([]);
+		expect(anthropicExports(oauthEntry)).toEqual([]);
 		expect(Object.keys(oauthEntry)).toContain("registerBundledOAuthFlowLoaders");
 	});
 
 	it("ships no Anthropic flow module and nothing that binds a callback port for Anthropic", () => {
-		expect(existsSync(sourceFile("../src/auth/oauth/anthropic.ts"))).toBe(false);
-		expect(existsSync(sourceFile("../src/auth/oauth/anthropic-callback-listener.ts"))).toBe(false);
+		expect(readdirSync(sourceFile("../src/auth/oauth/")).filter((file) => file.startsWith("anthropic"))).toEqual([]);
 		// The PKCE helper stays: other providers' logins still use it.
 		expect(existsSync(sourceFile("../src/auth/oauth/pkce.ts"))).toBe(true);
 	});

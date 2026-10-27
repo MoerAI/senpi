@@ -101,8 +101,9 @@ async function runTurn(
 
 describe("senpi#4436 no anthropic-subscription code path refreshes a token", () => {
 	it("ships no refresh entry points", () => {
-		expect(authLaneModule).not.toHaveProperty("authLaneRefresher");
-		expect(accountsModule).not.toHaveProperty("refreshSlot");
+		const refreshExports = (module: object) => Object.keys(module).filter((name) => /refresh/i.test(name));
+		expect(refreshExports(authLaneModule)).toEqual([]);
+		expect(refreshExports(accountsModule)).toEqual([]);
 	});
 
 	it("a turn never redeems the refresh token of an expired account from the retired login", async () => {
@@ -122,7 +123,7 @@ describe("senpi#4436 no anthropic-subscription code path refreshes a token", () 
 	it("the usage poll lists no account from the retired login and asks no token endpoint", async () => {
 		const calls = tokenEndpointCalls();
 		const storage = storeWithRetiredLogin(1);
-		const accounts = await listPollAccounts({ store: storage, env: () => undefined, now: () => 10 } as never);
+		const accounts = await listPollAccounts({ store: storage, env: () => undefined, now: () => 10 });
 		expect(accounts.filter((account) => account.provider === PROVIDER)).toEqual([]);
 		expect(calls()).toBe(0);
 	});
