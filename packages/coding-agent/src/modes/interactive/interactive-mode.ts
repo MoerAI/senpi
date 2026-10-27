@@ -5637,10 +5637,6 @@ export class InteractiveMode {
 				this.ui.requestRender();
 				break;
 
-			case "agent_settled":
-				await this.checkShutdownRequested();
-				break;
-
 			case "agent_idle":
 				this.agentIdle = true;
 				this.providerErrors?.finish();
@@ -5648,6 +5644,8 @@ export class InteractiveMode {
 					this.clearStatusIndicator("working");
 				}
 				this.ui.requestRender();
+				// After the settle-time extension handlers drained, not at agent_settled while they may still run (omo#11419).
+				await this.checkShutdownRequested();
 				break;
 
 			case "session_recovered":

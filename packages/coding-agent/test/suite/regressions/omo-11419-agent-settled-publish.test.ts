@@ -9,7 +9,7 @@ import { clearTimeout as clearRealTimeout, setTimeout as setRealTimeout } from "
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionHandlerStall } from "../../../src/core/extensions/handler-budget.ts";
-import type { ExtensionAPI } from "../../../src/core/extensions/types.ts";
+import type { ExtensionAPI, ExtensionError } from "../../../src/core/extensions/types.ts";
 import type { Settings } from "../../../src/core/settings-manager.ts";
 import { createHarness, getAssistantTexts, type Harness } from "../harness.ts";
 
@@ -133,6 +133,8 @@ describe("oh-my-openagent#11419 agent_settled publishes without waiting on exten
 			extensionEventHandlerWarnMs: 0,
 			extensionEventHandlerTimeoutMs: 0,
 		});
+		const errors: ExtensionError[] = [];
+		created.getExtensionRunner().onError((error) => errors.push(error));
 		created.setResponses([fauxAssistantMessage([fauxText("first")]), fauxAssistantMessage([fauxText("second")])]);
 		void created.session.prompt("one");
 		await withinRealTime(settled, "the first settle");
@@ -149,5 +151,68 @@ describe("oh-my-openagent#11419 agent_settled publishes without waiting on exten
 				stage: "released",
 			}),
 		);
+		// and the user saw no error: a person moving on is not a failure, and no deadline fired
+		expect(errors).toEqual([]);
+	}, 30_000);
+
+	it("starts a prompt sent synchronously from an agent_settled subscriber without waiting on the held handler", async () => {
+		// given a same-process subscriber that prompts inside its agent_settled callback, before any handler started
+		const { created } = await startWithHeldSettledHandler({
+			extensionEventHandlerWarnMs: 0,
+			extensionEventHandlerTimeoutMs: 0,
+		});
+		const errors: ExtensionError[] = [];
+		created.getExtensionRunner().onError((error) => errors.push(error));
+		created.setResponses([fauxAssistantMessage([fauxText("first")]), fauxAssistantMessage([fauxText("second")])]);
+		const subscribed = Promise.withResolvers<void>();
+		let second: Promise<void> | undefined;
+		created.session.subscribe((event) => {
+			if (event.type !== "agent_settled" || second !== undefined) return;
+			second = created.session.prompt("two");
+			subscribed.resolve();
+		});
+
+		// when the first turn settles
+		void created.session.prompt("one");
+		await withinRealTime(subscribed.promise, "the subscriber prompt");
+		if (second === undefined) throw new Error("the subscriber did not prompt");
+		await withinRealTime(second, "the subscriber prompt to finish");
+
+		// then the second turn ran and nothing was reported as an error
+		expect(getAssistantTexts(created)).toEqual(["first", "second"]);
+		expect(errors).toEqual([]);
+	}, 30_000);
+
+	it("does not wait on a second slow agent_settled handler after a person's prompt released the first", async () => {
+		// given two extensions whose agent_settled handlers both hold the first settle
+		const holds: Array<() => void> = [];
+		const created = await createHarness({
+			settings: { extensionEventHandlerWarnMs: 0, extensionEventHandlerTimeoutMs: 0 },
+			extensionFactories: [0, 1].map(() => (pi: ExtensionAPI) => {
+				let holding = false;
+				pi.on("agent_settled", async () => {
+					if (holding) return;
+					holding = true;
+					await new Promise<void>((resolve) => holds.push(resolve));
+				});
+			}),
+		});
+		harness = created;
+		release = () => {
+			for (const resolve of holds) resolve();
+		};
+		const settled = Promise.withResolvers<void>();
+		created.session.subscribe((event) => {
+			if (event.type === "agent_settled") settled.resolve();
+		});
+		created.setResponses([fauxAssistantMessage([fauxText("first")]), fauxAssistantMessage([fauxText("second")])]);
+		void created.session.prompt("one");
+		await withinRealTime(settled.promise, "the first settle");
+
+		// when the person sends the next message
+		await withinRealTime(created.session.prompt("two"), "the next prompt to finish");
+
+		// then the next turn ran without waiting on either held handler
+		expect(getAssistantTexts(created)).toEqual(["first", "second"]);
 	}, 30_000);
 });
