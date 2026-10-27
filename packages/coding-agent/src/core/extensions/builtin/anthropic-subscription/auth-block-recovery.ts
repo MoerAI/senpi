@@ -1,8 +1,10 @@
 import type { CredentialStore } from "@earendil-works/pi-ai";
+import { AUTH_BLOCK_REPROBE_MS } from "../../../credential-pool/auth-reprobe.ts";
 import {
 	type AccountSlot,
 	type AnthropicSubscriptionCredential,
 	authGrantDigest,
+	type ClaudeCliAccountSlot,
 	type LegacyAccountSlot,
 	type SlotRefresher,
 } from "./accounts.ts";
@@ -24,6 +26,11 @@ export type AuthBlockRecoveryInput = {
 	 * unavailable, a busy store): the slot stays blocked and the next request tries it again.
 	 */
 	readonly transientError: (error: unknown) => Error;
+	/**
+	 * Whether `claude auth status` reports a login for a `claude-cli` account (senpi#4436). Such an account
+	 * holds no grant to redeem: at its re-probe time a login clears the block, anything else keeps it.
+	 */
+	readonly claudeCliSignedIn?: (slot: ClaudeCliAccountSlot) => Promise<boolean>;
 };
 
 /**
@@ -78,6 +85,43 @@ function isProbeDue(slot: AccountSlot, now: number): boolean {
 	return slot.blockedUntil === undefined || slot.blockedUntil <= now;
 }
 
+function isClaudeCliProbeDue(slot: AccountSlot, now: number): slot is ClaudeCliAccountSlot {
+	return (
+		slot.store === "claude-cli" &&
+		slot.blockReason === "auth_error" &&
+		slot.signInRequired === undefined &&
+		isProbeDue(slot, now)
+	);
+}
+
+async function probeClaudeCliSlot(
+	input: AuthBlockRecoveryInput,
+	slot: ClaudeCliAccountSlot,
+	signedIn: (slot: ClaudeCliAccountSlot) => Promise<boolean>,
+): Promise<void> {
+	const loggedIn = await signedIn(slot);
+	input.signal.throwIfAborted();
+	await input.store.modify(input.providerId, async (current) => {
+		if (current?.type !== "oauth") return current;
+		const credential = current as AnthropicSubscriptionCredential;
+		const stored = credential.accounts?.find((candidate) => candidate.name === slot.name);
+		if (!stored || !isClaudeCliProbeDue(stored, input.now)) return current;
+		const { blockReason: _reason, blockedUntil: _until, blockedAt: _at, ...unblocked } = stored;
+		const next: AccountSlot = loggedIn
+			? unblocked
+			: {
+					...stored,
+					blockReason: "auth_error",
+					blockedUntil: input.now + AUTH_BLOCK_REPROBE_MS,
+					blockedAt: input.now,
+				};
+		return {
+			...credential,
+			accounts: (credential.accounts ?? []).map((candidate) => (candidate.name === slot.name ? next : candidate)),
+		};
+	});
+}
+
 /**
  * Recovers before anything probes a rejected token: an account whose auth block
  * is due for its re-probe (senpi#3264) is refreshed first, so the probe sends
@@ -88,11 +132,22 @@ export async function recoverAuthBlockedSlots(input: AuthBlockRecoveryInput): Pr
 	const candidates = input.accounts.some(input.isUsable)
 		? recoverable.filter((slot) => isProbeDue(slot, input.now))
 		: recoverable;
-	if (candidates.length === 0) return [...input.accounts];
+	const signedIn = input.claudeCliSignedIn;
+	const probes = signedIn === undefined ? [] : input.accounts.filter((slot) => isClaudeCliProbeDue(slot, input.now));
+	if (candidates.length === 0 && probes.length === 0) return [...input.accounts];
 	let transientFailure: unknown;
 	for (const candidate of candidates) {
 		try {
 			await recoverSlot(input, candidate.name);
+		} catch (error) {
+			input.signal.throwIfAborted();
+			transientFailure = error;
+		}
+	}
+	for (const probe of probes) {
+		if (signedIn === undefined) break;
+		try {
+			await probeClaudeCliSlot(input, probe, signedIn);
 		} catch (error) {
 			input.signal.throwIfAborted();
 			transientFailure = error;

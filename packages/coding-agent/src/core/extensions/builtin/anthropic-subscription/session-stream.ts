@@ -108,6 +108,7 @@ async function createResidentAttempt(
 		modelId: input.model.id,
 		fingerprint,
 		transcriptAvailable,
+		// claude-cli accounts share one transcript root through their `projects` link, like oauth-slots.
 		crossAccountResumeSupported: auth.authLane !== "config-dir",
 		idleExpired: existing ? isIdleExpired(existing) : false,
 		invalidationReason: bindingInvalidationReason(sessionId),
@@ -173,6 +174,15 @@ async function createResidentAttempt(
 			...fingerprint,
 			options: auth.options,
 		});
+	}
+	// A claude-cli account checks what its CLI initialized with before any prompt is pushed (senpi#4436).
+	if (auth.verifyInitialization && entry.query.initializationResult) {
+		try {
+			await auth.verifyInitialization(await entry.query.initializationResult());
+		} catch (error) {
+			closeSession(sessionId, "initialization_refused");
+			throw error;
+		}
 	}
 	// Every branch above either reuses a subprocess whose token matched (delta)
 	// or spawned one with auth.options, so the entry now runs on this token.

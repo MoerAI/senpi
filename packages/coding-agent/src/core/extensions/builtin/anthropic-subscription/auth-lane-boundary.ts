@@ -3,6 +3,8 @@ import { loadAnthropicOAuth } from "@earendil-works/pi-ai/oauth";
 import { getAgentDir } from "../../../../config.ts";
 import { AuthStorage } from "../../../auth-storage.ts";
 import type { SlotRefresher } from "./accounts.ts";
+import { type ClaudeCliAuthStatus, readClaudeCliAuthStatus } from "./claude-cli-auth-status.ts";
+import { defaultExecutableDeps, resolveClaudeCodeExecutable } from "./executable.ts";
 
 type AuthLaneBoundary = {
 	createStore: () => CredentialStore;
@@ -10,6 +12,8 @@ type AuthLaneBoundary = {
 	getAgentDir: () => string;
 	now: () => number;
 	refresher: SlotRefresher;
+	/** `claude auth status` for one CLI-store account dir: the auth-block re-probe of a `claude-cli` slot. */
+	claudeCliAuthStatus: (configDir: string, env: NodeJS.ProcessEnv) => Promise<ClaudeCliAuthStatus>;
 };
 
 async function refreshWithAnthropicOAuth(refresh: string, signal: AbortSignal) {
@@ -24,6 +28,12 @@ const defaultBoundary: AuthLaneBoundary = {
 	getAgentDir,
 	now: () => Date.now(),
 	refresher: refreshWithAnthropicOAuth,
+	claudeCliAuthStatus: (configDir, env) =>
+		readClaudeCliAuthStatus({
+			executable: resolveClaudeCodeExecutable({ ...defaultExecutableDeps(), env: (key) => env[key] }),
+			configDir,
+			parentEnv: env,
+		}),
 };
 export let activeBoundary = defaultBoundary;
 

@@ -6,6 +6,7 @@ import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./account-management.ts";
 import {
 	type AccountSlot,
 	type AnthropicSubscriptionCredential,
+	type ClaudeCliAccountSlot,
 	emptyCredential,
 	envSlotToken,
 	type LegacyAccountSlot,
@@ -17,12 +18,16 @@ import { type AuthenticatedAttemptInput, createAttemptMessages, type RetainableA
 import { recoverAuthBlockedSlots } from "./auth-block-recovery.ts";
 import { activeBoundary } from "./auth-lane-boundary.ts";
 import { hasRequestOauthToken, mergeRequestAuthEnvironment, stripManagedAuthEnvironment } from "./auth-environment.ts";
+import { accountDirFor, claudeCliSharedRoot, ensureAccountDir } from "./claude-cli-account-dir.ts";
+import { buildClaudeCliEnvironment } from "./claude-cli-environment.ts";
+import { profileChanged, verifyClaudeCliInitialization } from "./claude-cli-token-source.ts";
 import { writeConfigDirCredential } from "./config-dir-credentials.ts";
 import { asksLegacyLongContext } from "./context-window.ts";
 import { runFailover } from "./failover.ts";
 import { markLongContextRefused } from "./long-context.ts";
 import { classifyForRequest, retryAtStandardWindowOnce, sdkFailure, visibleSdkMessage } from "./long-context-retry.ts";
 import { isGrantRejected, refreshFailure } from "./refresh-failure.ts";
+import type { AnthropicSubscriptionAuthLane } from "./options.ts";
 import type { Options, SDKMessage, SdkQuery } from "./sdk-boundary.ts";
 import type { AnthropicSubscriptionProviderSettings, AnthropicSubscriptionTokenInjection } from "./settings.ts";
 
@@ -36,12 +41,16 @@ const NO_MANAGED_ACCOUNTS_ERROR =
 	"authentication_failed: No Anthropic Subscription accounts configured for the managed lane; " +
 	"run /login anthropic-subscription or set CLAUDE_CODE_OAUTH_TOKEN";
 
+/** Every configured account still needs its sign-in moved to the Claude CLI (senpi#4436). */
+const SIGN_IN_AGAIN_ERROR =
+	"authentication_failed: Sign in with Claude again: run /login anthropic-subscription to sign each account in again";
+
 export type { AuthenticatedAttemptInput } from "./auth-attempt.ts";
 
 export type AuthenticatedQueryInput = {
 	prompt: Parameters<SdkQuery>[0]["prompt"];
 	query: SdkQuery;
-	buildOptions: (lane: AnthropicSubscriptionTokenInjection) => Options;
+	buildOptions: (lane: AnthropicSubscriptionAuthLane) => Options;
 	providerSettings: AnthropicSubscriptionProviderSettings;
 	/** Effective request auth environment; overrides the host for account discovery and SDK spawn. */
 	env?: Record<string, string>;
@@ -140,14 +149,55 @@ async function continueWhileStoreBusy(pool: ManagedPool, slot: LegacyAccountSlot
 	throw busy;
 }
 
+function laneFor(pool: ManagedPool, slot: AccountSlot): AnthropicSubscriptionAuthLane {
+	return slot.store === "claude-cli" ? "claude-cli" : pool.lane;
+}
+
+/**
+ * A claude-cli account turn: no token, only the account's own config dir (its links repaired first, so the
+ * transcript lands in the shared root). Every inherited auth variable is stripped, so the CLI can only use
+ * the login in its own store.
+ */
+function prepareClaudeCliSlot(
+	pool: ManagedPool,
+	slot: ClaudeCliAccountSlot,
+): { env: Record<string, string | undefined>; credentialDigest: string } {
+	const accountDir = ensureAccountDir({
+		agentDir: activeBoundary.getAgentDir(),
+		dirId: slot.dirId,
+		sharedRoot: claudeCliSharedRoot(pool.environment),
+	});
+	const env = buildClaudeCliEnvironment(pool.environment, { configDir: accountDir });
+	return { env, credentialDigest: createHash("sha256").update(`claude-cli\0${accountDir}`).digest("hex") };
+}
+
+/** Fails the attempt closed on an inherited credential, and stores the profile the CLI reported when it changed. */
+function claudeCliInitializationCheck(pool: ManagedPool, slot: ClaudeCliAccountSlot) {
+	return async (initialization: unknown): Promise<void> => {
+		const reported = verifyClaudeCliInitialization(initialization);
+		if (reported === undefined || !profileChanged(slot.profile, reported)) return;
+		const profile = { ...reported, checkedAt: activeBoundary.now() };
+		await pool.store.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (current) => {
+			if (current?.type !== "oauth") return current;
+			const credential = current as AnthropicSubscriptionCredential;
+			return {
+				...credential,
+				accounts: (credential.accounts ?? []).map((candidate) =>
+					candidate.name === slot.name && candidate.store === "claude-cli" ? { ...candidate, profile } : candidate,
+				),
+			};
+		});
+		slot.profile = profile;
+	};
+}
+
 async function prepareSlot(
 	pool: ManagedPool,
 	selected: AccountSlot,
 	signal: AbortSignal,
 ): Promise<{ env: Record<string, string | undefined>; credentialDigest: string }> {
 	const environment = pool.environment;
-	// A claude CLI account holds no token for this lane; its own lane arrives with senpi#4436 S4.
-	if (selected.store !== undefined) throw new Error("authentication_failed: selected OAuth token is unavailable");
+	if (selected.store === "claude-cli") return prepareClaudeCliSlot(pool, selected);
 	const slot = selected;
 	if (slot.source !== "env" && activeBoundary.now() >= slot.expires - EXPIRING_WITHIN_MS) {
 		try {
@@ -213,7 +263,14 @@ export async function* queryWithAuthLane(input: AuthenticatedQueryInput): AsyncG
 		isUsable: (account) => !isBlockedFor(account, activeBoundary.now(), input.model),
 		now: activeBoundary.now(),
 		transientError: (error) => (error instanceof CredentialStoreBusyError ? error : refreshFailure(error)),
+		claudeCliSignedIn: async (slot) => {
+			const configDir = accountDirFor(activeBoundary.getAgentDir(), slot.dirId);
+			return (await activeBoundary.claudeCliAuthStatus(configDir, pool.environment)).state === "signed_in";
+		},
 	});
+	// A slot that must sign in again is never selected, like a removed one; with none left the turn says so.
+	pool.accounts = pool.accounts.filter((account) => account.store !== "claude-cli" || !account.signInRequired);
+	if (pool.accounts.length === 0) throw new Error(SIGN_IN_AGAIN_ERROR);
 	let askedLegacyLongContext = false;
 	yield* runFailover({
 		accounts: pool.accounts,
@@ -234,7 +291,8 @@ export async function* queryWithAuthLane(input: AuthenticatedQueryInput): AsyncG
 				...(input.model === undefined ? {} : { model: input.model }),
 			}),
 		runAttempt: async (slot) => {
-			const options = input.buildOptions(pool.lane);
+			const authLane = laneFor(pool, slot);
+			const options = input.buildOptions(authLane);
 			askedLegacyLongContext = asksLegacyLongContext(options.model);
 			const accounts = pool.accounts.map((account) => ({ ...account }));
 			const prepared = await prepareSlot(pool, slot, signal);
@@ -242,10 +300,11 @@ export async function* queryWithAuthLane(input: AuthenticatedQueryInput): AsyncG
 			return createAttemptMessages(input, {
 				accountName: slot.name,
 				accounts,
-				authLane: pool.lane,
+				authLane,
 				pinSource: input.pinnedAccount !== undefined ? "cli" : pool.pinSource,
 				options,
 				credentialDigest: prepared.credentialDigest,
+				...(slot.store === "claude-cli" ? { verifyInitialization: claudeCliInitializationCheck(pool, slot) } : {}),
 			});
 		},
 		classify: (error) => classifyForRequest(error, askedLegacyLongContext),

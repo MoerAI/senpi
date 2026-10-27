@@ -4,13 +4,13 @@ import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./account-management.ts";
 import { attemptAccountContext, logAttemptAccount, rememberAccountContext } from "./account-context.ts";
 import type { AccountSlot } from "./accounts.ts";
 import type { PinSource } from "./affinity.ts";
+import type { AnthropicSubscriptionAuthLane } from "./options.ts";
 import type { Options, SDKMessage, SdkQuery } from "./sdk-boundary.ts";
-import type { AnthropicSubscriptionTokenInjection } from "./settings.ts";
 
 export type AuthenticatedAttemptInput = {
 	accountName: string;
 	accounts: readonly AccountSlot[];
-	authLane: AnthropicSubscriptionTokenInjection;
+	authLane: AnthropicSubscriptionAuthLane;
 	pinSource?: PinSource;
 	options: Options;
 	/**
@@ -20,6 +20,11 @@ export type AuthenticatedAttemptInput = {
 	 * answer 401 "token has been revoked".
 	 */
 	credentialDigest?: string;
+	/**
+	 * Checks the CLI's `initializationResult()` before the prompt is consumed; throwing fails the attempt closed
+	 * (a `claude-cli` account that initialized on an inherited credential, senpi#4436).
+	 */
+	verifyInitialization?: (initialization: unknown) => Promise<void>;
 };
 
 export interface RetainableAttempt<TEvent> {
@@ -48,8 +53,13 @@ async function* retainedAttemptMessages<TEvent>(attempt: RetainableAttempt<TEven
 	}
 }
 
-async function* closingQueryMessages(query: ReturnType<SdkQuery>): AsyncGenerator<SDKMessage> {
+async function* closingQueryMessages(
+	query: ReturnType<SdkQuery>,
+	verifyInitialization: AuthenticatedAttemptInput["verifyInitialization"],
+): AsyncGenerator<SDKMessage> {
 	try {
+		if (verifyInitialization && query.initializationResult)
+			await verifyInitialization(await query.initializationResult());
 		for await (const message of query) yield message;
 	} finally {
 		query.close();
@@ -72,7 +82,7 @@ export async function createAttemptMessages(
 			return recordingLimitWindows(retainedAttemptMessages(await input.createAttempt(auth)), auth);
 		const query = input.query({ prompt: input.prompt, options: auth.options });
 		input.onQuery?.(query);
-		return recordingLimitWindows(closingQueryMessages(query), auth);
+		return recordingLimitWindows(closingQueryMessages(query, auth.verifyInitialization), auth);
 	} catch (error) {
 		rememberAccountContext(error, account);
 		throw error;
