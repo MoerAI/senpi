@@ -1,8 +1,10 @@
 import type { TranscriptTransition } from "../../core/session-transcript-journal.ts";
 import type { CallFold } from "./compact-call-fold.ts";
+import { CALL_RECORDS } from "./compact-call-model.ts";
 import type { CompactColdOutcome } from "./compact-cold-operations.ts";
+import { COMPONENT_RECORDS } from "./compact-current-components.ts";
 import { type CanonicalUnit, laneTransition } from "./compact-lane-transitions.ts";
-import { protocolClone, protocolDepthLimitOf } from "./compact-protocol-depth.ts";
+import { assertProtocolDepth, protocolClone, protocolDepthLimitOf } from "./compact-protocol-depth.ts";
 import { CompactReadError } from "./compact-read-lease.ts";
 import { CompactSessionState, type CompactSessionStateOptions } from "./compact-session-state.ts";
 import type { CompactSettledMessages } from "./compact-settled-messages.ts";
@@ -35,6 +37,25 @@ export class CompactLaneCurrent {
 	bootstrap(options: CompactSessionStateOptions & { readonly epoch: string }): void {
 		this.retire();
 		this.state = new CompactSessionState(options);
+	}
+
+	/**
+	 * The one protocol depth check of a legacy record a compact fold would clone or serialize (the call and component
+	 * folds, the settled terminal of a `message_end`), run before any of them (RULING-59 C). A refused record is counted
+	 * and reported here, once, whether or not the current state is still live; a cycle ends the current state. Either
+	 * way the record must change no compact component.
+	 */
+	admits(record: object, type: string): boolean {
+		if (type !== "message_end" && !CALL_RECORDS.has(type) && !COMPONENT_RECORDS.has(type)) return true;
+		try {
+			assertProtocolDepth(record);
+			return true;
+		} catch (cause) {
+			const limit = protocolDepthLimitOf(cause);
+			if (limit === undefined) this.fail(cause);
+			else this.refuse(limit);
+			return false;
+		}
 	}
 
 	fold(unit: CanonicalUnit, sequence: number, turnId: string | null = null): void {
@@ -166,15 +187,14 @@ export class CompactLaneCurrent {
 	fail(cause: unknown): void {
 		if (!this.state) return;
 		const limit = protocolDepthLimitOf(cause);
-		if (limit !== undefined) {
-			this.refused += 1;
-			process.stderr.write(
-				`senpi rpc acceptance: compact record refused: unsupported_value (depth above ${limit})\n`,
-			);
-			return;
-		}
+		if (limit !== undefined) return this.refuse(limit);
 		const reason = cause instanceof Error && "reason" in cause ? String(cause.reason) : String(cause);
 		process.stderr.write(`senpi rpc acceptance: compact current state unavailable: ${reason}\n`);
 		this.retire();
+	}
+
+	private refuse(limit: number): void {
+		this.refused += 1;
+		process.stderr.write(`senpi rpc acceptance: compact record refused: unsupported_value (depth above ${limit})\n`);
 	}
 }

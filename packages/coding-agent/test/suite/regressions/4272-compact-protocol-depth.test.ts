@@ -111,6 +111,51 @@ it("a call record over the limit is refused and the calls component keeps its la
 	}
 });
 
+// senpi#4557 review MEDIUM and LOW-4: the settled terminal is serialized from the incoming message_end, so the
+// protocol check refuses that record before it, typed and counted, and nothing of it reaches the settled terminals;
+// above the engine limit the lane throws no RangeError.
+it.each([2_000, ENGINE_BREAKING])(
+	"a toolResult message_end %i deep never reaches the settled terminals",
+	async (depth) => {
+		const rig = await callsRig();
+		const lines = reports();
+		try {
+			const kept = rig.toolResult("c0", "bash", "kept");
+			const record = {
+				type: "message_end",
+				message: {
+					role: "toolResult",
+					toolCallId: "c1",
+					toolName: "bash",
+					content: nested(depth - 2),
+					timestamp: 1,
+				},
+			};
+			rig.producer.observe(record);
+			const carrier = recoveryCarrier(record);
+			if (!carrier) throw new Error("producer failed to mint");
+			expect(
+				refusal(() => rig.lane.accept(record, carrier)),
+				"no untyped RangeError out of the lane",
+			).toBeUndefined();
+			await available(rig);
+			const root = rig.lane.freeze();
+			try {
+				const ids = (await rig.lane.readSettled(root)).settledMessages.map((message) => message.messageId);
+				expect(ids).toEqual([kept.messageId]);
+			} finally {
+				rig.lane.release(root);
+			}
+			expect(rig.lane.storageStatus().refusedRecords, "one event, one refusal").toBe(1);
+			expect(lines()).toEqual([
+				`senpi rpc acceptance: compact record refused: unsupported_value (depth above ${LIMIT})\n`,
+			]);
+		} finally {
+			await rig.close();
+		}
+	},
+);
+
 it("a canonical record over the limit is refused typed at the pairing, and the lane keeps its state", async () => {
 	const rig = await callsRig();
 	const lines = reports();

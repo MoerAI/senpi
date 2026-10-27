@@ -447,7 +447,7 @@ export class SessionWorkerClient {
 					if (message.bootstrap) lane?.bootstrap(message.bootstrap);
 					else {
 						lane?.applyTranscript(message.transitions ?? []);
-						lane?.accept(message.record, message.recovery, frameUnit(message));
+						lane?.accept(message.record, message.recovery, frameUnit(message), message.canonicalRefused === true);
 					}
 					if (!writer.enqueue(sessionId, message.record)) {
 						acknowledge(message.signal, false);

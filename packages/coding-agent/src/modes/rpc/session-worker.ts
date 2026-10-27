@@ -25,7 +25,7 @@ import { canonicalSessionPath } from "./session-path-key.ts";
 import type { RpcSessionEntry, RpcSessionRegistry } from "./session-registry.ts";
 import { resolveMovedProfile } from "./session-registry-moved-path.ts";
 import { createWorkerCredit } from "./session-worker-credit.ts";
-import { type CanonicalControl, carriedCanonical } from "./compact-canonical-pairing.ts";
+import { type CanonicalControl, carriedCanonical, carriedRefusal } from "./compact-canonical-pairing.ts";
 import { protocolDepthLimitOf } from "./compact-protocol-depth.ts";
 import { CompactProducerStamp } from "./compact-producer-stamp.ts";
 import {
@@ -132,6 +132,7 @@ class WorkerEventWriter extends SessionEventWriter {
 					...stamp.stamp(recovery, canonical, record),
 					recovery,
 					...(canonical ? { canonical } : {}),
+					...(carriedRefusal(record) ? { canonicalRefused: true as const } : {}),
 					...(replaced
 						? {
 								bootstrap: {

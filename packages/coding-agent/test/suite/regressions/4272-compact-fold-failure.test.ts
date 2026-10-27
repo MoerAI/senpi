@@ -151,6 +151,50 @@ it("worker: a canonical_unavailable frame carrying the depth limit keeps the epo
 	}
 }, 60_000);
 
+// senpi#4557 review LOW-2, worker half: the output frame of an event whose canonical record the isolate refused says
+// so, and its legacy record (a terminal too deep for the settled store) folds nothing and is not counted again.
+it("worker: an event refused on both projections is counted once and its terminal is not settled", async () => {
+	const { host, lane, ordinal, deliver } = await workerLane();
+	vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+	try {
+		let content: unknown = "leaf";
+		for (let level = 0; level < 2_000; level++) content = [content];
+		const limit = COMPACT_PROTOCOL_MAX_DEPTH;
+		const refusal: SessionWorkerToHost = {
+			type: "canonical_unavailable",
+			ordinal: ordinal(),
+			reason: `compact write refused (unsupported_value: depth above ${limit})`,
+			limit,
+			signal: new SharedArrayBuffer(4),
+		};
+		expect(await deliver(refusal)).toBe(WORKER_CREDIT_CODES.granted);
+		const at = ordinal();
+		const frame: OutputFrame = {
+			type: "output",
+			ordinal: at,
+			record: { type: "message_end", message: { role: "toolResult", toolCallId: "c1", content, timestamp: 1 } },
+			recovery: { messageId: "m-deep", epoch: lane.recoveryEpoch },
+			canonicalRefused: true,
+			signal: new SharedArrayBuffer(4),
+			activity: { busy: false, streaming: false },
+		};
+		expect(await deliver(frame)).toBe(WORKER_CREDIT_CODES.granted);
+		await host.writer.flush();
+		expect(host.failures).toEqual([]);
+		expect(lane.storageStatus().refusedRecords).toBe(1);
+		const root = lane.freeze();
+		try {
+			expect(root.current).toBeDefined();
+			const { settledMessages } = await lane.readSettled(root);
+			expect(settledMessages.map((message) => message.messageId)).not.toContain("m-deep");
+		} finally {
+			lane.release(root);
+		}
+	} finally {
+		await host.dispose();
+	}
+}, 60_000);
+
 // senpi#4439 review LOW-5: a canonical-only frame is credited under the same condition as an output frame.
 it("an unbound client denies a canonical frame exactly as it denies an output frame", async () => {
 	vi.stubEnv(FLAG, "1");

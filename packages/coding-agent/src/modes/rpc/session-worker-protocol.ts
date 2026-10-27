@@ -124,6 +124,8 @@ export type SessionWorkerToHost =
 			bootstrap?: SessionBootstrap;
 			/** The record's canonical projection, folded in the same unit; `firstOrdinal` is the producer's binding. */
 			canonical?: CanonicalRecord;
+			/** The isolate refused this event's canonical record at the protocol depth limit and already sent that refusal. */
+			canonicalRefused?: true;
 			firstOrdinal?: number;
 			connection?: string;
 			signal: SharedArrayBuffer;
