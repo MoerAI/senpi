@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readlinkSync, rmSync, type Stats, symlinkSync, unlinkSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readlinkSync, type Stats, symlinkSync, unlinkSync } from "node:fs";
+import { lstat, mkdir, rm, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { logoutClaudeCli } from "./claude-cli-auth-status.ts";
@@ -59,9 +60,9 @@ function exists(path: string): boolean {
 	}
 }
 
-function lstatOrUndefined(path: string): Stats | undefined {
+async function lstatOrUndefined(path: string): Promise<Stats | undefined> {
 	try {
-		return lstatSync(path);
+		return await lstat(path);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw error;
@@ -139,8 +140,8 @@ export async function removeAccountDir(options: RemoveAccountDirOptions): Promis
 	const accountDir = accountDirFor(options.agentDir, options.dirId);
 	options.signal?.throwIfAborted();
 	// A missing dir is recreated empty: the CLI runs inside its config dir, and its store entry is keyed on the path.
-	if (lstatOrUndefined(accountDir) === undefined) mkdirSync(accountDir, { recursive: true, mode: 0o700 });
-	if (!lstatOrUndefined(accountDir)?.isDirectory()) return "not_an_account_dir";
+	if ((await lstatOrUndefined(accountDir)) === undefined) await mkdir(accountDir, { recursive: true, mode: 0o700 });
+	if (!(await lstatOrUndefined(accountDir))?.isDirectory()) return "not_an_account_dir";
 	const signedOut =
 		options.executable !== undefined &&
 		(await logoutClaudeCli(
@@ -155,8 +156,8 @@ export async function removeAccountDir(options: RemoveAccountDirOptions): Promis
 	options.signal?.throwIfAborted();
 	for (const entry of CLAUDE_CLI_SHARED_LINKS) {
 		const path = join(accountDir, entry);
-		if (isLink(path)) unlinkSync(path);
+		if ((await lstatOrUndefined(path))?.isSymbolicLink()) await unlink(path);
 	}
-	rmSync(accountDir, { recursive: true, force: true });
+	await rm(accountDir, { recursive: true, force: true });
 	return signedOut ? "removed" : "removed_without_sign_out";
 }
