@@ -1395,7 +1395,7 @@ export class ModelRuntime implements Models {
 		const signal = operationSignal(options.signal);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
 			const storage = this.authStorage;
-			const notices = storage === undefined ? [] : await signOutClaudeCliSlotsForLogout(storage, providerId);
+			const notices = storage === undefined ? [] : await signOutClaudeCliSlotsForLogout(storage, providerId, process.env, signal);
 			await this.models.logout(providerId, { signal });
 			await this.synchronizeCredentialState(providerId, "logout", undefined, signal);
 			return { notices };

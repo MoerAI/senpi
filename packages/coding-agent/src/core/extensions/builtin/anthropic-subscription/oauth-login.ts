@@ -17,6 +17,7 @@ import {
 	type ClaudeCliAccountCheck,
 	type ClaudeCliAccountSlot,
 	emptyCredential,
+	isTokenSlot,
 	type LegacyAccountSlot,
 	listAccounts,
 	SENTINEL_OAUTH_FIELDS,
@@ -152,8 +153,10 @@ function toSlot(
  * overwrites the newest working slot in a multi-account pool.
  */
 function recoveryTargetName(existing: AccountSlot[]): string | undefined {
-	if (existing.length === 1) return existing[0]?.name;
-	const authBlocked = existing.filter((slot) => slot.blockReason === "auth_error");
+	// A Claude CLI account is never a refresh target: a token login cannot replace it.
+	const tokenSlots = existing.filter(isTokenSlot);
+	if (existing.length === 1) return tokenSlots[0]?.name;
+	const authBlocked = tokenSlots.filter((slot) => slot.blockReason === "auth_error");
 	if (authBlocked.length === 1) return authBlocked[0]?.name;
 	return undefined;
 }

@@ -117,6 +117,8 @@ export type RemoveAccountDirOptions = {
 	/** The `claude` executable; undefined when it could not be resolved, and the sign-out is then skipped. */
 	readonly executable: string | undefined;
 	readonly parentEnv?: NodeJS.ProcessEnv;
+	/** Aborting stops the sign-out and throws before anything is deleted; the dir and slot are kept. */
+	readonly signal?: AbortSignal;
 };
 
 /**
@@ -135,16 +137,22 @@ export type RemoveAccountDirOutcome = "removed" | "removed_without_sign_out" | "
  */
 export async function removeAccountDir(options: RemoveAccountDirOptions): Promise<RemoveAccountDirOutcome> {
 	const accountDir = accountDirFor(options.agentDir, options.dirId);
+	options.signal?.throwIfAborted();
 	// A missing dir is recreated empty: the CLI runs inside its config dir, and its store entry is keyed on the path.
 	if (lstatOrUndefined(accountDir) === undefined) mkdirSync(accountDir, { recursive: true, mode: 0o700 });
 	if (!lstatOrUndefined(accountDir)?.isDirectory()) return "not_an_account_dir";
 	const signedOut =
 		options.executable !== undefined &&
-		(await logoutClaudeCli({
-			executable: options.executable,
-			configDir: accountDir,
-			...(options.parentEnv === undefined ? {} : { parentEnv: options.parentEnv }),
-		}).catch(() => false));
+		(await logoutClaudeCli(
+			{
+				executable: options.executable,
+				configDir: accountDir,
+				...(options.parentEnv === undefined ? {} : { parentEnv: options.parentEnv }),
+			},
+			undefined,
+			options.signal,
+		).catch(() => false));
+	options.signal?.throwIfAborted();
 	for (const entry of CLAUDE_CLI_SHARED_LINKS) {
 		const path = join(accountDir, entry);
 		if (isLink(path)) unlinkSync(path);
