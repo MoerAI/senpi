@@ -1655,6 +1655,12 @@ export interface BeforeAgentStartHandlerOptions {
 	 * the host skips previews (and with them the session-start prompt-cache prewarm).
 	 */
 	previewSafe?: boolean;
+	/**
+	 * Runs the handler after every handler registered without it, on real turns and previews alike;
+	 * run-last handlers keep their registration order among themselves. For additions that must close
+	 * the system prompt, such as MCP server instructions (senpi#4448).
+	 */
+	runLast?: boolean;
 }
 
 /** Registration options for `pi.on("context", handler, options)` and `pi.on("context_with_system", handler, options)`. */
@@ -3535,6 +3541,8 @@ export interface Extension {
 	handlers: Map<string, HandlerFn[]>;
 	/** `before_agent_start` handlers registered with `{ previewSafe: true }`. */
 	previewSafeHandlers?: WeakSet<HandlerFn>;
+	/** `before_agent_start` handlers registered with `{ runLast: true }`. */
+	runLastHandlers?: WeakSet<HandlerFn>;
 	/** `context`/`context_with_system` handlers registered with `{ mutatesMessages: false }`. */
 	nonMutatingContextHandlers?: WeakSet<HandlerFn>;
 	tools: Map<string, RegisteredTool>;
