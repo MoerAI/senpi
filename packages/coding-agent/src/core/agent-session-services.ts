@@ -88,6 +88,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	autoTitleSessions?: boolean;
 	promptSurface?: CreateAgentSessionOptions["promptSurface"];
 	browserEngine?: CreateAgentSessionOptions["browserEngine"];
+	toolRuntime?: CreateAgentSessionOptions["toolRuntime"];
 }
 
 /**
@@ -203,10 +204,16 @@ export async function createAgentSessionServices(
 	for (const registration of drainPendingProviderRegistrations(extensionsResult.runtime)) {
 		try {
 			if (registration.kind === "config") {
-				void modelRuntime.registerProvider(registration.name, registration.config, { refresh: false });
+				void modelRuntime.registerProvider(registration.name, registration.config, {
+					refresh: false,
+					extensionPath: registration.extensionPath,
+				});
 				registeredProviders.add(registration.name);
 			} else {
-				void modelRuntime.registerNativeProvider(registration.provider, { refresh: false });
+				void modelRuntime.registerNativeProvider(registration.provider, {
+					refresh: false,
+					extensionPath: registration.extensionPath,
+				});
 				registeredProviders.add(registration.provider.id);
 			}
 		} catch (error) {
@@ -287,5 +294,6 @@ export async function createAgentSessionFromServices(
 		autoTitleSessions: options.autoTitleSessions,
 		promptSurface: options.promptSurface,
 		browserEngine: options.browserEngine,
+		...(options.toolRuntime !== undefined ? { toolRuntime: options.toolRuntime } : {}),
 	});
 }

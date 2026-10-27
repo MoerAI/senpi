@@ -24,7 +24,7 @@ export { loadProjectContextFiles };
 import { canonicalizePath, isLocalPath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { bundledBuiltinExtensions } from "./bundled-resources.ts";
-import { loadProjectContextFiles } from "./context-files.ts";
+import { type ContextFile, loadProjectContextFiles } from "./context-files.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import {
 	type BuiltinExtensionFactory,
@@ -59,6 +59,7 @@ import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
 import { memoizeResolvedPaths, resolvedPathsMemoKey } from "./resolved-paths-memo.ts";
 import { SettingsManager } from "./settings-manager.ts";
+import type { SkillProvenance } from "./skill-access.ts";
 import type { Skill } from "./skills.ts";
 import { loadSkills } from "./skills.ts";
 import { warnIfLargeSkillCatalog } from "./skills-prompt.ts";
@@ -198,7 +199,7 @@ export interface ResourceLoader {
 	getSkills(): { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 	getPrompts(): { prompts: PromptTemplate[]; diagnostics: ResourceDiagnostic[] };
 	getThemes(): { themes: Theme[]; diagnostics: ResourceDiagnostic[] };
-	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }>; diagnostics?: ResourceDiagnostic[] };
+	getAgentsFiles(): { agentsFiles: ContextFile[]; diagnostics?: ResourceDiagnostic[] };
 	getSystemPrompt(): string | undefined;
 	getSystemPromptSource(): { path: string } | undefined;
 	getAppendSystemPrompt(): string[];
@@ -411,8 +412,8 @@ export interface DefaultResourceLoaderOptions {
 		themes: Theme[];
 		diagnostics: ResourceDiagnostic[];
 	};
-	agentsFilesOverride?: (base: { agentsFiles: Array<{ path: string; content: string }> }) => {
-		agentsFiles: Array<{ path: string; content: string }>;
+	agentsFilesOverride?: (base: { agentsFiles: ContextFile[] }) => {
+		agentsFiles: ContextFile[];
 	};
 }
 
@@ -452,8 +453,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		themes: Theme[];
 		diagnostics: ResourceDiagnostic[];
 	};
-	private agentsFilesOverride?: (base: { agentsFiles: Array<{ path: string; content: string }> }) => {
-		agentsFiles: Array<{ path: string; content: string }>;
+	private agentsFilesOverride?: (base: { agentsFiles: ContextFile[] }) => {
+		agentsFiles: ContextFile[];
 	};
 
 	private extensionsResult: LoadExtensionsResult;
@@ -463,7 +464,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private promptDiagnostics: ResourceDiagnostic[];
 	private themes: Theme[];
 	private themeDiagnostics: ResourceDiagnostic[];
-	private agentsFiles: Array<{ path: string; content: string }>;
+	private agentsFiles: ContextFile[];
 	private contextDiagnostics: ResourceDiagnostic[] = [];
 	private systemPrompt?: string;
 	private systemPromptSourcePath?: string;
@@ -578,7 +579,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return { themes: this.themes, diagnostics: this.themeDiagnostics };
 	}
 
-	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }>; diagnostics: ResourceDiagnostic[] } {
+	getAgentsFiles(): { agentsFiles: ContextFile[]; diagnostics: ResourceDiagnostic[] } {
 		return { agentsFiles: this.agentsFiles, diagnostics: this.contextDiagnostics };
 	}
 
@@ -683,6 +684,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 			await this.settingsManager.reload();
 		}
 		const { resolvedPaths, cliExtensionPaths } = await this.resolvePackagePaths({ refresh });
+		this.userSkillRoots = [...(resolvedPaths.skillRoots ?? []), ...(cliExtensionPaths.skillRoots ?? [])]
+			.filter((selection) => selection.kind === "user")
+			.map((selection) => selection.selectedRoot);
 		time("packageResolve", "extensions");
 		// Keep package metadata available for later extendResources() passes.
 		this.resourceMetadataByPath = new Map();
@@ -717,8 +721,25 @@ export class DefaultResourceLoader implements ResourceLoader {
 		// itself part of the harness keeps the system scope and root it resolved to.
 		const cliMetadata = (resource: ResolvedResource): PathMetadata =>
 			resource.metadata.scope === "system"
-				? { source: "cli", scope: "system", origin: "top-level", baseDir: resource.metadata.baseDir }
-				: { source: "cli", scope: "temporary", origin: "top-level" };
+				? {
+						source: "cli",
+						scope: "system",
+						origin: "top-level",
+						baseDir: resource.metadata.baseDir,
+						skillProvenance: {
+							kind: "user",
+							selectedRoot: resource.metadata.skillProvenance?.selectedRoot ?? resource.path,
+						},
+					}
+				: {
+						source: "cli",
+						scope: "temporary",
+						origin: "top-level",
+						skillProvenance: {
+							kind: "user",
+							selectedRoot: resource.metadata.skillProvenance?.selectedRoot ?? resource.path,
+						},
+					};
 		for (const resources of [
 			cliExtensionPaths.extensions,
 			cliExtensionPaths.skills,
@@ -1128,6 +1149,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		};
 	}
 
+	private userSkillRoots: string[] = [];
 	private updateSkillsFromPaths(skillPaths: string[], metadataByPath?: Map<string, PathMetadata>): void {
 		let skillsResult: { skills: Skill[]; diagnostics: ResourceDiagnostic[] };
 		if (this.noSkills && skillPaths.length === 0) {
@@ -1138,6 +1160,18 @@ export class DefaultResourceLoader implements ResourceLoader {
 				agentDir: this.agentDir,
 				skillPaths,
 				includeDefaults: false,
+				provenanceByPath: new Map<string, SkillProvenance>(
+					skillPaths.map((path) => [
+						path,
+						metadataByPath?.get(path)?.skillProvenance ?? { kind: "user", selectedRoot: path },
+					]),
+				),
+				userSkillRoots: [
+					...this.userSkillRoots,
+					...(this.settingsManager.getGlobalSettings().skills ?? [])
+						.filter((path) => !/^[!+-]/.test(path))
+						.map((path) => resolvePath(path, this.agentDir, { trim: true })),
+				],
 			});
 		}
 		const resolvedSkills = this.skillsOverride ? this.skillsOverride(skillsResult) : skillsResult;

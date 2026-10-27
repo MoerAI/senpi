@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "../../src/core/extensions/builtin/anthropic-subscription/index.ts";
+import type { AgentSessionRuntime } from "../../src/core/agent-session-runtime.ts";
+import type { ExtensionAPI } from "../../src/core/extensions/types.ts";
 import { createRpcConnectionHandler } from "../../src/modes/rpc/connection-handler.ts";
+import { createHarness } from "./harness.ts";
 import { makeHarness, makeSink } from "./rpc-connection-harness.ts";
 
 describe("RPC auth and connection handler contracts", () => {
@@ -132,6 +135,73 @@ describe("RPC auth and connection handler contracts", () => {
 			false,
 		);
 		expect(anthropic?.status).toMatchObject({ configured: expect.any(Boolean) });
+		await handler.dispose();
+	});
+
+	// senpi#4328 (omo-desktop-app#4711): a provider defined outside the app cannot be deleted in it,
+	// so each row says where it is defined.
+	it("tells where each listed provider is defined", async () => {
+		const customProvider = () => ({
+			baseUrl: "http://127.0.0.1:9/v1",
+			api: "openai-completions",
+			apiKey: "not-needed",
+			models: [
+				{
+					id: "custom-model",
+					name: "custom-model",
+					reasoning: false,
+					input: ["text" as const],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 32000,
+					maxTokens: 4000,
+				},
+			],
+		});
+		const harness = await createHarness({
+			modelsJson: { providers: { "file-box": customProvider() } },
+			extensionFactories: [
+				{
+					path: "/extensions/proxy-provider.ts",
+					factory: (pi) => pi.registerProvider("proxy-box", customProvider()),
+				},
+				...["anthropic-subscription", "cursor-cli-oauth", "vertex-model-garden"].map((id) => ({
+					path: `<builtin:${id}>`,
+					factory: (pi: ExtensionAPI) => pi.registerProvider(id, customProvider()),
+				})),
+				(pi) => pi.registerProvider("inline-box", customProvider()),
+				{
+					path: "<unknown>",
+					factory: (pi) => pi.registerProvider("unknown-box", customProvider()),
+				},
+			],
+		});
+		cleanup = harness.cleanup;
+		const collected = makeSink();
+		const handler = createRpcConnectionHandler(
+			{
+				session: harness.session,
+				setRebindSession: vi.fn(),
+				dispose: vi.fn(async () => {}),
+			} as unknown as AgentSessionRuntime,
+			collected.sink,
+		);
+
+		await handler.handleInputLine(JSON.stringify({ id: "origins", type: "get_auth_providers" }));
+		const response = await collected.waitFor((message) => message.id === "origins");
+		const rows = (response.data as { providers: Array<{ id: string; authType: string; origin?: unknown }> })
+			.providers;
+		const originOf = (id: string) => rows.find((row) => row.id === id && row.authType === "api_key")?.origin;
+		expect(originOf("anthropic")).toEqual({ kind: "builtin" });
+		expect(originOf("file-box")).toEqual({
+			kind: "models_json",
+			modelsJsonPath: join(harness.tempDir, "models.json"),
+		});
+		expect(originOf("proxy-box")).toEqual({ kind: "extension", extensionPath: "/extensions/proxy-provider.ts" });
+		for (const id of ["anthropic-subscription", "cursor-cli-oauth", "vertex-model-garden"]) {
+			expect(originOf(id)).toEqual({ kind: "builtin" });
+		}
+		expect(originOf("inline-box")).toEqual({ kind: "extension" });
+		expect(originOf("unknown-box")).toEqual({ kind: "extension" });
 		await handler.dispose();
 	});
 
@@ -354,6 +424,74 @@ describe("RPC auth and connection handler contracts", () => {
 		expect(await collected.waitFor((message) => message.id === "logout")).toMatchObject({ success: true });
 		const afterLogout = JSON.parse(readFileSync(harness.authPath, "utf-8")) as Record<string, unknown>;
 		expect(afterLogout.openai).toBeUndefined();
+		await handler.dispose();
+	});
+
+	it("refuses a login_api_key without a usable key and stores nothing (#3867)", async () => {
+		const collected = makeSink();
+		const harness = makeHarness(tempDir);
+		cleanup = harness.cleanup;
+		const handler = createRpcConnectionHandler(harness.runtimeHost, collected.sink);
+
+		for (const [id, extra] of [
+			["missing", {}],
+			["empty", { key: "" }],
+			["blank", { key: "  " }],
+		] as const) {
+			await handler.handleInputLine(JSON.stringify({ id, type: "login_api_key", provider: "anthropic", ...extra }));
+			expect(await collected.waitFor((message) => message.id === id)).toMatchObject({
+				success: false,
+				error: expect.stringContaining("empty API key"),
+			});
+		}
+		const stored = JSON.parse(readFileSync(harness.authPath, "utf-8")) as Record<string, unknown>;
+		expect(stored.anthropic).toBeUndefined();
+		await handler.dispose();
+	});
+
+	it("auth_login_end names the API key an OAuth login replaced and where its backup is (senpi#3486)", async () => {
+		const collected = makeSink();
+		const harness = makeHarness(tempDir);
+		cleanup = harness.cleanup;
+		harness.authStorage.registerOAuthProvider("scripted-oauth", {
+			name: "Scripted OAuth",
+			async login() {
+				return {
+					type: "oauth",
+					access: "scripted-access",
+					refresh: "scripted-refresh",
+					expires: 4_102_444_800_000,
+				};
+			},
+			async refresh(credentials) {
+				return credentials;
+			},
+			async toAuth(credentials) {
+				return { apiKey: credentials.access };
+			},
+		});
+		harness.authStorage.set("scripted-oauth", { type: "api_key", key: "sk-FAKE-previous" });
+		const handler = createRpcConnectionHandler(harness.runtimeHost, collected.sink);
+
+		const replacing = collected.waitFor((message) => message.type === "auth_login_end");
+		await handler.handleInputLine(JSON.stringify({ id: "replace", type: "login_start", provider: "scripted-oauth" }));
+		const end = await replacing;
+		expect(end).toMatchObject({
+			provider: "scripted-oauth",
+			success: true,
+			replaced: "api_key",
+			backupPath: expect.any(String),
+		});
+		const backupPath = String(end.backupPath);
+		expect(readFileSync(backupPath, "utf-8")).toContain("sk-FAKE-previous");
+		expect(harness.authStorage.takeReplacement("scripted-oauth")).toBeUndefined();
+
+		const sameKind = collected.waitFor((message) => message.type === "auth_login_end" && message !== end);
+		await handler.handleInputLine(JSON.stringify({ id: "again", type: "login_start", provider: "scripted-oauth" }));
+		const second = await sameKind;
+		expect(second).toMatchObject({ provider: "scripted-oauth", success: true });
+		expect(second).not.toHaveProperty("replaced");
+		expect(second).not.toHaveProperty("backupPath");
 		await handler.dispose();
 	});
 
