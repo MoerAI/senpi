@@ -127,25 +127,29 @@ export class SessionEventFanout {
 		sessions.set(sessionId, ordinal);
 		this.connectionSessions.set(id, sessions);
 		const pinned = this.pins.pin(id, [sessionId]);
-		for (const { root } of pinned) this.attachViews.add(root);
+		const first = pinned[0];
+		const source = first?.outcome.ok ? first.outcome.value : undefined;
+		if (source) this.attachViews.add(source.root);
 		const release = () => {
-			for (const { root } of pinned) this.attachViews.delete(root);
+			if (source) this.attachViews.delete(source.root);
 			this.pins.unpin(pinned);
 		};
 		const view = { placeholders: this.connectionHas(id, MEDIA_PLACEHOLDERS_CAPABILITY), now: Date.now() };
 		const cursor = this.acceptance.has(sessionId)
-			? legacyAttachView(sessionId, pinned[0], view, this.replay.track(release))
+			? legacyAttachView(sessionId, source, view, this.replay.track(release))
 			: this.replay.freezeAttach(sessionId, { ...view, onRelease: release });
+		// Live while the same attach holds the session and every pinned lane is still the incarnation it was pinned at.
 		registered.actor.installBaseline(
 			cursor,
 			() =>
 				this.connections.get(id)?.actor === registered.actor &&
 				this.connectionSessions.get(id)?.get(sessionId) === ordinal &&
-				pinned.every(({ lane, root }) => lane.sessionEpoch === root.sessionEpoch),
+				pinned.every(({ lane, sessionEpoch }) => lane.sessionEpoch === sessionEpoch),
 		);
 	}
 
 	detachConnectionFromSession(id: string, sessionId: string): void {
+		this.pins.retire(id, sessionId);
 		this.connectionSessions.get(id)?.delete(sessionId);
 	}
 
@@ -249,7 +253,9 @@ export class SessionEventFanout {
 		if (!this.acceptance.has(sessionId)) this.replay.remember(sessionId, value, line, placeholderLine);
 	}
 
+	/** A seal or forget: the lane retires (a queued attach view keeps its root) and the session's streams close. */
 	forgetSession(sessionId: string): void {
+		this.checkpoints.close(sessionId);
 		this.acceptance.get(sessionId)?.retire("close", this.attachViews);
 		this.acceptance.delete(sessionId);
 		this.replay.forget(sessionId);

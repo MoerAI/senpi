@@ -1,4 +1,5 @@
 import type { CompactDialog } from "./compact-current-components.ts";
+import type { RecoveryOutcome } from "./compact-recovery-types.ts";
 import type { ActiveBlockView, ActiveMessageView } from "./compact-state-view.ts";
 import { serializeJsonLine } from "./jsonl.ts";
 import { GeneratedFramesCursor, type LegacyViewCursor } from "./legacy-view-cursor.ts";
@@ -178,11 +179,21 @@ export function legacyAttachView(
 	);
 }
 
-/** The message slot of a session's `resync_required` frame: C's active message, or null when it has none. */
-export async function legacyResyncMessage(sessionId: string, source: LegacyViewSource | undefined): Promise<unknown> {
+/**
+ * The message slot of a session's `resync_required` frame: C's active message, or null when it has none. A cut the
+ * host could not serve (`storage_unavailable`) is reported once; a retired lane has nothing to report.
+ */
+export async function legacyResyncMessage(
+	sessionId: string,
+	source: RecoveryOutcome<LegacyViewSource> | undefined,
+): Promise<unknown> {
 	if (!source) return null;
+	if (!source.ok) {
+		if (source.failure.kind === "storage_unavailable") unavailable(sessionId, source.failure.reason);
+		return null;
+	}
 	try {
-		const message = await activeMessage(source);
+		const message = await activeMessage(source.value);
 		return (message && legacyMessage(message, "current")) ?? null;
 	} catch (cause) {
 		unavailable(sessionId, cause);

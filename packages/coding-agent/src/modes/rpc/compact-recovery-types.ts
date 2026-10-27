@@ -46,7 +46,8 @@ export type RepairReason =
 	| "foreign_session"
 	| "lane_retired"
 	| "stale_epoch"
-	| "peer_gone";
+	| "peer_gone"
+	| "session_closed";
 
 /** A token of an older generation of its stream (RULING-50 (2)): `newerGeneration` is the stream's current one. */
 export interface SupersededToken {
@@ -69,15 +70,29 @@ export type RecoveryOutcome<T> =
 	| { readonly ok: true; readonly value: T }
 	| { readonly ok: false; readonly failure: RecoveryFailure };
 
+/**
+ * One peer + session stream as a holder may read it (RULING-42 Q2 A): the session incarnation it materializes, its
+ * generation (the number every token of it carries), the admissions routed through it and whether it closed.
+ */
+export interface RecoveryStreamState {
+	readonly sessionEpoch: string;
+	readonly generation: number;
+	readonly routes: readonly string[];
+	readonly closed: boolean;
+}
+
+/** The owner's counters: open tokens, live streams, tokens frozen, roots reclaimed without a release, refusals by reason. */
+export interface RecoveryCounters {
+	readonly open: number;
+	readonly streams: number;
+	readonly frozen: number;
+	readonly reclaimed: number;
+	readonly refused: Readonly<Record<string, number>>;
+}
+
 export const recovered = <T>(value: T): RecoveryOutcome<T> => ({ ok: true, value });
-export const repairNeeded = (reason: RepairReason): RecoveryOutcome<never> => ({
-	ok: false,
-	failure: { kind: "repair_needed", reason },
-});
-export const storageUnavailable = (reason: string): RecoveryOutcome<never> => ({
-	ok: false,
-	failure: { kind: "storage_unavailable", reason },
-});
+export const repairNeeded = (reason: RepairReason): RecoveryFailure => ({ kind: "repair_needed", reason });
+export const storageUnavailable = (reason: string): RecoveryFailure => ({ kind: "storage_unavailable", reason });
 
 /** Thrown inside a token's operation lease when the cut stopped being valid; mapped to its failure by the owner. */
 export class RecoveryRefusedError extends Error {
