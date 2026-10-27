@@ -1,10 +1,10 @@
 import { compactUpdatesEnabled } from "../../core/engine-socket-flag.ts";
-import { legacyAttachView, legacyResyncMessage } from "./compact-legacy-view.ts";
-import { type FrozenCheckpoint, RecoveryCheckpoints } from "./compact-recovery-state.ts";
+import { legacyAttachView } from "./compact-legacy-view.ts";
+import { RecoveryCheckpoints } from "./compact-recovery-state.ts";
 import { MEDIA_PLACEHOLDERS_CAPABILITY } from "./custom-capability.ts";
 import { LegacyReplayStore } from "./legacy-replay-store.ts";
-import { resyncCut } from "./legacy-resync-view.ts";
 import type { FrozenAcceptedRoot, SessionAcceptanceLane } from "./session-acceptance-lane.ts";
+import { SessionRecoveryPins } from "./session-recovery-pins.ts";
 import { type ShedMode, SocketEventSinkActor } from "./socket-event-fanout.ts";
 import { EVENT_RESYNC_CAPABILITY } from "./socket-peer-recovery.ts";
 
@@ -39,9 +39,6 @@ type RegisteredConnection = {
 	readonly socketEpoch: string;
 };
 
-/** A checkpoint pinned for one frozen view, released once on that view's end (R3.C1.5). */
-type PinnedRoot = FrozenCheckpoint & { readonly sessionId: string };
-
 export class SessionEventFanout {
 	onConnectionClosed?: (id: string) => void;
 	/** Each routing session's acceptance lane; retired when the session is sealed or forgotten. */
@@ -61,6 +58,17 @@ export class SessionEventFanout {
 	/** Roots an attach baseline still reads; a seal keeps them readable until that view ends (RULING-51 Q2=A). */
 	private readonly attachViews = new Set<FrozenAcceptedRoot>();
 	private readonly registeredCapabilityConnections = new Set<string>();
+	private readonly pins = new SessionRecoveryPins(
+		this.acceptance,
+		this.checkpoints,
+		this.replay,
+		{
+			socketEpoch: (id) => this.connections.get(id)?.socketEpoch,
+			ordinals: (id) => this.connectionSessions.get(id),
+			has: (id, capability) => this.connectionHas(id, capability),
+		},
+		this.shedMode,
+	);
 
 	registerConnection(
 		id: string,
@@ -118,11 +126,11 @@ export class SessionEventFanout {
 		const ordinal = ++this.attachOrdinal;
 		sessions.set(sessionId, ordinal);
 		this.connectionSessions.set(id, sessions);
-		const pinned = this.pin(id, [sessionId]);
+		const pinned = this.pins.pin(id, [sessionId]);
 		for (const { root } of pinned) this.attachViews.add(root);
 		const release = () => {
 			for (const { root } of pinned) this.attachViews.delete(root);
-			this.unpin(pinned);
+			this.pins.unpin(pinned);
 		};
 		const view = { placeholders: this.connectionHas(id, MEDIA_PLACEHOLDERS_CAPABILITY), now: Date.now() };
 		const cursor = this.acceptance.has(sessionId)
@@ -146,39 +154,9 @@ export class SessionEventFanout {
 		if (!registered) return;
 		this.connectionCapabilities.set(id, new Set(capabilities));
 		this.registeredCapabilityConnections.add(id);
-		if (capabilities.includes(EVENT_RESYNC_CAPABILITY)) {
-			// Checkpoints frozen at the shed, before the actor awaits its drain (R3.C1.5), as the next generation of each
-			// held admission; released when the recovery ends.
-			registered.actor.enableRecovery((reason, carried = []) => {
-				const capture = this.shedMode === "capture";
-				const attached = this.held(id);
-				const ordinals = new Map(this.connectionSessions.get(id));
-				const pinned = this.pin(id, attached);
-				const roots = new Map(pinned.map((root) => [root.sessionId, root]));
-				const view = {
-					reason,
-					placeholders: this.connectionHas(id, MEDIA_PLACEHOLDERS_CAPABILITY),
-					// Capture: closed once the attachment held at the shed is gone (carry 30); drop: today's rule.
-					closedNow: (sessionId: string) =>
-						capture
-							? this.connectionSessions.get(id)?.get(sessionId) !== ordinals.get(sessionId) ||
-								!ordinals.has(sessionId)
-							: !this.holds(id, sessionId),
-					onRelease: () => this.unpin(pinned),
-				};
-				const sessions = capture ? [...new Set([...carried, ...attached])] : attached;
-				return resyncCut(
-					sessions,
-					capture ? () => sessions : () => [...new Set([...sessions, ...this.held(id)])],
-					(sessionId) =>
-						this.acceptance.has(sessionId)
-							? legacyResyncMessage(sessionId, roots.get(sessionId))
-							: Promise.resolve(this.replay.latestMessage(sessionId)),
-					view,
-					this.replay.track,
-				);
-			});
-		} else registered.actor.disableRecovery();
+		if (capabilities.includes(EVENT_RESYNC_CAPABILITY))
+			registered.actor.enableRecovery((reason, carried) => this.pins.resync(id, reason, carried));
+		else registered.actor.disableRecovery();
 	}
 
 	clearConnectionCapabilities(id: string): void {
@@ -277,10 +255,6 @@ export class SessionEventFanout {
 		this.replay.forget(sessionId);
 	}
 
-	private holds(id: string, sessionId: string): boolean {
-		return this.connectionSessions.get(id)?.has(sessionId) ?? false;
-	}
-
 	/**
 	 * The attach holding `sessionId` for `id` now, as a liveness check: true only while that same attach (its ordinal,
 	 * the rule an attach baseline's liveness uses) still holds it, so a detach and re-attach ends it.
@@ -288,32 +262,5 @@ export class SessionEventFanout {
 	private attachment(id: string, sessionId: string): (() => boolean) | undefined {
 		const ordinal = this.connectionSessions.get(id)?.get(sessionId);
 		return ordinal === undefined ? undefined : () => this.connectionSessions.get(id)?.get(sessionId) === ordinal;
-	}
-
-	private held(id: string): readonly string[] {
-		return [...(this.connectionSessions.get(id)?.keys() ?? [])];
-	}
-
-	/** One checkpoint per held lane-owned session, on the admission (the attach ordinal) that holds it for `id`. */
-	private pin(id: string, sessionIds: readonly string[]): readonly PinnedRoot[] {
-		const socketEpoch = this.connections.get(id)?.socketEpoch;
-		return sessionIds.flatMap((sessionId) => {
-			const lane = this.acceptance.get(sessionId);
-			const ordinal = this.connectionSessions.get(id)?.get(sessionId);
-			if (!lane || ordinal === undefined || socketEpoch === undefined) return [];
-			const route = {
-				socketEpoch,
-				admissionId: `attach-${ordinal}`,
-				routeKind: "ordinary" as const,
-				peer: id,
-				sessionId,
-			};
-			const frozen = this.checkpoints.freeze(route, lane);
-			return frozen.ok ? [{ sessionId, ...frozen.value }] : [];
-		});
-	}
-
-	private unpin(pinned: readonly PinnedRoot[]): void {
-		for (const { token } of pinned) this.checkpoints.release(token);
 	}
 }
