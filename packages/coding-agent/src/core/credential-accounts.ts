@@ -427,7 +427,8 @@ function pathExists(path: string): boolean {
  * The one CLI-safe removal of a stored slot, shared by every entry point (senpi#4436): an Anthropic Subscription
  * `claude-cli` slot is signed out and its dir removed first, then the slot is dropped. When the sign-out throws
  * (an abort, a filesystem error), the slot is kept with its dir, unless the dir was already removed, in which case
- * the slot is dropped too: a stored slot never outlives its account dir.
+ * the slot is dropped too. If the drop itself then fails, the slot stays stored without its dir until the next
+ * removal of it, which finds the dir gone and drops the slot.
  */
 async function signOutAndDropSlot(
 	storage: AuthStorage,
@@ -491,12 +492,7 @@ export async function signOutClaudeCliSlotsForLogout(
 /** `notice`: the account was removed, but something about it could not be cleaned up and the user should know. */
 export type RemoveCredentialAccountResult = { readonly notice?: string };
 
-/**
- * A `claude-cli` slot is signed out of the CLI's own store and its account dir removed BEFORE the slot is
- * dropped. Removal never gets stuck on the CLI: when `claude` cannot be resolved or its sign-out fails, the dir is
- * still removed and the slot dropped, with a notice that the sign-out did not run. A slot that names no valid
- * account dir, or whose dir is a link or file, cannot be signed out safely; it is dropped anyway with a notice.
- */
+/** The agent dir the account dirs live under: the auth file's dir, else the default agent dir. */
 function claudeCliAgentDir(storage: AuthStorage): string {
 	const authPath = storage.getStoragePath();
 	return authPath ? dirname(authPath) : getAgentDir();
@@ -512,6 +508,13 @@ function claudeCliAccountDir(storage: AuthStorage, credential: Credential, name:
 		: undefined;
 }
 
+/**
+ * A `claude-cli` slot is signed out of the CLI's own store and its account dir removed, so the caller
+ * (`signOutAndDropSlot`) can drop the slot afterwards. Removal never gets stuck on the CLI: when `claude` cannot be
+ * resolved or its sign-out fails, the dir is still removed, with a notice that the sign-out did not run. A slot that
+ * names no valid account dir, or whose dir is a link or file, cannot be signed out safely; the caller drops it anyway
+ * and the notice says so.
+ */
 async function signOutClaudeCliSlot(
 	storage: AuthStorage,
 	credential: Credential,

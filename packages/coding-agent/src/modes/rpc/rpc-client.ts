@@ -1281,6 +1281,15 @@ export class RpcClient {
 		return this.getData<{ accounts: RpcProviderAccount[] }>(response).accounts;
 	}
 
+	/**
+	 * Re-run the sign-in connection test on one Claude subscription account and return the stored `check`. Hosts
+	 * advertising `provider_account_test` answer it; other providers fail with `unsupported_provider`.
+	 */
+	async testProviderAccount(provider: string, name: string): Promise<NonNullable<RpcProviderAccount["check"]>> {
+		const response = await this.send({ type: "test_provider_account", provider, name });
+		return this.getData<{ check: NonNullable<RpcProviderAccount["check"]> }>(response).check;
+	}
+
 	/** Pin a provider account for future session-affine requests, or clear the pin. */
 	async pinProviderAccount(provider: string, name: string | null): Promise<void> {
 		await this.send({ type: "account_pin", provider, name });

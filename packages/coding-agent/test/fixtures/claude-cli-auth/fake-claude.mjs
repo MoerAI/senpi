@@ -57,7 +57,7 @@ if (group === "auth" && command === "logout" && mode === "logout-hang") {
 	await new Promise(() => setInterval(() => {}, 1_000));
 } else if (group === "auth" && command === "logout") {
 	process.stdout.write("Successfully logged out from your Anthropic account.\n");
-	process.exit(mode === "logout-fail" ? 1 : 0);
+	process.exit(mode === "logout-fail" || process.env.FAKE_CLAUDE_LOGOUT_FAIL === "1" ? 1 : 0);
 }
 
 if (group !== "auth" || command !== "login") process.exit(2);

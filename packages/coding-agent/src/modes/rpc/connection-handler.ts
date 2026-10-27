@@ -41,6 +41,10 @@ import {
 	subscribeProviderAccountEvents,
 } from "../../core/extensions/builtin/anthropic-subscription/account-events.ts";
 import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "../../core/extensions/builtin/anthropic-subscription/account-management.ts";
+import {
+	ProviderAccountTestError,
+	testClaudeCliAccount,
+} from "../../core/extensions/builtin/anthropic-subscription/claude-cli-account-test.ts";
 import { takeClaudeCliLoginOutcome } from "../../core/extensions/builtin/anthropic-subscription/claude-cli-login-outcome.ts";
 import {
 	isMcpControlInventoryChanged,
@@ -84,6 +88,7 @@ import {
 	ENTRIES_TAIL_CAPABILITY,
 	INTERACTIVE_USER_CAPABILITY,
 	MEDIA_PLACEHOLDERS_CAPABILITY,
+	PROVIDER_ACCOUNT_TEST_CAPABILITY,
 	QUESTION_CAPABILITY,
 	QUEUED_MESSAGE_REVISION_CAPABILITY,
 	RESUME_SESSION_CAPABILITY,
@@ -1171,6 +1176,7 @@ export function createRpcConnectionHandler(
 								CONTINUE_FROM_LEAF_CAPABILITY,
 								EVAL_CELLS_CAPABILITY,
 								AUTH_KEY_VERIFY_CAPABILITY,
+								PROVIDER_ACCOUNT_TEST_CAPABILITY,
 								QUEUED_MESSAGE_REVISION_CAPABILITY,
 								TOOL_BARRIER_CAPABILITY,
 								USER_ACTIVITY_CAPABILITY,
@@ -2106,6 +2112,22 @@ export function createRpcConnectionHandler(
 					command.name,
 				);
 				return success(id, "account_remove", notice === undefined ? undefined : { notice });
+			}
+
+			case "test_provider_account": {
+				try {
+					const check = await testClaudeCliAccount({
+						provider: command.provider,
+						name: command.name,
+						cwd: session.cwd,
+						store: session.modelRegistry.authStorage,
+					});
+					return success(id, "test_provider_account", { check });
+				} catch (testError) {
+					if (testError instanceof ProviderAccountTestError)
+						return error(id, "test_provider_account", testError.code);
+					throw testError;
+				}
 			}
 
 			case "account_order": {

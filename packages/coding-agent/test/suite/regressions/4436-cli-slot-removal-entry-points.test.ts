@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../../../src/core/auth-storage.ts";
+import { removeCredentialAccount } from "../../../src/core/credential-accounts.ts";
 import { registerClaudeAccountCommand } from "../../../src/core/extensions/builtin/anthropic-subscription/account-command.ts";
 import {
 	type AnthropicSubscriptionCredential,
@@ -277,6 +278,21 @@ describe("senpi#4436 a provider logout of several claude-cli accounts", () => {
 		expect(existsSync(lane.dirs[0] ?? "")).toBe(false);
 		expect(existsSync(lane.dirs[1] ?? "")).toBe(true);
 		expect(await lane.storedNames()).toEqual(["second"]);
+	});
+
+	it("a drop that fails after the dir was removed keeps the slot, and the next removal drops it", async () => {
+		const lane = await logoutLane("logout-ok", ["work", "keep"]);
+		const drop = vi.spyOn(lane.storage, "modify").mockRejectedValueOnce(new Error("store busy"));
+
+		await expect(removeCredentialAccount(lane.storage, PROVIDER, "work")).rejects.toThrow("store busy");
+		expect(existsSync(lane.dirs[0] ?? "")).toBe(false);
+		expect(await lane.storedNames()).toEqual(["work", "keep"]);
+
+		drop.mockRestore();
+		await removeCredentialAccount(lane.storage, PROVIDER, "work");
+		expect(await lane.storedNames()).toEqual(["keep"]);
+		expect(existsSync(lane.dirs[0] ?? "")).toBe(false);
+		expect(existsSync(lane.dirs[1] ?? "")).toBe(true);
 	});
 
 	it("honors the caller's abort signal while a Claude CLI sign-out hangs, deleting nothing", async () => {

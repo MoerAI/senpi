@@ -59,6 +59,7 @@ export async function runClaudeCliConnectionTest(input: ClaudeCliConnectionTestI
 			providerSettings: { ...input.providerSettings, tokenInjection: "oauth-slots", accountFallback: false },
 			signal,
 			pinnedAccount: input.name,
+			probe: true,
 			model: input.model,
 			onQuery: (query) => {
 				handle = query;
