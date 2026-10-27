@@ -209,13 +209,12 @@ it("omits unsafe hand-written metadata from labels and summaries", async () => {
 it("allows the same display name in different providers", async () => {
 	const storage = AuthStorage.inMemory();
 	for (const provider of ["chatgpt-subscription", "anthropic-subscription"]) {
-		storage.set(provider, {
-			type: "oauth",
-			access: "fake-a",
-			refresh: "fake-r",
-			expires: 1,
-			accounts: [{ name: "default", source: "login", access: "fake-a", refresh: "fake-r", expires: 1 }],
-		});
+		// A stored Claude account is a Claude CLI account; the other provider keeps its token slot.
+		const slot =
+			provider === "anthropic-subscription"
+				? cliSlot("default")
+				: { name: "default", source: "login" as const, access: "fake-a", refresh: "fake-r", expires: 1 };
+		storage.set(provider, { type: "oauth", access: "fake-a", refresh: "fake-r", expires: 1, accounts: [slot] });
 		await renameCredentialAccount(storage, provider, "default", "Personal");
 		expect((await getCredentialAccounts(storage, provider, {}))[0].displayName).toBe("Personal");
 	}
