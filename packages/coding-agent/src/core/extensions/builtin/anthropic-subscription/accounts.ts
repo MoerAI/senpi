@@ -98,15 +98,22 @@ function storedSlots(credential: AnthropicSubscriptionCredential): AccountSlot[]
 }
 
 /**
- * The listed accounts: every stored claude CLI account, then the env token accounts. A stored account that still
- * holds tokens (one the retired senpi-owned login wrote, which the load-time sign-out could not rewrite, or a
- * sentinel projection) is never listed, so no turn or usage poll serves or refreshes its token (senpi#4436).
+ * Whether a stored slot is listed: only a claude CLI account is. A stored account that still holds tokens (one the
+ * retired senpi-owned login wrote, which the load-time sign-out could not rewrite, or a sentinel projection) is never
+ * listed, so no turn or usage poll serves or refreshes its token (senpi#4436). Every listing of stored Claude
+ * accounts (this lane's, the generic one RPC uses, and the configured check) applies this one rule, so none of them
+ * shows or counts an account the others hide. Takes `object`: the generic listing passes raw pool slots.
  */
+export function isListedStoredSlot(slot: object): boolean {
+	return "store" in slot && slot.store === "claude-cli";
+}
+
+/** The listed accounts: every stored claude CLI account (`isListedStoredSlot`), then the env token accounts. */
 export function listAccounts(
 	credential: AnthropicSubscriptionCredential,
 	env?: (name: string) => string | undefined,
 ): AccountSlot[] {
-	const slots: AccountSlot[] = storedSlots(credential).filter((slot) => slot.store === "claude-cli");
+	const slots: AccountSlot[] = storedSlots(credential).filter(isListedStoredSlot);
 	if (env) {
 		const state = credential.slotState ?? {};
 		for (const slot of envSlots(env)) {

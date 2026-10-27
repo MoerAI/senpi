@@ -155,16 +155,18 @@ describe("provider-neutral credential accounts", () => {
 		expect(account).not.toHaveProperty("blockedUntil");
 	});
 
+	// The generic listing adds the CLI account fields (store, signIn) on top of the lane's own.
+	const sameAccounts = (lane: readonly object[]) => lane.map((account) => expect.objectContaining(account));
+
 	test("the Claude lane listing agrees with the generic one for a disabled account", async () => {
 		await storage.modify("anthropic-subscription", async () => ({
 			...emptyCredential(),
 			accounts: [
 				{
 					name: "default",
-					access: "fake-a",
-					refresh: "fake-r",
-					expires: NOW_FAR_FUTURE,
 					source: "login",
+					store: "claude-cli",
+					dirId: "a".repeat(32),
 					blockReason: "account_disabled",
 				},
 			],
@@ -173,7 +175,24 @@ describe("provider-neutral credential accounts", () => {
 		const generic = await getCredentialAccounts(storage, "anthropic-subscription", {}, repository);
 
 		expect(generic[0]).toMatchObject({ blocked: true, blockedReason: "disabled" });
-		expect(getProviderAccounts(storage, "anthropic-subscription", {})).toEqual(generic);
+		expect(generic).toEqual(sameAccounts(getProviderAccounts(storage, "anthropic-subscription", {})));
+	});
+
+	test("a stored Claude account that still holds tokens is absent from both listings (senpi#4436)", async () => {
+		await storage.modify("anthropic-subscription", async () => ({
+			...emptyCredential(),
+			accounts: [
+				{ name: "legacy", access: "fake-a", refresh: "fake-r", expires: NOW_FAR_FUTURE, source: "login" },
+				{ name: "cli", source: "login", store: "claude-cli", dirId: "b".repeat(32) },
+			],
+		}));
+
+		const generic = await getCredentialAccounts(storage, "anthropic-subscription", {}, repository);
+		const lane = getProviderAccounts(storage, "anthropic-subscription", {});
+
+		expect(generic.map((account) => account.name)).toEqual(["cli"]);
+		expect(lane.map((account) => account.name)).toEqual(["cli"]);
+		expect(generic).toEqual(sameAccounts(lane));
 	});
 
 	test("an env key blocked for auth reports auth_error; an expired block reports no reason", async () => {

@@ -17,7 +17,7 @@ import { discoverEnvSlots } from "./credential-pool/env-slots.ts";
 import { type ModelBlocks, pruneModelBlocks } from "./credential-pool/model-scope.ts";
 import { CredentialSlotRepository, type CredentialSlotState, slotHealth } from "./credential-pool/state-store.ts";
 import { emitProviderAccountsChanged } from "./extensions/builtin/anthropic-subscription/account-events.ts";
-import { SENTINEL_OAUTH_FIELDS } from "./extensions/builtin/anthropic-subscription/accounts.ts";
+import { isListedStoredSlot, SENTINEL_OAUTH_FIELDS } from "./extensions/builtin/anthropic-subscription/accounts.ts";
 import {
 	accountDirFor,
 	isValidAccountDirId,
@@ -264,9 +264,10 @@ async function summarizeInStoredOrder(
 		// Read boundary (senpi#1989): a caller may still pass the legacy provider
 		// id (an older session, a stored account payload), so compare normalized.
 		const isClaudeSubscription = normalizeProviderId(provider) === "anthropic-subscription";
+		// The Claude lane's own listing rule, so both listings show the same accounts (senpi#4436).
 		const storedAccounts = isClaudeSubscription
 			? Array.isArray(credential.accounts)
-				? listSlots(credential)
+				? listSlots(credential).filter(isListedStoredSlot)
 				: []
 			: listSlots(credential);
 		const usable = new Set(slotsOfOwnKind(credential).map((slot) => slot.name));
