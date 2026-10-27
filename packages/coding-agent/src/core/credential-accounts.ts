@@ -409,6 +409,28 @@ export async function removeCredentialAccount(
 	return notice === undefined ? {} : { notice };
 }
 
+/**
+ * A provider logout deletes every stored account at once. For Anthropic Subscription each `claude-cli` slot is first
+ * signed out of the CLI's own store by its account dir, through the same per-slot path as a single removal (link
+ * guard, never stuck on the CLI), so a logout never orphans a CLI sign-in (senpi#4436). Returns the notices of the
+ * slots that could not be signed out cleanly; any other provider returns none.
+ */
+export async function signOutClaudeCliSlotsForLogout(
+	storage: AuthStorage,
+	provider: string,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<readonly string[]> {
+	if (normalizeProviderId(provider) !== "anthropic-subscription") return [];
+	const credential = await storage.read(provider);
+	if (credential === undefined) return [];
+	const notices: string[] = [];
+	for (const slot of listSlots(credential)) {
+		const notice = await signOutClaudeCliSlot(storage, credential, slot.name, env);
+		if (notice !== undefined) notices.push(notice);
+	}
+	return notices;
+}
+
 /** `notice`: the account was removed, but something about it could not be cleaned up and the user should know. */
 export type RemoveCredentialAccountResult = { readonly notice?: string };
 
