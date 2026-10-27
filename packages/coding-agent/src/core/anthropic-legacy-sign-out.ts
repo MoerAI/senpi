@@ -80,12 +80,8 @@ function signOutSubscription(stored: unknown): { entry: unknown; changed: boolea
 	if (accounts.some((slot) => isRetiredLoginSlot(slot) && typeof slot.name !== "string")) {
 		return "an anthropic-subscription account has no name";
 	}
-	const holdsFlatToken =
-		(typeof stored.access === "string" && stored.access !== SENTINEL_OAUTH_FIELDS.access) ||
-		(typeof stored.refresh === "string" && stored.refresh !== SENTINEL_OAUTH_FIELDS.refresh);
-	if (!holdsFlatToken && !accounts.some(isRetiredLoginSlot)) return { entry: stored, changed: false };
+	if (!accounts.some(isRetiredLoginSlot)) return { entry: stored, changed: false };
 	const signedOut = accounts.map((slot) => (isRetiredLoginSlot(slot) ? signedOutSlot(slot) : (slot as AccountSlot)));
-	if (holdsFlatToken && signedOut.length === 0) signedOut.push(signedOutSlot({ name: "default" }));
 	return { entry: { ...stored, ...SENTINEL_OAUTH_FIELDS, accounts: signedOut }, changed: true };
 }
 

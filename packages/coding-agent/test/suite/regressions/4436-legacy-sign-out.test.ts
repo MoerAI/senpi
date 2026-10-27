@@ -218,18 +218,22 @@ describe("senpi#4436 legacy Claude logins are signed out with a clear prompt", (
 		subscription.accounts = (subscription.accounts as Record<string, unknown>[]).slice(0, 1);
 		const storage = AuthStorage.create(legacyAuthFile({ [SCRIPTED_PROVIDER]: subscription }));
 		const signedOut = (storage.get(SCRIPTED_PROVIDER) as AnthropicSubscriptionCredential).accounts?.[0];
+		expect(signedOut).toMatchObject({ name: "work", signInRequired: "legacy_sign_in_retired" });
 		const cli = fakeClaudeCliLogin();
 		const config = createOAuthConfig({
 			readCurrent: async () => storage.get(SCRIPTED_PROVIDER) as AnthropicSubscriptionCredential | undefined,
 			claudeCli: { ...cli, store: () => storage },
 		});
-		const credential = (await config.login({ onPrompt: async () => "" })) as AnthropicSubscriptionCredential;
+		const credential = (await config.login({
+			onPrompt: async (prompt) => (prompt.message.startsWith("Name for this account (") ? "work" : ""),
+		})) as AnthropicSubscriptionCredential;
+		expect(credential.accounts?.map((slot) => slot.name)).toEqual(["work"]);
 		const [work] = credential.accounts ?? [];
 		expect(work).toMatchObject({
 			name: "work",
 			displayName: "Work",
 			store: "claude-cli",
-			dirId: signedOut?.store === "claude-cli" ? signedOut.dirId : "not-signed-out",
+			dirId: expect.stringMatching(/^[0-9a-f]{32}$/),
 			profile: { email: expect.any(String) },
 		});
 		expect(work).not.toHaveProperty("signInRequired");
