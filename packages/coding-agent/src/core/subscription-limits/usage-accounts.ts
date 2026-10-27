@@ -12,6 +12,7 @@ import {
 	type AnthropicSubscriptionCredential,
 	emptyCredential,
 	envSlotToken,
+	isTokenSlot,
 	type LegacyAccountSlot,
 	listAccounts,
 	refreshSlot,
@@ -88,9 +89,7 @@ export async function listPollAccounts(sources: AccountSources): Promise<PollAcc
 function claudeAccounts(stored: Credential | undefined, sources: AccountSources): PollAccount[] {
 	const credential = stored?.type === "oauth" ? (stored as AnthropicSubscriptionCredential) : emptyCredential();
 	// A claude CLI account's token lives in the CLI's own store, never here, so it has nothing to poll with.
-	const tokenSlots = listAccounts(credential, sources.env).filter(
-		(slot): slot is LegacyAccountSlot => slot.store === undefined,
-	);
+	const tokenSlots = listAccounts(credential, sources.env).filter(isTokenSlot);
 	return tokenSlots.map((slot) => ({
 		provider: "anthropic-subscription",
 		account: slot.name,

@@ -11,6 +11,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type AccountSlot,
+	type LegacyAccountSlot,
 	type AnthropicSubscriptionCredential,
 	addAccount,
 	authGrantDigest,
@@ -58,7 +59,7 @@ type Lane = {
 	refreshOutcome: "ok" | "rejected" | "unavailable";
 };
 
-async function blockedLane(slot: Partial<AccountSlot>, sibling?: AccountSlot): Promise<Lane> {
+async function blockedLane(slot: Partial<LegacyAccountSlot>, sibling?: AccountSlot): Promise<Lane> {
 	const store = new InMemoryCredentialStore();
 	await store.modify(PROVIDER, async () => {
 		const blocked = addAccount(emptyCredential(), {

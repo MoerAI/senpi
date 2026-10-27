@@ -9,6 +9,7 @@ import {
 	readFileSync,
 	readlinkSync,
 	rmSync,
+	symlinkSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -122,5 +123,32 @@ describe("claude CLI account dir", () => {
 		);
 
 		expect(lstatSync(join(accountDir, "projects")).isSymbolicLink()).toBe(true);
+	});
+
+	it("a missing account dir is still signed out by its path, since the CLI store is keyed on it", async () => {
+		const { agentDir, executable, parentEnv, records } = setup();
+
+		await expect(removeAccountDir({ agentDir, dirId: DIR_ID, executable, parentEnv })).resolves.toBe("removed");
+
+		expect(records()).toEqual([
+			expect.objectContaining({ argv: ["auth", "logout"], configDir: accountDirFor(agentDir, DIR_ID) }),
+		]);
+		expect(existsSync(accountDirFor(agentDir, DIR_ID))).toBe(false);
+	});
+
+	it("a symlinked account dir is never signed out, followed or deleted", async () => {
+		const { agentDir, sharedRoot, executable, parentEnv, records } = setup();
+		const accountDir = accountDirFor(agentDir, DIR_ID);
+		mkdirSync(join(agentDir, "anthropic-subscription-claude"));
+		symlinkSync(sharedRoot, accountDir, process.platform === "win32" ? "junction" : "dir");
+
+		await expect(removeAccountDir({ agentDir, dirId: DIR_ID, executable, parentEnv })).resolves.toBe(
+			"not_an_account_dir",
+		);
+
+		expect(() => records()).toThrow();
+		expect(lstatSync(accountDir).isSymbolicLink()).toBe(true);
+		expect(readFileSync(join(sharedRoot, "projects", "x.jsonl"), "utf8")).toBe("{}\n");
+		expect(existsSync(join(sharedRoot, "settings.json"))).toBe(true);
 	});
 });

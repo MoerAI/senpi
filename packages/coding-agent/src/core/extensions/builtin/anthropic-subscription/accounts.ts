@@ -18,6 +18,7 @@ export type LegacyAccountSlot = SlotBlockState & {
 	name: string;
 	displayName?: string;
 	store?: undefined;
+	dirId?: never;
 	refresh: string;
 	access: string;
 	expires: number;
@@ -62,9 +63,20 @@ export type ClaudeCliAccountSlot = SlotBlockState & {
 	profile?: ClaudeCliAccountProfile;
 	check?: ClaudeCliAccountCheck;
 	signInRequired?: "legacy_sign_in_retired";
+	/** A CLI slot never holds token material; declared so reads on an `AccountSlot` see `undefined`, not a missing field. */
+	access?: never;
+	refresh?: never;
+	expires?: never;
+	authRecoveryGrant?: never;
+	importedFrom?: never;
 };
 
 export type AccountSlot = LegacyAccountSlot | ClaudeCliAccountSlot;
+
+/** Narrows a slot to the token-holding variant; a claude CLI slot's login lives in the CLI's own store. */
+export function isTokenSlot(slot: AccountSlot): slot is LegacyAccountSlot {
+	return slot.store === undefined;
+}
 
 export type SlotState = Record<
 	string,
@@ -98,7 +110,9 @@ function storedSlots(credential: AnthropicSubscriptionCredential): AccountSlot[]
  * projection as a generated `login-N` slot. Selecting it fails the provider's
  * auth check and dead-ends the request, so it is never listed as an account.
  */
-export function isSentinelSlot(slot: AccountSlot): boolean {
+export function isSentinelSlot(
+	slot: Pick<AccountSlot, "access" | "refresh"> & { store?: AccountSlot["store"] },
+): boolean {
 	return (
 		slot.store === undefined &&
 		slot.access === SENTINEL_OAUTH_FIELDS.access &&

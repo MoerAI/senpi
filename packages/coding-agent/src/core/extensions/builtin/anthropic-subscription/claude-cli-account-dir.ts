@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readlinkSync, rmSync, type Stats, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { logoutClaudeCli } from "./claude-cli-auth-status.ts";
@@ -26,9 +26,13 @@ export function newAccountDirId(): string {
 	return randomBytes(16).toString("hex");
 }
 
+export function isValidAccountDirId(dirId: string): boolean {
+	return DIR_ID_PATTERN.test(dirId);
+}
+
 /** `<agentDir>/anthropic-subscription-claude/<dirId>`; a stored id of any other shape is refused. */
 export function accountDirFor(agentDir: string, dirId: string): string {
-	if (!DIR_ID_PATTERN.test(dirId)) throw new Error("Invalid Claude account dir id");
+	if (!isValidAccountDirId(dirId)) throw new Error("Invalid Claude account dir id");
 	return join(agentDir, "anthropic-subscription-claude", dirId);
 }
 
@@ -52,6 +56,15 @@ function exists(path: string): boolean {
 		return true;
 	} catch {
 		return false;
+	}
+}
+
+function lstatOrUndefined(path: string): Stats | undefined {
+	try {
+		return lstatSync(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
 	}
 }
 
@@ -105,15 +118,21 @@ export type RemoveAccountDirOptions = {
 	readonly parentEnv?: NodeJS.ProcessEnv;
 };
 
+/** `removed`: signed out and the dir is gone. `not_an_account_dir`: the path is a link or a file, left untouched. */
+export type RemoveAccountDirOutcome = "removed" | "not_an_account_dir";
+
 /**
  * Signs the account out (`claude auth logout` with `CLAUDE_CONFIG_DIR=<accountDir>`, which deletes that dir's
  * credential store entry), then unlinks the shared links WITHOUT following them and removes the dir. A failed
- * sign-out throws and leaves everything in place, so no credential store entry is orphaned.
+ * sign-out throws and leaves everything in place, so no credential store entry is orphaned. A missing dir is
+ * still signed out, because the CLI keys its store entry on the path. A link or file in the dir's place is not
+ * an account dir: it is never signed out against, followed or deleted.
  */
-export async function removeAccountDir(options: RemoveAccountDirOptions): Promise<void> {
+export async function removeAccountDir(options: RemoveAccountDirOptions): Promise<RemoveAccountDirOutcome> {
 	const accountDir = accountDirFor(options.agentDir, options.dirId);
-	if (!exists(accountDir)) return;
-	if (!statSync(accountDir).isDirectory()) throw new Error("Claude account dir is not a directory");
+	// A missing dir is recreated empty: the CLI runs inside its config dir, and its store entry is keyed on the path.
+	if (lstatOrUndefined(accountDir) === undefined) mkdirSync(accountDir, { recursive: true, mode: 0o700 });
+	if (!lstatOrUndefined(accountDir)?.isDirectory()) return "not_an_account_dir";
 	const signedOut = await logoutClaudeCli({
 		executable: options.executable,
 		configDir: accountDir,
@@ -125,4 +144,5 @@ export async function removeAccountDir(options: RemoveAccountDirOptions): Promis
 		if (isLink(path)) unlinkSync(path);
 	}
 	rmSync(accountDir, { recursive: true, force: true });
+	return "removed";
 }
