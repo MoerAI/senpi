@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { createModels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
 	AccountSlot,
@@ -35,6 +35,7 @@ import {
 import type { Options, SdkQuery } from "../../../src/core/extensions/builtin/anthropic-subscription/sdk-boundary.ts";
 import { overrideSdkBoundary } from "../../../src/core/extensions/builtin/anthropic-subscription/sdk-boundary.ts";
 import { resetScriptedSdk, SCRIPTED_PROVIDER, sdkMessage } from "../../helpers/anthropic-subscription-scripted-sdk.ts";
+import { composedProvider } from "../../support/anthropic-subscription-provider.ts";
 
 const FIXTURE = join(import.meta.dirname, "..", "..", "fixtures", "claude-cli-auth", "fake-claude.mjs");
 const DEFAULTS = { provider: "anthropic-subscription", model: "claude-sonnet-5-5" };
@@ -74,6 +75,7 @@ async function setup(options: {
 	turn?: Turn;
 	onQuery?: () => void;
 	cli?: (store: InMemoryCredentialStore) => Partial<ClaudeCliLoginDeps>;
+	env?: Record<string, string>;
 }) {
 	const root = mkdtempSync(join(tmpdir(), "senpi-4436-login-via-cli-"));
 	roots.push(root);
@@ -102,6 +104,7 @@ async function setup(options: {
 			FAKE_CLAUDE_MODE: options.mode ?? "login-auto",
 			FAKE_CLAUDE_STATUS_MODE: "status-claudeai",
 			FAKE_CLAUDE_RECORD: recordPath,
+			...options.env,
 		}),
 		getAgentDir: () => agentDir,
 	});
@@ -215,8 +218,8 @@ describe("senpi#4436 sign-in runs claude auth login, then the connection test", 
 		expect(lane.records().find((record) => record.argv?.[1] === "login")?.configDir).toBe(
 			join(lane.agentDir, "anthropic-subscription-claude", slot?.store === "claude-cli" ? slot.dirId : ""),
 		);
-		// The login commit adds the new account (and names it in the receipt), not the test-time write.
-		expect(await lane.slots()).toEqual([]);
+		// The account owns its dir from the first write on; the caller's commit merges onto it.
+		expect(await lane.slots()).toEqual(credential.accounts);
 		expect(takeClaudeCliLoginOutcome(signal)).toMatchObject({
 			account: { name: "default" },
 			check: { outcome: "ok" },
@@ -342,7 +345,8 @@ type CancelStage = "sign-in" | "status read" | "first write" | "connection test"
 
 describe("senpi#4436 a login cancelled at any stage leaves no account and no account dir", () => {
 	const rows: Array<{ stage: CancelStage; signedIn: boolean }> = [
-		{ stage: "sign-in", signedIn: false },
+		// The CLI login process was started, so the rollback signs its dir out even though it never reported success.
+		{ stage: "sign-in", signedIn: true },
 		{ stage: "status read", signedIn: true },
 		{ stage: "first write", signedIn: true },
 		{ stage: "connection test", signedIn: true },
@@ -442,5 +446,132 @@ describe("senpi#4436 a cancelled re-login leaves the existing account as it was"
 				.filter((record) => record.argv?.join(" ") === "auth logout")
 				.map((record) => record.configDir),
 		).toEqual([loginDir]);
+	});
+});
+
+describe("senpi#4436 no Claude CLI login outlives the account that owns it", () => {
+	const loginDirs = (records: Recorded[]) =>
+		records.filter((record) => record.argv?.[1] === "login").map((record) => record.configDir);
+	const logoutDirs = (records: Recorded[]) =>
+		records.filter((record) => record.argv?.join(" ") === "auth logout").map((record) => record.configDir);
+
+	it("a sign-in that fails after the CLI saved its login signs that dir out and removes it", async () => {
+		const lane = await setup({ mode: "login-exit0-silent" });
+
+		const login = lane.config.login({ onPrompt: async () => "fixture-code#fixture-state" });
+
+		await expect(login).rejects.toThrow(/sign-in failed/i);
+		expect(await lane.slots()).toEqual([]);
+		expect(lane.accountDirs()).toEqual([]);
+		expect(logoutDirs(lane.records())).toEqual(loginDirs(lane.records()));
+	});
+
+	it("a cancel at the final commit never leaves a signed-in dir without a slot that owns it", async () => {
+		const controller = new AbortController();
+		const lane = await setup({});
+		const models = createModels({
+			credentials: {
+				read: (provider) => lane.store.read(provider),
+				list: () => lane.store.list(),
+				delete: (provider) => lane.store.delete(provider),
+				modify: async (provider, update, options) => {
+					// Only the login commit passes a signal: the user cancels exactly as it starts.
+					if (options?.signal !== undefined) {
+						controller.abort();
+						throw new Error("commit interrupted");
+					}
+					return lane.store.modify(provider, update);
+				},
+			},
+		});
+		models.setProvider(composedProvider(async () => false, { oauth: lane.config }));
+
+		const login = models.login("anthropic-subscription", "oauth", {
+			signal: controller.signal,
+			prompt: async (prompt) => (prompt.type === "select" ? (prompt.options?.[0]?.id ?? "") : heldOpen(prompt)),
+			notify: () => {},
+		});
+
+		await expect(login).rejects.toThrow();
+		const owned = (await lane.slots()).flatMap((slot) => (slot.store === "claude-cli" ? [slot.dirId] : []));
+		expect(lane.accountDirs().filter((dirId) => !owned.includes(dirId))).toEqual([]);
+		expect(owned.filter((dirId) => !lane.accountDirs().includes(dirId))).toEqual([]);
+	});
+
+	it("a sign-out that fails during the rollback is reported, and the account and dir are still gone", async () => {
+		const controller = new AbortController();
+		const progress: string[] = [];
+		const lane = await setup({
+			env: { FAKE_CLAUDE_LOGOUT_FAIL: "1" },
+			cli: () => ({
+				authStatus: async (run) => {
+					const status = await readClaudeCliAuthStatus(run);
+					controller.abort();
+					return status;
+				},
+			}),
+		});
+
+		const login = lane.config.login({
+			onPrompt: heldOpen,
+			onProgress: (message) => progress.push(message),
+			signal: controller.signal,
+		});
+
+		await expect(login).rejects.toThrow(/cancelled/i);
+		expect(await lane.slots()).toEqual([]);
+		expect(lane.accountDirs()).toEqual([]);
+		expect(progress.filter((message) => /could not be signed out/i.test(message))).toHaveLength(1);
+	});
+
+	it("a re-login cancelled while another write updates the slot keeps that write", async () => {
+		const oldDirId = "a".repeat(32);
+		const blockedUntil = Date.now() + 3_600_000;
+		const controller = new AbortController();
+		const lane = await setup({
+			slots: [cliSlot("work", oldDirId, { profile: { email: "old@example.com", checkedAt: 1 } })],
+			cli: (store) => ({
+				connectionTest: async ({ model }) => {
+					await store.modify(SCRIPTED_PROVIDER, async (stored) => {
+						const credential = stored as AnthropicSubscriptionCredential;
+						return {
+							...credential,
+							accounts: (credential.accounts ?? []).map((slot) =>
+								slot.name === "work"
+									? {
+											...slot,
+											blockReason: "rate_limit",
+											blockedUntil,
+											modelBlocks: { opus: { blockedUntil } },
+										}
+									: slot,
+							),
+						};
+					});
+					controller.abort();
+					return { model, outcome: "failed", reason: "cancelled", at: 0 };
+				},
+			}),
+		});
+		const oldDir = seedAccountDir(lane.agentDir, oldDirId);
+
+		const login = lane.config.login({
+			onPrompt: async (prompt) => (prompt.message.startsWith(DESKTOP_NAME_PREFIX) ? "work" : heldOpen(prompt)),
+			signal: controller.signal,
+		});
+
+		await expect(login).rejects.toThrow(/cancelled/i);
+		const [work] = await lane.slots();
+		expect(work).toMatchObject({
+			name: "work",
+			dirId: oldDirId,
+			profile: { email: "old@example.com", checkedAt: 1 },
+			blockReason: "rate_limit",
+			blockedUntil,
+			modelBlocks: { opus: { blockedUntil } },
+		});
+		expect(work).not.toHaveProperty("signedInAt");
+		expect(readFileSync(join(oldDir, "old-login-marker"), "utf8")).toBe("old");
+		expect(lane.accountDirs()).toEqual([oldDirId]);
 	});
 });

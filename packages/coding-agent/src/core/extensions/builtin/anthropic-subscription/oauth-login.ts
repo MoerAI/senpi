@@ -8,6 +8,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { lstatSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./account-management.ts";
 import {
 	type AccountSlot,
@@ -318,6 +319,33 @@ function withCheck(
 	};
 }
 
+/**
+ * The accounts with this login taken back. Only a slot that still points at this login's dir is touched: a new
+ * account's slot is removed; for a re-login each field this login wrote is restored to its previous value unless
+ * another writer changed it meanwhile, so blocks, model blocks or a check stored during the login survive.
+ */
+function withoutThisLogin(
+	accounts: readonly AccountSlot[],
+	written: ClaudeCliAccountSlot,
+	previous: AccountSlot | undefined,
+): AccountSlot[] {
+	return accounts.flatMap((candidate) => {
+		if (candidate.name !== written.name || candidate.store !== "claude-cli" || candidate.dirId !== written.dirId)
+			return [candidate];
+		if (previous === undefined) return [];
+		const restored: Record<string, unknown> = { ...candidate };
+		const current = candidate as Record<string, unknown>;
+		const ours = written as Record<string, unknown>;
+		const before = previous as Record<string, unknown>;
+		for (const key of new Set([...Object.keys(ours), ...Object.keys(before)])) {
+			if (!isDeepStrictEqual(current[key], ours[key])) continue;
+			if (before[key] === undefined) delete restored[key];
+			else restored[key] = before[key];
+		}
+		return [restored as AccountSlot];
+	});
+}
+
 function storedSubscription(value: unknown): AnthropicSubscriptionCredential | undefined {
 	return typeof value === "object" && value !== null && (value as { type?: unknown }).type === "oauth"
 		? (value as AnthropicSubscriptionCredential)
@@ -444,32 +472,36 @@ export function createOAuthConfig(deps: {
 			const cancelled = () => {
 				if (callbacks.signal?.aborted) throw new Error("Login cancelled");
 			};
-			let signedIn = false;
+			let loginStarted = false;
 			let signedInCredential: AnthropicSubscriptionCredential;
-			let slotWritten = false;
-			// Any throw or cancel after the dir exists undoes the whole login: the slot goes back to what it was (none
-			// for a new account), a CLI login this attempt made is signed out, and a new account's dir is removed.
+			let written: ClaudeCliAccountSlot | undefined;
+			// One guarded step from the moment the dir exists to the end of login(): any throw or cancel undoes it all.
+			// The slot this login wrote is taken back (removed for a new account; for a re-login only the fields this
+			// login changed and nobody changed since are restored, re-read under the lock), the fresh dir is signed out
+			// whenever its CLI login was started (it may have saved a login before the step failed), and the fresh dir is
+			// removed. Past the last step the slot stays written, so no signed-in dir is ever left without the slot that
+			// owns it, even when the caller's commit (Models.login / AuthStorage.set) is cancelled or fails.
 			const rollBack = async () => {
-				if (slotWritten) {
+				const ours = written;
+				if (ours !== undefined) {
 					await credentials.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (stored) => {
 						const base = storedSubscription(stored);
 						if (base === undefined) return stored;
-						const accounts = (base.accounts ?? []).filter((candidate) => candidate.name !== name);
-						return {
-							...base,
-							accounts:
-								previous === undefined
-									? accounts
-									: (base.accounts ?? []).map((candidate) => (candidate.name === name ? previous : candidate)),
-						};
+						return { ...base, accounts: withoutThisLogin(base.accounts ?? [], ours, previous) };
 					});
 				}
-				if (signedIn) await logoutClaudeCli(run);
+				if (loginStarted) {
+					const signedOut = await logoutClaudeCli(run).catch(() => false);
+					if (!signedOut)
+						callbacks.onProgress?.(
+							"Claude sign-in was undone, but the Claude login it made could not be signed out (claude auth logout failed); its account dir was removed",
+						);
+				}
 				discardAccountDir(agentDir(), dirId);
 			};
 			try {
+				loginStarted = true;
 				await signInThroughCli(run, method, callbacks);
-				signedIn = true;
 				const status = await (cli.authStatus ?? readClaudeCliAuthStatus)(run);
 				cancelled();
 				if (status.state !== "signed_in") {
@@ -481,7 +513,7 @@ export function createOAuthConfig(deps: {
 				}
 
 				const slot = signedInSlot(previous, name, dirId, status.profile, now());
-				slotWritten = true;
+				written = slot;
 				await credentials.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (stored) =>
 					withSlot(storedSubscription(stored) ?? current, slot),
 				);
@@ -504,14 +536,12 @@ export function createOAuthConfig(deps: {
 						? `Connection test passed on ${model}`
 						: `Connection test failed on ${model} (${check.reason ?? "unknown"}); the account was kept. Retry from the account list.`,
 				);
-				// A new account's test-time write is taken back so the login commit (Models.login / AuthStorage.set)
-				// adds it and names it in the account receipt; a Reconnect keeps its in-place write.
+				// The slot stays written: the caller's commit merges onto it, so the account owns its dir throughout.
 				let tested: AccountSlot = slot;
 				const saved = await credentials.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (stored) => {
 					const base = storedSubscription(stored) ?? withSlot(current, slot);
 					tested = base.accounts?.find((candidate) => candidate.name === name) ?? slot;
-					if (previous !== undefined) return withCheck(base, name, check);
-					return { ...base, accounts: (base.accounts ?? []).filter((candidate) => candidate.name !== name) };
+					return withCheck(base, name, check);
 				});
 				if (callbacks.signal !== undefined)
 					recordClaudeCliLoginOutcome(callbacks.signal, { account: { name }, check });
