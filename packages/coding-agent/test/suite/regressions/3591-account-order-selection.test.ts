@@ -7,7 +7,10 @@ import { type PooledCredential, projectSlot } from "@earendil-works/pi-ai/auth/p
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sha256SlotHasher, streamWithCredentialRotation } from "../../../src/core/credential-pool/rotation-stream.ts";
 import { CredentialSlotRepository } from "../../../src/core/credential-pool/state-store.ts";
-import type { AccountSlot } from "../../../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
+import type {
+	AccountSlot,
+	LegacyAccountSlot,
+} from "../../../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 import {
 	rendezvousOrder as claudeRendezvousOrder,
 	selectAccount,
@@ -137,7 +140,7 @@ describe("senpi#3591 account order: the generic rotation path", () => {
 });
 
 describe("senpi#3591 account order: the Claude subscription lane", () => {
-	function account(name: string, extra: Partial<AccountSlot> = {}): AccountSlot {
+	function account(name: string, extra: Partial<LegacyAccountSlot> = {}): AccountSlot {
 		return {
 			name,
 			access: `${name}-access`,

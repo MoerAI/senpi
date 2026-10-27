@@ -5,6 +5,7 @@ import {
 	type AnthropicSubscriptionCredential,
 	addAccount,
 	emptyCredential,
+	isTokenSlot,
 } from "../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 import { classifySdkError } from "../src/core/extensions/builtin/anthropic-subscription/errors.ts";
 import { ClassifiedSdkError, runFailover } from "../src/core/extensions/builtin/anthropic-subscription/failover.ts";
@@ -21,6 +22,11 @@ type Done = { type: "done"; value: string };
 
 const original: AccountSlot = { name: "default", access: "a-old", refresh: "r-old", expires: 1, source: "login" };
 const rotated = { access: "a-new", refresh: "r-new", expires: 2 };
+
+function tokenOf(slot: AccountSlot): string {
+	if (!isTokenSlot(slot)) throw new Error("expected a token slot");
+	return slot.access;
+}
 
 async function storeWith(slot: AccountSlot): Promise<CredentialStore> {
 	const store = new InMemoryCredentialStore();
@@ -67,12 +73,12 @@ describe("anthropic-subscription auth blocks follow the rejected token, not the 
 		const used: string[] = [];
 		const events = await collect(
 			failover(store, async function* (slot) {
-				used.push(slot.access);
+				used.push(tokenOf(slot));
 				if (used.length === 1) {
 					await rotateStoredToken(store);
 					throw new Error(REVOKED);
 				}
-				yield { type: "done", value: slot.access };
+				yield { type: "done", value: tokenOf(slot) };
 			}),
 		);
 
@@ -91,13 +97,13 @@ describe("anthropic-subscription auth blocks follow the rejected token, not the 
 			accounts: [shared],
 			selectFn: (pool) => pool[0]!,
 			runAttempt: async function* (slot) {
-				used.push(slot.access);
+				used.push(tokenOf(slot));
 				if (used.length === 1) {
 					Object.assign(shared, rotated);
 					await rotateStoredToken(store);
 					throw new Error(REVOKED);
 				}
-				yield { type: "done", value: slot.access };
+				yield { type: "done", value: tokenOf(slot) };
 			},
 			classify: classifySdkError,
 			store,
@@ -114,7 +120,7 @@ describe("anthropic-subscription auth blocks follow the rejected token, not the 
 		const store = await storeWith(original);
 		const used: string[] = [];
 		const stream = failover(store, async (slot) => {
-			used.push(slot.access);
+			used.push(tokenOf(slot));
 			if (used.length === 1) await rotateStoredToken(store);
 			throw new Error(REVOKED);
 		});

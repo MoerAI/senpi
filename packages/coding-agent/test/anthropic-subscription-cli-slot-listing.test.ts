@@ -1,4 +1,14 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	copyFileSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -105,14 +115,50 @@ describe("CLI-store slot removal", () => {
 		expect(await getCredentialAccounts(storage, PROVIDER, {}, repository)).toEqual([]);
 	});
 
-	it("a failed sign-out keeps the account and names the failure", async () => {
+	it.each([
+		["the sign-out fails", () => cliEnv("logout-fail")],
+		[
+			"claude cannot be run",
+			() => {
+				// A file the resolver accepts (it only stats) but the OS refuses to execute: no real claude ever runs.
+				const unrunnable = join(root, "unrunnable-claude");
+				writeFileSync(unrunnable, "not a binary\n", { mode: 0o644 });
+				return { ...cliEnv("logout-ok"), CLAUDE_CODE_EXECUTABLE: unrunnable };
+			},
+		],
+	])("when %s the account and its dir are still removed, with a notice", async (_label, env) => {
 		ensureAccountDir({ agentDir: join(root, "agent"), dirId: DIR_ID, sharedRoot });
 
-		await expect(
-			removeCredentialAccount(storage, PROVIDER, "work", cliEnv("logout-fail"), repository),
-		).rejects.toThrow(/sign-out failed/);
+		const result = await removeCredentialAccount(storage, PROVIDER, "work", env(), repository);
 
-		expect(existsSync(accountDirFor(join(root, "agent"), DIR_ID))).toBe(true);
-		expect((await getCredentialAccounts(storage, PROVIDER, {}, repository)).map((a) => a.name)).toEqual(["work"]);
+		expect(result.notice).toMatch(/sign-out could not run/);
+		expect(existsSync(accountDirFor(join(root, "agent"), DIR_ID))).toBe(false);
+		expect(existsSync(join(sharedRoot, "projects", "x.jsonl"))).toBe(true);
+		expect(await getCredentialAccounts(storage, PROVIDER, {}, repository)).toEqual([]);
+	});
+
+	it("an account dir that is a link is left untouched, and the slot is dropped with a notice", async () => {
+		const accountDir = accountDirFor(join(root, "agent"), DIR_ID);
+		mkdirSync(join(root, "agent", "anthropic-subscription-claude"), { recursive: true });
+		symlinkSync(sharedRoot, accountDir, process.platform === "win32" ? "junction" : "dir");
+
+		const result = await removeCredentialAccount(storage, PROVIDER, "work", cliEnv("logout-ok"), repository);
+
+		expect(result.notice).toMatch(/its account dir is a link or a file, left untouched/);
+		expect(lstatSync(accountDir).isSymbolicLink()).toBe(true);
+		expect(existsSync(join(sharedRoot, "projects", "x.jsonl"))).toBe(true);
+		expect(await getCredentialAccounts(storage, PROVIDER, {}, repository)).toEqual([]);
+	});
+
+	it.each([
+		["no dir id", { ...CLI_SLOT, dirId: undefined }],
+		["a malformed dir id", { ...CLI_SLOT, dirId: "../escape" }],
+	])("a slot with %s is dropped and reported, never stuck", async (_label, slot) => {
+		await storage.modify(PROVIDER, async () => ({ ...emptyCredential(), accounts: [slot] }));
+
+		const result = await removeCredentialAccount(storage, PROVIDER, "work", cliEnv("logout-fail"), repository);
+
+		expect(result.notice).toMatch(/without a Claude sign-out/);
+		expect(await getCredentialAccounts(storage, PROVIDER, {}, repository)).toEqual([]);
 	});
 });

@@ -1291,9 +1291,15 @@ export class RpcClient {
 		await this.send({ type: "account_order", provider, names });
 	}
 
-	/** Remove a persisted provider account slot. Environment slots are read-only. */
-	async removeProviderAccount(provider: string, name: string): Promise<void> {
-		await this.send({ type: "account_remove", provider, name });
+	/**
+	 * Remove a persisted provider account slot. Environment slots are read-only. `notice` is set when the account was
+	 * removed but something could not be cleaned up (a Claude CLI sign-out that could not run, a malformed slot).
+	 */
+	async removeProviderAccount(provider: string, name: string): Promise<{ notice?: string }> {
+		const data = this.getData<{ notice: string } | undefined>(
+			await this.send({ type: "account_remove", provider, name }),
+		);
+		return data === undefined ? {} : { notice: data.notice };
 	}
 
 	// =========================================================================
