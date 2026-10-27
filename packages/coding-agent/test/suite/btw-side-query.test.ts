@@ -1,7 +1,6 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { registerFauxProvider, streamSimple } from "@earendil-works/pi-ai/compat";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import type { ResponseCreateParams } from "openai/resources/responses/responses.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { estimateTokens } from "../../src/core/compaction/index.ts";
 import btwExtension from "../../src/core/extensions/builtin/btw/index.ts";
@@ -257,7 +256,7 @@ describe("runSideQuery", () => {
 		];
 		const history = [{ role: "user" as const, content: "earlier question", timestamp: 1 }, assistant];
 		const originalHistory = structuredClone(history);
-		let payload: ResponseCreateParams | undefined;
+		let payload: Record<string, unknown> | undefined;
 
 		await expect(
 			runSideQuery(
@@ -269,7 +268,7 @@ describe("runSideQuery", () => {
 						streamSimple(requestModel, context, {
 							...options,
 							onPayload: (body) => {
-								payload = body as ResponseCreateParams;
+								payload = body as Record<string, unknown>;
 								throw new Error("btw payload captured before transport");
 							},
 						}),
