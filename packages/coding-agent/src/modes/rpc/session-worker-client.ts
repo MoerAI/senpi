@@ -15,6 +15,7 @@ import type { RpcSessionBinding } from "./session-binding.ts";
 import type { RpcExtensionUIResponse } from "./rpc-types.ts";
 import { SessionAcceptanceLane } from "./session-acceptance-lane.ts";
 import { frameUnit } from "./compact-canonical-pairing.ts";
+import { canonicalLoss } from "./compact-protocol-depth.ts";
 import type { SessionEventWriter } from "./session-event-writer.ts";
 import type { RpcSessionLaunchProfile } from "./session-registry.ts";
 import type {
@@ -479,7 +480,7 @@ export class SessionWorkerClient {
 				if (!this.inOrder(message)) return;
 				if (message.type === "canonical")
 					this.acceptance?.acceptControl(frameUnit({ ...message, canonical: message.record }));
-				else this.acceptance?.compactUnavailable(message.reason);
+				else this.acceptance?.compactUnavailable(canonicalLoss(message));
 				acknowledge(message.signal, true);
 				return;
 			case "capabilities":

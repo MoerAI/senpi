@@ -1,5 +1,6 @@
 import { type RecoveryCarrier, recoveryCarrier } from "../../core/session-recovery-identity.ts";
 import type { CanonicalRecord, CanonicalUnit } from "./compact-lane-transitions.ts";
+import { protocolClone } from "./compact-protocol-depth.ts";
 
 const CONTROLS = new Set(["message_block_state", "message_block_metadata", "message_tool_arguments_reset"]);
 const carried = new WeakMap<object, CanonicalRecord>();
@@ -13,7 +14,8 @@ export interface CanonicalControl {
  * Joins the two projections of one session event into one acceptance unit (RULING-26 Q2). The structured lane emits
  * before the legacy listeners, so an event's canonical record waits here, keyed by the per-event recovery carrier both
  * projections share, until its legacy record arrives; a block control has no legacy record and is a unit by itself.
- * Canonical records take JSON wire semantics at this boundary: `undefined` properties are dropped (#4425 LOW 4).
+ * Canonical records take JSON wire semantics at this boundary: `undefined` properties are dropped (#4425 LOW 4), and a
+ * record deeper than the protocol depth limit is refused typed before its clone and never pairs (RULING-59 C).
  */
 export class CanonicalPairing {
 	private readonly pending = new WeakMap<RecoveryCarrier, CanonicalRecord>();
@@ -21,7 +23,7 @@ export class CanonicalPairing {
 	structured(record: object): CanonicalControl | undefined {
 		const carrier = recoveryCarrier(record);
 		if (!carrier) return undefined;
-		const canonical: CanonicalRecord = JSON.parse(JSON.stringify(record));
+		const canonical: CanonicalRecord = protocolClone(record);
 		if (CONTROLS.has(canonical.type)) return { record: canonical, carrier };
 		this.pending.set(carrier, canonical);
 		return undefined;

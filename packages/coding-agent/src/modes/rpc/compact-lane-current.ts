@@ -2,6 +2,7 @@ import type { TranscriptTransition } from "../../core/session-transcript-journal
 import type { CallFold } from "./compact-call-fold.ts";
 import type { CompactColdOutcome } from "./compact-cold-operations.ts";
 import { type CanonicalUnit, laneTransition } from "./compact-lane-transitions.ts";
+import { protocolClone, protocolDepthLimitOf } from "./compact-protocol-depth.ts";
 import { CompactReadError } from "./compact-read-lease.ts";
 import { CompactSessionState, type CompactSessionStateOptions } from "./compact-session-state.ts";
 import type { CompactSettledMessages } from "./compact-settled-messages.ts";
@@ -19,6 +20,12 @@ export class CompactLaneCurrent {
 	private cleanup: Promise<void> = Promise.resolve();
 	private coldChain: Promise<void> = Promise.resolve();
 	private readonly owners = new WeakMap<FrozenCompactState, CompactSessionState>();
+	private refused = 0;
+
+	/** Records refused at the protocol depth limit while a compact state was live, over this lane's lifetime. */
+	get refusedRecords(): number {
+		return this.refused;
+	}
 
 	/** Open broadcast questions now; undefined once this epoch's compact state is unavailable. */
 	get openBroadcastDialogs(): number | undefined {
@@ -36,14 +43,14 @@ export class CompactLaneCurrent {
 
 	/** A host-origin lifecycle, run-state or dialog record, taken at the same JSON boundary as canonical records. */
 	foldComponent(record: object, sequence: number): void {
-		this.apply(() => ({ type: "component", record: JSON.parse(JSON.stringify(record)) }), sequence);
+		this.apply(() => ({ type: "component", record: protocolClone(record) }), sequence);
 	}
 
 	/** An execution, hook or boundary record for the calls component (S06); undefined once the state is unavailable. */
 	foldCall(record: object, sequence: number, turnId: string | null): CallFold | undefined {
 		if (!this.state) return undefined;
 		try {
-			return this.state.acceptCall(JSON.parse(JSON.stringify(record)), sequence, turnId);
+			return this.state.acceptCall(protocolClone(record), sequence, turnId);
 		} catch (cause) {
 			this.fail(cause);
 			return undefined;
@@ -151,9 +158,21 @@ export class CompactLaneCurrent {
 		return Promise.all([this.cleanup, this.coldChain, this.state?.idle()]).then(() => {});
 	}
 
-	/** The epoch's compact component stops here: a fold failed, or a canonical record never reached this lane. */
+	/**
+	 * The epoch's compact component stops here: a fold failed, or a canonical record never reached this lane. A record
+	 * refused at the protocol depth limit is the exception (RULING-59 C): it was refused before anything was cloned or
+	 * folded, so it is counted and reported and the state stays available.
+	 */
 	fail(cause: unknown): void {
 		if (!this.state) return;
+		const limit = protocolDepthLimitOf(cause);
+		if (limit !== undefined) {
+			this.refused += 1;
+			process.stderr.write(
+				`senpi rpc acceptance: compact record refused: unsupported_value (depth above ${limit})\n`,
+			);
+			return;
+		}
 		const reason = cause instanceof Error && "reason" in cause ? String(cause.reason) : String(cause);
 		process.stderr.write(`senpi rpc acceptance: compact current state unavailable: ${reason}\n`);
 		this.retire();

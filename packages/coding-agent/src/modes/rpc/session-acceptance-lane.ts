@@ -204,7 +204,10 @@ export class SessionAcceptanceLane {
 		return this.sequence;
 	}
 
-	/** A canonical record of this epoch was lost before folding, so its compact state can no longer be complete. */
+	/**
+	 * A canonical record of this epoch was lost before folding, so its compact state can no longer be complete; one refused
+	 * at the protocol depth limit is counted instead and the state stays (RULING-59 C).
+	 */
 	compactUnavailable(cause: unknown): void {
 		if (!this.retired) this.current.fail(cause);
 	}
@@ -266,7 +269,7 @@ export class SessionAcceptanceLane {
 	}
 
 	storageStatus() {
-		return this.settled.storageStatus();
+		return { ...this.settled.storageStatus(), refusedRecords: this.current.refusedRecords };
 	}
 
 	private compact = () => ({ settled: this.settled, current: this.current });

@@ -26,6 +26,7 @@ import type { RpcSessionEntry, RpcSessionRegistry } from "./session-registry.ts"
 import { resolveMovedProfile } from "./session-registry-moved-path.ts";
 import { createWorkerCredit } from "./session-worker-credit.ts";
 import { type CanonicalControl, carriedCanonical } from "./compact-canonical-pairing.ts";
+import { protocolDepthLimitOf } from "./compact-protocol-depth.ts";
 import { CompactProducerStamp } from "./compact-producer-stamp.ts";
 import {
 	type HostToSessionWorker,
@@ -164,11 +165,13 @@ class WorkerEventWriter extends SessionEventWriter {
 	}
 	override canonicalUnavailable(_sessionId: string, cause: unknown): void {
 		// The host's compact state for this epoch is already gone after the first; later ones would only cost exchanges.
+		// A depth refusal leaves it available (RULING-59 C), so it never counts as that first loss.
 		if (!ordered || canonicalLost) return;
-		canonicalLost = true;
+		const limit = protocolDepthLimitOf(cause);
+		canonicalLost = limit === undefined;
 		const { ordinal } = stamp.stamp(undefined, undefined);
 		const reason = cause instanceof Error ? cause.message : String(cause);
-		exchange((signal) => ({ type: "canonical_unavailable", ordinal, reason, signal }));
+		exchange((signal) => ({ type: "canonical_unavailable", ordinal, reason, limit, signal }));
 	}
 }
 

@@ -2,6 +2,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, expect, it, vi } from "vitest";
 import { CanonicalPairing } from "../../../src/modes/rpc/compact-canonical-pairing.ts";
 import type { CanonicalRecord } from "../../../src/modes/rpc/compact-lane-transitions.ts";
+import { COMPACT_PROTOCOL_MAX_DEPTH } from "../../../src/modes/rpc/compact-protocol-depth.ts";
 import { RpcSessionRegistry, type RpcSessionEntry } from "../../../src/modes/rpc/session-registry.ts";
 import { SessionWorkerClient } from "../../../src/modes/rpc/session-worker-client.ts";
 import { type SessionWorkerToHost, WORKER_CREDIT_CODES } from "../../../src/modes/rpc/session-worker-protocol.ts";
@@ -116,6 +117,35 @@ it("worker: a canonical_unavailable frame takes its ordinal and makes the epoch'
 		const root = lane.freeze();
 		expect(root.current).toBeUndefined();
 		lane.release(root);
+	} finally {
+		await host.dispose();
+	}
+}, 60_000);
+
+// senpi#4272 RULING-59 C, worker half: a canonical record the isolate refused at the protocol depth limit is counted
+// on the host lane, whose compact state stays available.
+it("worker: a canonical_unavailable frame carrying the depth limit keeps the epoch's compact state", async () => {
+	const { host, lane, ordinal, deliver } = await workerLane();
+	const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+	try {
+		const signal = new SharedArrayBuffer(4);
+		const reason = `compact write refused (unsupported_value: depth above ${COMPACT_PROTOCOL_MAX_DEPTH})`;
+		const frame: SessionWorkerToHost = {
+			type: "canonical_unavailable",
+			ordinal: ordinal(),
+			reason,
+			limit: COMPACT_PROTOCOL_MAX_DEPTH,
+			signal,
+		};
+		expect(await deliver(frame)).toBe(WORKER_CREDIT_CODES.granted);
+		expect(host.failures).toEqual([]);
+		const root = lane.freeze();
+		expect(root.current).toBeDefined();
+		lane.release(root);
+		expect(lane.storageStatus().refusedRecords).toBe(1);
+		expect(write.mock.calls.map(([chunk]) => String(chunk))).toContain(
+			`senpi rpc acceptance: compact record refused: unsupported_value (depth above ${COMPACT_PROTOCOL_MAX_DEPTH})\n`,
+		);
 	} finally {
 		await host.dispose();
 	}
