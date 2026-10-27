@@ -29,6 +29,7 @@ import {
 	claudeCliSharedRoot,
 	ensureAccountDir,
 	newAccountDirId,
+	removeAccountDir,
 } from "./claude-cli-account-dir.ts";
 import {
 	type ClaudeCliLogin,
@@ -430,8 +431,10 @@ export function createOAuthConfig(deps: {
 			const env = hostEnv();
 			const executable = executableFor(env);
 			const previous = existing.find((slot) => slot.name === name);
-			const reconnect = previous?.store === "claude-cli" ? previous : undefined;
-			const dirId = reconnect?.dirId ?? newAccountDirId();
+			// A re-login signs into a fresh dir and takes the account over only once it succeeded, so a cancel or error
+			// can never leave the existing account's dir holding a different login.
+			const retiring = previous?.store === "claude-cli" ? previous : undefined;
+			const dirId = newAccountDirId();
 			const configDir = ensureAccountDir({ agentDir: agentDir(), dirId, sharedRoot: claudeCliSharedRoot(env) });
 			const run: ClaudeCliRun = { executable, configDir, parentEnv: env };
 			const credentials = store();
@@ -439,6 +442,7 @@ export function createOAuthConfig(deps: {
 				if (callbacks.signal?.aborted) throw new Error("Login cancelled");
 			};
 			let signedIn = false;
+			let signedInCredential: AnthropicSubscriptionCredential;
 			let slotWritten = false;
 			// Any throw or cancel after the dir exists undoes the whole login: the slot goes back to what it was (none
 			// for a new account), a CLI login this attempt made is signed out, and a new account's dir is removed.
@@ -457,7 +461,6 @@ export function createOAuthConfig(deps: {
 						};
 					});
 				}
-				if (reconnect !== undefined) return;
 				if (signedIn) await logoutClaudeCli(run);
 				discardAccountDir(agentDir(), dirId);
 			};
@@ -509,7 +512,7 @@ export function createOAuthConfig(deps: {
 				});
 				if (callbacks.signal !== undefined)
 					recordClaudeCliLoginOutcome(callbacks.signal, { account: { name }, check });
-				return withCheck(withSlot(storedSubscription(saved) ?? current, tested), name, check);
+				signedInCredential = withCheck(withSlot(storedSubscription(saved) ?? current, tested), name, check);
 			} catch (error) {
 				try {
 					await rollBack();
@@ -518,6 +521,25 @@ export function createOAuthConfig(deps: {
 				}
 				throw error;
 			}
+			if (retiring !== undefined) {
+				// The account now lives in the fresh dir: the old dir's login is signed out and the dir removed.
+				const retired = await removeAccountDir({
+					agentDir: agentDir(),
+					dirId: retiring.dirId,
+					executable,
+					parentEnv: env,
+				}).catch((error: unknown) => {
+					callbacks.onProgress?.(
+						`Signed in, but the previous Claude account dir could not be removed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					return undefined;
+				});
+				if (retired === "removed_without_sign_out")
+					callbacks.onProgress?.(
+						"Signed in; the previous Claude login could not be signed out, its dir was removed",
+					);
+			}
+			return signedInCredential;
 		},
 
 		async refreshToken(credentials) {
