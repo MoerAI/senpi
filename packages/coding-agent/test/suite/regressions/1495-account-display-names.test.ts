@@ -13,6 +13,7 @@ import { getCredentialAccounts, renameCredentialAccount } from "../../../src/cor
 import { subscribeProviderAccountEvents } from "../../../src/core/extensions/builtin/anthropic-subscription/account-events.ts";
 import { getProviderAccounts } from "../../../src/core/extensions/builtin/anthropic-subscription/account-management.ts";
 import { emptyCredential } from "../../../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
+import { cliSlot } from "../../support/claude-cli-test-slots.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -27,21 +28,28 @@ function fixture(provider: string) {
 		provider === "anthropic-subscription"
 			? emptyCredential()
 			: { type: "oauth" as const, access: "fake-a", refresh: "fake-r", expires: 4102444800000 };
-	const credential = {
-		...base,
-		pinned: "default",
-		accounts: [
-			{ name: "default", access: "fake-a", refresh: "fake-r", expires: 4102444800000, source: "login" as const },
-			{
-				name: "second",
-				access: "fake-b",
-				refresh: "fake-s",
-				expires: 4102444800000,
-				source: "import" as const,
-				blockedUntil: 4102444800000,
-			},
-		],
-	};
+	// A stored Claude account signs in through the Claude CLI and holds no token (senpi#4436).
+	const accounts =
+		provider === "anthropic-subscription"
+			? [cliSlot("default"), cliSlot("second", { blockedUntil: 4102444800000 })]
+			: [
+					{
+						name: "default",
+						access: "fake-a",
+						refresh: "fake-r",
+						expires: 4102444800000,
+						source: "login" as const,
+					},
+					{
+						name: "second",
+						access: "fake-b",
+						refresh: "fake-s",
+						expires: 4102444800000,
+						source: "import" as const,
+						blockedUntil: 4102444800000,
+					},
+				];
+	const credential = { ...base, pinned: "default", accounts };
 	const storage = AuthStorage.create(path);
 	storage.set(provider, credential);
 	return { storage, path, credential };
@@ -122,20 +130,31 @@ describe.each(["chatgpt-subscription", "anthropic-subscription"])("%s display na
 	it("exposes only safe descriptors and keeps labels through named refresh", async () => {
 		const { storage } = fixture(provider);
 		await renameCredentialAccount(storage, provider, "default", "Personal");
-		await storage.modify(provider, async (current) =>
-			mergeRefreshedSlot(current!, "default", {
-				type: "oauth",
-				access: "fake-rotated",
-				refresh: "fake-next",
-				expires: 4102444800001,
-			}),
-		);
+		const claude = provider === "anthropic-subscription";
+		if (!claude) {
+			await storage.modify(provider, async (current) =>
+				mergeRefreshedSlot(current!, "default", {
+					type: "oauth",
+					access: "fake-rotated",
+					refresh: "fake-next",
+					expires: 4102444800001,
+				}),
+			);
+		}
 		const summaries = await getCredentialAccounts(storage, provider, {});
-		expect(summaries).toEqual([
+		const expected = [
 			{ name: "default", displayName: "Personal", source: "login", blocked: false, pinned: true },
-			{ name: "second", source: "import", blocked: true, blockedUntil: 4102444800000, pinned: false },
-		]);
-		if (provider === "anthropic-subscription") expect(getProviderAccounts(storage, provider, {})).toEqual(summaries);
+			{
+				name: "second",
+				source: claude ? "login" : "import",
+				blocked: true,
+				blockedUntil: 4102444800000,
+				pinned: false,
+			},
+		];
+		if (claude) expect(summaries).toMatchObject(expected);
+		else expect(summaries).toEqual(expected);
+		if (claude) expect(getProviderAccounts(storage, provider, {})).toMatchObject(expected);
 		expect(JSON.stringify(summaries)).not.toMatch(/fake-|access|refresh|expires|headers/);
 	});
 });
