@@ -364,6 +364,8 @@ model context or history.
 
 `get_provider_accounts` returns secret-free descriptors containing `name`, `source`, `blocked`, `pinned`, and optional `displayName`. Render a named account as `displayName (name)`; keep using the immutable `name` for `account_pin`, `account_remove`, and comparisons. Legacy accounts omit `displayName`.
 
+`logout` deletes the provider's stored credential. For Anthropic Subscription it first signs every Claude CLI account out of the Claude CLI by its config dir (the same removal as `account_remove`), and its `data` is absent unless one could not be signed out cleanly, in which case it is `{ "notices": string[] }`, one user-facing sentence per account, as for `account_remove`.
+
 `account_remove` answers `success: true` once the account is gone. Its `data` is absent unless something could not be cleaned up, in which case it is `{ "notice": string }`, a user-facing sentence a client should show: a Claude CLI account whose `claude auth logout` could not run or failed (the account and its config dir are removed anyway, but the CLI's stored sign-in may remain), or whose stored account dir is missing, malformed, or a link or file (removed without a sign-out, and a link or file is left untouched).
 
 A blocked account also says why: `blockedReason` is `auth_error` (the provider rejected the key; it is skipped until one request re-probes it at `blockedUntil`), `rate_limit` (a cooldown that ends at `blockedUntil`) or `disabled` (no end time; replace the credential). Both fields appear only while `blocked` is true, and `blockedReason` is absent when the stored block names no reason. A client choosing an account for a new request should skip `auth_error` accounts rather than send a request that will fail with 401.

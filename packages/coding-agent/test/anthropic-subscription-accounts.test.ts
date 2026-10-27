@@ -12,6 +12,7 @@ import {
 	refreshSlot,
 	removeAccount,
 	SENTINEL_OAUTH_FIELDS,
+	upsertAccount,
 } from "../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 
 function makeStore(initial?: Credential): CredentialStore & { written: Credential[] } {
@@ -163,5 +164,15 @@ describe("account slots", () => {
 		);
 		expect(isSentinelSlot({ access: "aA", refresh: "rA" })).toBe(false);
 		expect(listAccounts(poisoned).map((account) => account.name)).toEqual(["default"]);
+	});
+
+	it("a token login never overwrites a Claude CLI account of the same name (senpi#4436)", () => {
+		const cli = { name: "work", source: "login" as const, store: "claude-cli" as const, dirId: "d".repeat(32) };
+		const credential = addAccount(emptyCredential(), cli);
+
+		expect(() =>
+			upsertAccount(credential, { name: "work", access: "a", refresh: "r", expires: 1, source: "login" }),
+		).toThrow(/signed in through the Claude CLI/);
+		expect(credential.accounts).toEqual([cli]);
 	});
 });

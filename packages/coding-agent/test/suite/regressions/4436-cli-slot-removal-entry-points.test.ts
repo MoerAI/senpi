@@ -14,6 +14,7 @@ import {
 	readFileSync,
 	rmSync,
 	symlinkSync,
+	watch,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -101,6 +102,27 @@ const rpcAccountRemove: EntryPoint = {
 	},
 };
 
+const rpcLogout: EntryPoint = {
+	async open(agentDir) {
+		const harness = makeHarness(agentDir);
+		const collected = makeSink();
+		const handler = createRpcConnectionHandler(harness.runtimeHost, collected.sink);
+		return {
+			storage: harness.authStorage,
+			remove: async () => {
+				await handler.handleInputLine(JSON.stringify({ id: "logout", type: "logout", provider: PROVIDER }));
+				const response = await collected.waitFor((message) => message.id === "logout");
+				if (response.success !== true) throw new Error(String(response.error));
+				return (response.data as { notices?: string[] } | undefined)?.notices?.[0];
+			},
+			close: () => {
+				void handler.dispose();
+				harness.cleanup();
+			},
+		};
+	},
+};
+
 const providerLogout: EntryPoint = {
 	async open(agentDir) {
 		const storage = AuthStorage.create(join(agentDir, "auth.json"));
@@ -152,6 +174,7 @@ const ENTRY_POINTS: Record<string, EntryPoint> = {
 	"/claude-account remove": claudeAccountRemove,
 	"RPC account_remove": rpcAccountRemove,
 	"provider /logout": providerLogout,
+	"RPC logout": rpcLogout,
 };
 
 const roots: string[] = [];
@@ -209,5 +232,72 @@ describe("senpi#4436 every claude-cli account removal entry point takes the same
 		expect(readFileSync(join(sharedRoot, "projects", "x.jsonl"), "utf8")).toBe("{}\n");
 		const stored = (await opened.storage.read(PROVIDER)) as AnthropicSubscriptionCredential | undefined;
 		expect((stored?.accounts ?? []).map((slot) => slot.name)).toEqual([]);
+	});
+});
+
+describe("senpi#4436 a provider logout of several claude-cli accounts", () => {
+	async function logoutLane(mode: string, names: readonly string[]) {
+		const root = mkdtempSync(join(tmpdir(), "senpi-4436-logout-"));
+		roots.push(root);
+		const agentDir = join(root, "agent");
+		const sharedRoot = join(root, "shared-claude");
+		mkdirSync(agentDir);
+		mkdirSync(join(sharedRoot, "projects"), { recursive: true });
+		const executable = join(root, "claude");
+		copyFileSync(FIXTURE, executable);
+		chmodSync(executable, 0o755);
+		const record = join(root, "record.jsonl");
+		vi.stubEnv("CLAUDE_CODE_EXECUTABLE", executable);
+		vi.stubEnv("CLAUDE_CONFIG_DIR", sharedRoot);
+		vi.stubEnv("FAKE_CLAUDE_MODE", mode);
+		vi.stubEnv("FAKE_CLAUDE_RECORD", record);
+		const storage = AuthStorage.create(join(agentDir, "auth.json"));
+		const slots = names.map((name, index) => ({ ...SLOT, name, dirId: String(index + 1).repeat(32) }));
+		await storage.modify(PROVIDER, async () => ({ ...emptyCredential(), accounts: slots }));
+		const dirs = slots.map((slot) => ensureAccountDir({ agentDir, dirId: slot.dirId, sharedRoot }));
+		const runtime = await ModelRuntime.create({ credentials: storage, modelsPath: null, allowModelNetwork: false });
+		const storedNames = async () =>
+			(((await storage.read(PROVIDER)) as AnthropicSubscriptionCredential | undefined)?.accounts ?? []).map(
+				(slot) => slot.name,
+			);
+		return { root, record, storage, dirs, runtime, storedNames };
+	}
+
+	it("drops each account as it is signed out, so a failure on a later one leaves no earlier one stored without its dir", async () => {
+		const lane = await logoutLane("logout-ok", ["first", "second"]);
+		// The second account's dir cannot be removed: a read-only subdir holds a file.
+		const locked = join(lane.dirs[1] ?? "", "locked");
+		mkdirSync(locked);
+		writeFileSync(join(locked, "keep"), "x");
+		chmodSync(locked, 0o500);
+		closers.push(() => chmodSync(locked, 0o700));
+
+		await expect(lane.runtime.logoutProvider(PROVIDER)).rejects.toThrow();
+
+		expect(existsSync(lane.dirs[0] ?? "")).toBe(false);
+		expect(existsSync(lane.dirs[1] ?? "")).toBe(true);
+		expect(await lane.storedNames()).toEqual(["second"]);
+	});
+
+	it("honors the caller's abort signal while a Claude CLI sign-out hangs, deleting nothing", async () => {
+		const lane = await logoutLane("logout-hang", ["only"]);
+		const controller = new AbortController();
+		const started = new Promise<void>((resolve) => {
+			const watcher = watch(lane.root, (_event, file) => {
+				if (file === "record.jsonl") {
+					watcher.close();
+					resolve();
+				}
+			});
+			closers.push(() => watcher.close());
+		});
+
+		const logout = lane.runtime.logoutProvider(PROVIDER, { signal: controller.signal });
+		await started;
+		controller.abort();
+
+		await expect(logout).rejects.toThrow();
+		expect(existsSync(lane.dirs[0] ?? "")).toBe(true);
+		expect(await lane.storedNames()).toEqual(["only"]);
 	});
 });
