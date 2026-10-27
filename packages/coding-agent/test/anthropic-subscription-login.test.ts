@@ -79,6 +79,18 @@ describe("claude-sdk-oauth oauth login config", () => {
 		expect(check).toEqual({ source: "Anthropic Subscription", type: "oauth" });
 	});
 
+	it("check does not count a stored account that still holds tokens, which the lane never lists (senpi#4436)", async () => {
+		const config = createOAuthConfig({ readCurrent: async () => undefined, claudeCli: fakeClaudeCliLogin() });
+		const legacy = { name: "legacy", source: "login" as const, access: "fake-a", refresh: "fake-r", expires: 1 };
+
+		const check = await config.check({
+			ctx: authContext(),
+			credential: { type: "oauth", ...SENTINEL_OAUTH_FIELDS, accounts: [legacy] } as never,
+		});
+
+		expect(check).toBeUndefined();
+	});
+
 	it("check still rejects a projected sentinel that names no account", async () => {
 		const config = createOAuthConfig({ readCurrent: async () => undefined, claudeCli: fakeClaudeCliLogin() });
 

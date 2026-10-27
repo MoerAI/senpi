@@ -17,6 +17,7 @@ import {
 	type ClaudeCliAccountCheck,
 	type ClaudeCliAccountSlot,
 	emptyCredential,
+	isListedStoredSlot,
 	listAccounts,
 	SENTINEL_OAUTH_FIELDS,
 } from "./accounts.ts";
@@ -351,7 +352,10 @@ export function createOAuthConfig(deps: {
 		signal?: AbortSignal,
 		environment?: Record<string, string>,
 	): Promise<boolean> => {
-		const storedAccounts = stored?.type === "oauth" && Array.isArray(stored.accounts) ? stored.accounts : [];
+		// Only the accounts the lane lists count: a hidden token-holding slot must not make the provider configured
+		// and then fail every turn with no account to serve (senpi#4436).
+		const storedAccounts =
+			stored?.type === "oauth" && Array.isArray(stored.accounts) ? stored.accounts.filter(isListedStoredSlot) : [];
 		// Slot-scoped resolution projects one account onto the flat credential shape,
 		// stripping `accounts`; its concrete (non-sentinel) tokens are that account.
 		const selectedStoredAccount =
