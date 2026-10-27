@@ -164,7 +164,9 @@ function recoveryTargetName(existing: AccountSlot[]): string | undefined {
 async function promptAccountName(callbacks: OAuthLoginCallbacks, existing: AccountSlot[]): Promise<string> {
 	if (existing.length === 0) return "default";
 	const recovery = recoveryTargetName(existing);
-	const fallback = `account-${existing.length + 1}`;
+	let next = existing.length + 1;
+	while (existing.some((slot) => slot.name === `account-${next}`)) next++;
+	const fallback = `account-${next}`;
 	if (!callbacks.onPrompt) return recovery ?? fallback;
 	const names = existing.map((slot) => slot.name).join(", ");
 	const message =

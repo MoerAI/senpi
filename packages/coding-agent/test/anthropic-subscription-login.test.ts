@@ -37,6 +37,31 @@ describe("claude-sdk-oauth oauth login config", () => {
 		expect(slots.every((slot) => slot.source !== "import")).toBe(true);
 	});
 
+	it.each([
+		["with a prompt answered blank", async () => ""],
+		["headless", undefined],
+	] as const)("the default name never collides with an existing account (%s)", async (_case, onPrompt) => {
+		const cli = fakeClaudeCliLogin();
+		const current = {
+			type: "oauth" as const,
+			...SENTINEL_OAUTH_FIELDS,
+			accounts: [
+				{ name: "a", source: "login" as const, store: "claude-cli" as const, dirId: "a".repeat(32) },
+				{ name: "account-3", source: "login" as const, store: "claude-cli" as const, dirId: "b".repeat(32) },
+			],
+		};
+		const config = createOAuthConfig({ readCurrent: async () => current, claudeCli: cli });
+		const credential = await config.login(onPrompt === undefined ? {} : { onPrompt });
+		const slots = listAccounts(credential as never);
+		expect(
+			slots.map((slot) => [slot.name, slot.store, slot.store === "claude-cli" ? slot.dirId : undefined]),
+		).toEqual([
+			["a", "claude-cli", "a".repeat(32)],
+			["account-3", "claude-cli", "b".repeat(32)],
+			["account-4", "claude-cli", expect.stringMatching(/^[0-9a-f]{32}$/)],
+		]);
+	});
+
 	it("second login adds a prompted account name without dropping slots", async () => {
 		const existing = await createOAuthConfig({
 			readCurrent: async () => undefined,
