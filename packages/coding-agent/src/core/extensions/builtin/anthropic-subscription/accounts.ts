@@ -173,13 +173,12 @@ export function upsertAccount(
 	assertValidAccountName(slot.name);
 	const existing = storedSlots(credential).find((candidate) => candidate.name === slot.name);
 	if (!existing) return { ...credential, accounts: [...storedSlots(credential), slot] };
+	// Overwriting a Claude CLI account would orphan its CLI sign-in and account dir; it is removed only through
+	// the CLI-safe removal (senpi#4436).
 	if (existing.store !== undefined) {
-		const replaced: AccountSlot =
-			existing.displayName === undefined ? slot : { ...slot, displayName: existing.displayName };
-		return {
-			...credential,
-			accounts: storedSlots(credential).map((candidate) => (candidate.name === slot.name ? replaced : candidate)),
-		};
+		throw new Error(
+			`Account '${slot.name}' is signed in through the Claude CLI; remove it first or choose another name`,
+		);
 	}
 	const {
 		blockedUntil: _blockedUntil,

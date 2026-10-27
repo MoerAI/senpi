@@ -215,7 +215,7 @@ export type RpcMutationResponse =
 			/** Present when the key replaced a login of the other kind; `backupPath` holds the previous file (senpi#3448). */
 			data?: { replaced: "oauth" | "api_key"; backupPath?: string };
 	  }
-	| { id?: string; type: "response"; command: "logout"; success: true }
+	| { id?: string; type: "response"; command: "logout"; success: true; data?: { notices: string[] } }
 	| {
 			id?: string;
 			type: "response";

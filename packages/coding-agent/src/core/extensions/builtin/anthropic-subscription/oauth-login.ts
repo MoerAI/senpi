@@ -17,6 +17,7 @@ import {
 	type ClaudeCliAccountCheck,
 	type ClaudeCliAccountSlot,
 	emptyCredential,
+	isTokenSlot,
 	type LegacyAccountSlot,
 	listAccounts,
 	SENTINEL_OAUTH_FIELDS,
@@ -29,6 +30,7 @@ import {
 	claudeCliSharedRoot,
 	ensureAccountDir,
 	newAccountDirId,
+	removeAccountDir,
 } from "./claude-cli-account-dir.ts";
 import {
 	type ClaudeCliLogin,
@@ -36,7 +38,12 @@ import {
 	type ClaudeCliLoginResult,
 	startClaudeCliLogin,
 } from "./claude-cli-auth.ts";
-import { type ClaudeCliProfile, logoutClaudeCli, readClaudeCliAuthStatus } from "./claude-cli-auth-status.ts";
+import {
+	type ClaudeCliAuthStatus,
+	type ClaudeCliProfile,
+	logoutClaudeCli,
+	readClaudeCliAuthStatus,
+} from "./claude-cli-auth-status.ts";
 import {
 	type ClaudeCliConnectionTestInput,
 	connectionTestModel,
@@ -83,6 +90,7 @@ export type ClaudeCliLoginDeps = {
 	providerSettings?: () => AnthropicSubscriptionProviderSettings;
 	cwd?: () => string;
 	connectionTest?: (input: ClaudeCliConnectionTestInput) => Promise<ClaudeCliAccountCheck>;
+	authStatus?: (run: ClaudeCliRun) => Promise<ClaudeCliAuthStatus>;
 	now?: () => number;
 };
 
@@ -145,8 +153,10 @@ function toSlot(
  * overwrites the newest working slot in a multi-account pool.
  */
 function recoveryTargetName(existing: AccountSlot[]): string | undefined {
-	if (existing.length === 1) return existing[0]?.name;
-	const authBlocked = existing.filter((slot) => slot.blockReason === "auth_error");
+	// A Claude CLI account is never a refresh target: a token login cannot replace it.
+	const tokenSlots = existing.filter(isTokenSlot);
+	if (existing.length === 1) return tokenSlots[0]?.name;
+	const authBlocked = tokenSlots.filter((slot) => slot.blockReason === "auth_error");
 	if (authBlocked.length === 1) return authBlocked[0]?.name;
 	return undefined;
 }
@@ -424,64 +434,115 @@ export function createOAuthConfig(deps: {
 			const env = hostEnv();
 			const executable = executableFor(env);
 			const previous = existing.find((slot) => slot.name === name);
-			const reconnect = previous?.store === "claude-cli" ? previous : undefined;
-			const dirId = reconnect?.dirId ?? newAccountDirId();
+			// A re-login signs into a fresh dir and takes the account over only once it succeeded, so a cancel or error
+			// can never leave the existing account's dir holding a different login.
+			const retiring = previous?.store === "claude-cli" ? previous : undefined;
+			const dirId = newAccountDirId();
 			const configDir = ensureAccountDir({ agentDir: agentDir(), dirId, sharedRoot: claudeCliSharedRoot(env) });
 			const run: ClaudeCliRun = { executable, configDir, parentEnv: env };
-			const dropNewDir = () => {
-				if (reconnect === undefined) discardAccountDir(agentDir(), dirId);
+			const credentials = store();
+			const cancelled = () => {
+				if (callbacks.signal?.aborted) throw new Error("Login cancelled");
+			};
+			let signedIn = false;
+			let signedInCredential: AnthropicSubscriptionCredential;
+			let slotWritten = false;
+			// Any throw or cancel after the dir exists undoes the whole login: the slot goes back to what it was (none
+			// for a new account), a CLI login this attempt made is signed out, and a new account's dir is removed.
+			const rollBack = async () => {
+				if (slotWritten) {
+					await credentials.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (stored) => {
+						const base = storedSubscription(stored);
+						if (base === undefined) return stored;
+						const accounts = (base.accounts ?? []).filter((candidate) => candidate.name !== name);
+						return {
+							...base,
+							accounts:
+								previous === undefined
+									? accounts
+									: (base.accounts ?? []).map((candidate) => (candidate.name === name ? previous : candidate)),
+						};
+					});
+				}
+				if (signedIn) await logoutClaudeCli(run);
+				discardAccountDir(agentDir(), dirId);
 			};
 			try {
 				await signInThroughCli(run, method, callbacks);
+				signedIn = true;
+				const status = await (cli.authStatus ?? readClaudeCliAuthStatus)(run);
+				cancelled();
+				if (status.state !== "signed_in") {
+					throw new Error(
+						status.state === "rejected"
+							? "Claude sign-in did not produce a Claude subscription login (Pro/Max); sign in with your claude.ai account"
+							: "Claude sign-in finished, but Claude Code reports no login for this account",
+					);
+				}
+
+				const slot = signedInSlot(previous, name, dirId, status.profile, now());
+				slotWritten = true;
+				await credentials.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (stored) =>
+					withSlot(storedSubscription(stored) ?? current, slot),
+				);
+				cancelled();
+				const model = connectionTestModel(cli.defaultModel?.());
+				callbacks.onProgress?.(`Testing the account with one turn on ${model}...`);
+				const check = await (cli.connectionTest ?? runClaudeCliConnectionTest)({
+					name,
+					model,
+					executable,
+					cwd: cli.cwd?.() ?? process.cwd(),
+					providerSettings: cli.providerSettings?.() ?? {},
+					...(callbacks.signal === undefined ? {} : { signal: callbacks.signal }),
+					now,
+				});
+				// A test cut short by a cancel is a cancelled login, never a kept account with a failed check.
+				cancelled();
+				callbacks.onProgress?.(
+					check.outcome === "ok"
+						? `Connection test passed on ${model}`
+						: `Connection test failed on ${model} (${check.reason ?? "unknown"}); the account was kept. Retry from the account list.`,
+				);
+				// A new account's test-time write is taken back so the login commit (Models.login / AuthStorage.set)
+				// adds it and names it in the account receipt; a Reconnect keeps its in-place write.
+				let tested: AccountSlot = slot;
+				const saved = await credentials.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (stored) => {
+					const base = storedSubscription(stored) ?? withSlot(current, slot);
+					tested = base.accounts?.find((candidate) => candidate.name === name) ?? slot;
+					if (previous !== undefined) return withCheck(base, name, check);
+					return { ...base, accounts: (base.accounts ?? []).filter((candidate) => candidate.name !== name) };
+				});
+				if (callbacks.signal !== undefined)
+					recordClaudeCliLoginOutcome(callbacks.signal, { account: { name }, check });
+				signedInCredential = withCheck(withSlot(storedSubscription(saved) ?? current, tested), name, check);
 			} catch (error) {
-				dropNewDir();
+				try {
+					await rollBack();
+				} catch (cleanupError) {
+					throw new AggregateError([error, cleanupError], "Claude sign-in failed and its cleanup failed too");
+				}
 				throw error;
 			}
-			const status = await readClaudeCliAuthStatus(run);
-			if (status.state !== "signed_in") {
-				// Whatever the CLI stored is not a first-party claude.ai login; never keep it under this account.
-				if (status.state === "rejected") await logoutClaudeCli(run);
-				dropNewDir();
-				throw new Error(
-					status.state === "rejected"
-						? "Claude sign-in did not produce a Claude subscription login (Pro/Max); sign in with your claude.ai account"
-						: "Claude sign-in finished, but Claude Code reports no login for this account",
-				);
+			if (retiring !== undefined) {
+				// The account now lives in the fresh dir: the old dir's login is signed out and the dir removed.
+				const retired = await removeAccountDir({
+					agentDir: agentDir(),
+					dirId: retiring.dirId,
+					executable,
+					parentEnv: env,
+				}).catch((error: unknown) => {
+					callbacks.onProgress?.(
+						`Signed in, but the previous Claude account dir could not be removed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					return undefined;
+				});
+				if (retired === "removed_without_sign_out")
+					callbacks.onProgress?.(
+						"Signed in; the previous Claude login could not be signed out, its dir was removed",
+					);
 			}
-
-			const slot = signedInSlot(previous, name, dirId, status.profile, now());
-			const credentials = store();
-			await credentials.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (stored) =>
-				withSlot(storedSubscription(stored) ?? current, slot),
-			);
-			const model = connectionTestModel(cli.defaultModel?.());
-			callbacks.onProgress?.(`Testing the account with one turn on ${model}...`);
-			const check = await (cli.connectionTest ?? runClaudeCliConnectionTest)({
-				name,
-				model,
-				executable,
-				cwd: cli.cwd?.() ?? process.cwd(),
-				providerSettings: cli.providerSettings?.() ?? {},
-				...(callbacks.signal === undefined ? {} : { signal: callbacks.signal }),
-				now,
-			});
-			callbacks.onProgress?.(
-				check.outcome === "ok"
-					? `Connection test passed on ${model}`
-					: `Connection test failed on ${model} (${check.reason ?? "unknown"}); the account was kept. Retry from the account list.`,
-			);
-			// A new account's test-time write is taken back so the login commit (Models.login / AuthStorage.set)
-			// adds it and names it in the account receipt; a Reconnect keeps its in-place write.
-			let tested: AccountSlot = slot;
-			const saved = await credentials.modify(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, async (stored) => {
-				const base = storedSubscription(stored) ?? withSlot(current, slot);
-				tested = base.accounts?.find((candidate) => candidate.name === name) ?? slot;
-				if (previous !== undefined) return withCheck(base, name, check);
-				return { ...base, accounts: (base.accounts ?? []).filter((candidate) => candidate.name !== name) };
-			});
-			if (callbacks.signal !== undefined)
-				recordClaudeCliLoginOutcome(callbacks.signal, { account: { name }, check });
-			return withCheck(withSlot(storedSubscription(saved) ?? current, tested), name, check);
+			return signedInCredential;
 		},
 
 		async refreshToken(credentials) {
