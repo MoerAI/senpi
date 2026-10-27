@@ -856,7 +856,7 @@ pi.on("agent_settled", async (_event, ctx) => {
 });
 ```
 
-`agent_before_settle` fires just before `agent_settled` and is the final actionable boundary: like `turn_end`, its handlers can append entries and request one continuation (see [turn_start / turn_end](#turn_start--turn_end)). `agent_settled` stays notification-only. Runs requested from `agent_settled` handlers start after every settled handler has finished, so handlers never see a reentrant `agent_start` during the same notification.
+`agent_before_settle` fires just before `agent_settled` and is the final actionable boundary: like `turn_end`, its handlers can append entries and request one continuation (see [turn_start / turn_end](#turn_start--turn_end)). `agent_settled` stays notification-only. Runs requested from `agent_settled` handlers start after every settled handler has finished, so handlers never see a reentrant `agent_start` during the same notification. Session subscribers (RPC clients, the TUI) receive `agent_settled` before these handlers run, so a slow handler never delays a client's view of the finished turn. A person's next prompt stops the host waiting on a settled handler that is still running: the handler keeps running, `session.log` records it as `extension_handler_stalled` with `stage: "released"`, and the prompt's turn starts at once.
 
 #### ui_prompt_start / ui_prompt_end
 
