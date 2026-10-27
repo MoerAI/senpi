@@ -12,6 +12,7 @@ import {
 	type AnthropicSubscriptionCredential,
 	emptyCredential,
 	envSlotToken,
+	type LegacyAccountSlot,
 	listAccounts,
 	refreshSlot,
 	type SlotRefresher,
@@ -86,7 +87,11 @@ export async function listPollAccounts(sources: AccountSources): Promise<PollAcc
 
 function claudeAccounts(stored: Credential | undefined, sources: AccountSources): PollAccount[] {
 	const credential = stored?.type === "oauth" ? (stored as AnthropicSubscriptionCredential) : emptyCredential();
-	return listAccounts(credential, sources.env).map((slot) => ({
+	// A claude CLI account's token lives in the CLI's own store, never here, so it has nothing to poll with.
+	const tokenSlots = listAccounts(credential, sources.env).filter(
+		(slot): slot is LegacyAccountSlot => slot.store === undefined,
+	);
+	return tokenSlots.map((slot) => ({
 		provider: "anthropic-subscription",
 		account: slot.name,
 		async access(signal) {
@@ -110,7 +115,8 @@ function claudeAccounts(stored: Credential | undefined, sources: AccountSources)
 				const renewed =
 					refreshed?.type === "oauth"
 						? listAccounts(refreshed as AnthropicSubscriptionCredential).find(
-								(candidate) => candidate.name === slot.name,
+								(candidate): candidate is LegacyAccountSlot =>
+									candidate.name === slot.name && candidate.store === undefined,
 							)
 						: undefined;
 				return renewed === undefined || expiring(renewed.expires)
@@ -144,7 +150,12 @@ async function markAuthRejected(sources: AccountSources, name: string, rejectedR
 	await sources.store.modify("anthropic-subscription", async (current) => {
 		if (current?.type !== "oauth") return current;
 		const credential = current as AnthropicSubscriptionCredential;
-		if (!credential.accounts?.some((slot) => slot.name === name && slot.refresh === rejectedRefresh)) return current;
+		if (
+			!credential.accounts?.some(
+				(slot) => slot.name === name && slot.store === undefined && slot.refresh === rejectedRefresh,
+			)
+		)
+			return current;
 		return {
 			...credential,
 			accounts: credential.accounts.map((slot) =>

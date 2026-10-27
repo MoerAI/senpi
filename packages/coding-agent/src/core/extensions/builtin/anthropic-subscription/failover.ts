@@ -298,6 +298,8 @@ async function persistBlock(
 	account: AccountSlot,
 	now: number,
 ): Promise<AccountSlot | undefined> {
+	const signInMaterial = (slot: AccountSlot): string =>
+		JSON.stringify(slot.store === undefined ? [slot.access, slot.refresh] : [slot.store, slot.dirId]);
 	let superseded: AccountSlot | undefined;
 	await store.modify(providerId, async (current) => {
 		if (current?.type !== "oauth") return current;
@@ -325,7 +327,7 @@ async function persistBlock(
 		if (
 			account.blockReason === "auth_error" &&
 			stored !== undefined &&
-			(stored.access !== account.access || stored.refresh !== account.refresh)
+			signInMaterial(stored) !== signInMaterial(account)
 		) {
 			superseded = stored;
 			return current;

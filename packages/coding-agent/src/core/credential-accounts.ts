@@ -11,11 +11,17 @@ import {
 	renameSlotDisplayName,
 } from "@earendil-works/pi-ai/auth/pool/slots";
 import type { AuthStorage } from "./auth-storage.ts";
+import { getAgentDir } from "../config.ts";
 import { discoverEnvSlots } from "./credential-pool/env-slots.ts";
 import { type ModelBlocks, pruneModelBlocks } from "./credential-pool/model-scope.ts";
 import { CredentialSlotRepository, type CredentialSlotState, slotHealth } from "./credential-pool/state-store.ts";
 import { emitProviderAccountsChanged } from "./extensions/builtin/anthropic-subscription/account-events.ts";
 import { SENTINEL_OAUTH_FIELDS } from "./extensions/builtin/anthropic-subscription/accounts.ts";
+import { removeAccountDir } from "./extensions/builtin/anthropic-subscription/claude-cli-account-dir.ts";
+import {
+	defaultExecutableDeps,
+	resolveClaudeCodeExecutable,
+} from "./extensions/builtin/anthropic-subscription/executable.ts";
 
 export type CredentialAccountSource = "login" | "import" | "env";
 
@@ -40,7 +46,65 @@ export type CredentialAccountSummary = {
 	readonly blockedModels?: readonly { readonly model: string; readonly until: number }[];
 	/** A slot of the other kind than the stored credential: kept, never used, cannot be pinned (senpi#3486). */
 	readonly unused?: true;
+	/** Set for an account signed in through the bundled `claude` CLI, whose own store holds the login (senpi#4436). */
+	readonly store?: "claude-cli";
+	readonly signedInAt?: number;
+	/** Local-only profile fields of a `claude-cli` account; never logged or sent to telemetry. */
+	readonly email?: string;
+	readonly orgName?: string;
+	readonly subscriptionType?: string;
+	/** The sign-in connection test's last result. */
+	readonly check?: CredentialAccountCheck;
+	readonly signIn?: "signed_in" | "needs_sign_in";
 };
+
+export type CredentialAccountCheck = {
+	readonly model: string;
+	readonly outcome: "ok" | "failed";
+	readonly reason?: string;
+	readonly at: number;
+};
+
+type ClaudeCliSlotFields = Pick<
+	CredentialAccountSummary,
+	"store" | "signedInAt" | "email" | "orgName" | "subscriptionType" | "check" | "signIn"
+>;
+
+function objectField(value: object, key: string): object | undefined {
+	const found = Object.entries(value).find(([candidate]) => candidate === key)?.[1];
+	return typeof found === "object" && found !== null && !Array.isArray(found) ? found : undefined;
+}
+
+function storedCheck(slot: object): CredentialAccountCheck | undefined {
+	const check = objectField(slot, "check");
+	if (check === undefined) return undefined;
+	const model = stringField(check, "model");
+	const outcome = stringField(check, "outcome");
+	const at = numberField(check, "at");
+	if (model === undefined || at === undefined || (outcome !== "ok" && outcome !== "failed")) return undefined;
+	const reason = stringField(check, "reason");
+	return { model, outcome, ...(reason === undefined ? {} : { reason }), at };
+}
+
+/** The listing fields of a stored `claude-cli` slot, read defensively: auth.json is a trust boundary. */
+function claudeCliSlotFields(slot: object): ClaudeCliSlotFields {
+	if (stringField(slot, "store") !== "claude-cli") return {};
+	const profile = objectField(slot, "profile") ?? {};
+	const signedInAt = numberField(slot, "signedInAt");
+	const email = stringField(profile, "email");
+	const orgName = stringField(profile, "orgName");
+	const subscriptionType = stringField(profile, "subscriptionType");
+	const check = storedCheck(slot);
+	return {
+		store: "claude-cli",
+		...(signedInAt === undefined ? {} : { signedInAt }),
+		...(email === undefined ? {} : { email }),
+		...(orgName === undefined ? {} : { orgName }),
+		...(subscriptionType === undefined ? {} : { subscriptionType }),
+		...(check === undefined ? {} : { check }),
+		signIn: stringField(slot, "signInRequired") === undefined ? "signed_in" : "needs_sign_in",
+	};
+}
 
 const ACCOUNT_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 
@@ -194,12 +258,12 @@ async function summarizeInStoredOrder(
 		const state = await repository.listSlots(provider, "stored");
 		// Read boundary (senpi#1989): a caller may still pass the legacy provider
 		// id (an older session, a stored account payload), so compare normalized.
-		const storedAccounts =
-			normalizeProviderId(provider) === "anthropic-subscription"
-				? Array.isArray(credential.accounts)
-					? listSlots(credential)
-					: []
-				: listSlots(credential);
+		const isClaudeSubscription = normalizeProviderId(provider) === "anthropic-subscription";
+		const storedAccounts = isClaudeSubscription
+			? Array.isArray(credential.accounts)
+				? listSlots(credential)
+				: []
+			: listSlots(credential);
 		const usable = new Set(slotsOfOwnKind(credential).map((slot) => slot.name));
 		for (const slot of storedAccounts) {
 			const displayName = accountDisplayName(slot.displayName);
@@ -219,6 +283,7 @@ async function summarizeInStoredOrder(
 				pinned: pinned === slot.name,
 				...blockedModels(now, applicable?.modelBlocks, storedModelBlocks(slot)),
 				...(usable.has(slot.name) ? {} : { unused: true as const }),
+				...(isClaudeSubscription ? claudeCliSlotFields(slot) : {}),
 			});
 		}
 		if (normalizeProviderId(provider) !== "anthropic-subscription") return summaries;
@@ -327,10 +392,34 @@ export async function removeCredentialAccount(
 	}
 	const next = await storage.read(provider);
 	if (next === undefined) throw new Error(`No stored credential for provider: ${provider}`);
+	if (normalizeProviderId(provider) === "anthropic-subscription") await signOutClaudeCliSlot(storage, next, name, env);
 	const removed = removeSlot(next, name);
 	const remaining = removed === undefined ? undefined : withoutOrderedAccount(removed, name);
 	if (remaining === undefined) await storage.delete(provider);
 	else await storage.modify(provider, async () => remaining);
 	await repo.mutateSlotState(provider, "stored", name, () => undefined);
 	emitProviderAccountsChanged(provider);
+}
+
+/**
+ * A `claude-cli` slot is signed out of the CLI's own store and its account dir removed BEFORE the slot is
+ * dropped: a failed sign-out throws and keeps the account, so no store entry outlives the account listing it.
+ */
+async function signOutClaudeCliSlot(
+	storage: AuthStorage,
+	credential: Credential,
+	name: string,
+	env: NodeJS.ProcessEnv,
+): Promise<void> {
+	const slot = listSlots(credential).find((candidate) => candidate.name === name);
+	if (slot === undefined || stringField(slot, "store") !== "claude-cli") return;
+	const dirId = stringField(slot, "dirId");
+	if (dirId === undefined) throw new Error(`Claude account ${name} names no account dir; sign-out failed`);
+	const authPath = storage.getStoragePath();
+	await removeAccountDir({
+		agentDir: authPath ? dirname(authPath) : getAgentDir(),
+		dirId,
+		executable: resolveClaudeCodeExecutable({ ...defaultExecutableDeps(), env: (key) => env[key] }),
+		parentEnv: env,
+	});
 }

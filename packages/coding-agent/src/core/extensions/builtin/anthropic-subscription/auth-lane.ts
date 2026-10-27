@@ -8,6 +8,7 @@ import {
 	type AnthropicSubscriptionCredential,
 	emptyCredential,
 	envSlotToken,
+	type LegacyAccountSlot,
 	listAccounts,
 	refreshSlot,
 } from "./accounts.ts";
@@ -129,9 +130,9 @@ function storedSlot(credential: Credential | undefined, pool: ManagedPool, name:
  * credential: adopt the sibling's rotated token, or keep the stored one while it
  * is still inside its lifetime (the refresh window opens before expiry).
  */
-async function continueWhileStoreBusy(pool: ManagedPool, slot: AccountSlot, busy: Error): Promise<void> {
+async function continueWhileStoreBusy(pool: ManagedPool, slot: LegacyAccountSlot, busy: Error): Promise<void> {
 	const latest = storedSlot(await pool.store.read(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID), pool, slot.name);
-	if (latest && latest.refresh !== slot.refresh) {
+	if (latest?.store === undefined && latest !== undefined && latest.refresh !== slot.refresh) {
 		Object.assign(slot, latest);
 		return;
 	}
@@ -145,6 +146,8 @@ async function prepareSlot(
 	signal: AbortSignal,
 ): Promise<{ env: Record<string, string | undefined>; credentialDigest: string }> {
 	const environment = pool.environment;
+	// A claude CLI account holds no token for this lane; its own lane arrives with senpi#4436 S4.
+	if (selected.store !== undefined) throw new Error("authentication_failed: selected OAuth token is unavailable");
 	const slot = selected;
 	if (slot.source !== "env" && activeBoundary.now() >= slot.expires - EXPIRING_WITHIN_MS) {
 		try {

@@ -13,6 +13,7 @@ import {
 	type AnthropicSubscriptionCredential,
 	addAccount,
 	emptyCredential,
+	type LegacyAccountSlot,
 	listAccounts,
 	SENTINEL_OAUTH_FIELDS,
 	upsertAccount,
@@ -73,8 +74,8 @@ function requestClaudeEnvironment(value: unknown): Record<string, string> {
 function toSlot(
 	credential: { access: string; refresh: string; expires: number },
 	name: string,
-	source: AccountSlot["source"],
-): AccountSlot {
+	source: LegacyAccountSlot["source"],
+): LegacyAccountSlot {
 	return { name, access: credential.access, refresh: credential.refresh, expires: credential.expires, source };
 }
 

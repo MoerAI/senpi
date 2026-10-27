@@ -1,0 +1,118 @@
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.ts";
+import { getCredentialAccounts, removeCredentialAccount } from "../src/core/credential-accounts.ts";
+import { CredentialSlotRepository } from "../src/core/credential-pool/state-store.ts";
+import type { ClaudeCliAccountSlot } from "../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
+import { emptyCredential } from "../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
+import {
+	accountDirFor,
+	ensureAccountDir,
+} from "../src/core/extensions/builtin/anthropic-subscription/claude-cli-account-dir.ts";
+
+const PROVIDER = "anthropic-subscription";
+const FIXTURE = join(import.meta.dirname, "fixtures", "claude-cli-auth", "fake-claude.mjs");
+const DIR_ID = "fedcba9876543210fedcba9876543210";
+
+const CLI_SLOT: ClaudeCliAccountSlot = {
+	name: "work",
+	source: "login",
+	store: "claude-cli",
+	dirId: DIR_ID,
+	signedInAt: 1_793_000_000_000,
+	profile: {
+		email: "user@example.com",
+		orgName: "Fixture Org",
+		subscriptionType: "max",
+		checkedAt: 1_793_000_000_000,
+	},
+	check: { model: "claude-opus-5-5", outcome: "ok", at: 1_793_000_000_100 },
+};
+
+let root: string;
+let storage: AuthStorage;
+let repository: CredentialSlotRepository;
+let sharedRoot: string;
+
+function cliEnv(mode: string): NodeJS.ProcessEnv {
+	const executable = join(root, "claude");
+	copyFileSync(FIXTURE, executable);
+	chmodSync(executable, 0o755);
+	return {
+		PATH: process.env.PATH,
+		HOME: root,
+		CLAUDE_CODE_EXECUTABLE: executable,
+		CLAUDE_CONFIG_DIR: sharedRoot,
+		FAKE_CLAUDE_MODE: mode,
+	};
+}
+
+beforeEach(async () => {
+	root = mkdtempSync(join(tmpdir(), "senpi-cli-slot-listing-"));
+	storage = AuthStorage.create(join(root, "agent", "auth.json"));
+	repository = new CredentialSlotRepository(join(root, "agent", "credential-pool-state.json"));
+	sharedRoot = join(root, "shared-claude");
+	mkdirSync(join(sharedRoot, "projects"), { recursive: true });
+	writeFileSync(join(sharedRoot, "projects", "x.jsonl"), "{}\n");
+	await storage.modify(PROVIDER, async () => ({ ...emptyCredential(), accounts: [CLI_SLOT] }));
+});
+
+afterEach(() => {
+	rmSync(root, { recursive: true, force: true });
+});
+
+describe("CLI-store slot listing", () => {
+	it("the summary of a CLI slot carries the store, sign-in time, profile and check", async () => {
+		const [account] = await getCredentialAccounts(storage, PROVIDER, {}, repository);
+
+		expect(account).toEqual({
+			name: "work",
+			source: "login",
+			store: "claude-cli",
+			signedInAt: 1_793_000_000_000,
+			email: "user@example.com",
+			orgName: "Fixture Org",
+			subscriptionType: "max",
+			check: { model: "claude-opus-5-5", outcome: "ok", at: 1_793_000_000_100 },
+			signIn: "signed_in",
+			blocked: false,
+			pinned: false,
+		});
+	});
+
+	it("a slot whose old sign-in was retired lists as needing sign-in", async () => {
+		await storage.modify(PROVIDER, async () => ({
+			...emptyCredential(),
+			accounts: [{ ...CLI_SLOT, signInRequired: "legacy_sign_in_retired" }],
+		}));
+
+		const [account] = await getCredentialAccounts(storage, PROVIDER, {}, repository);
+
+		expect(account?.signIn).toBe("needs_sign_in");
+	});
+});
+
+describe("CLI-store slot removal", () => {
+	it("signs the account out, removes its dir and keeps the shared root", async () => {
+		const accountDir = ensureAccountDir({ agentDir: join(root, "agent"), dirId: DIR_ID, sharedRoot });
+
+		await removeCredentialAccount(storage, PROVIDER, "work", cliEnv("logout-ok"), repository);
+
+		expect(existsSync(accountDir)).toBe(false);
+		expect(existsSync(join(sharedRoot, "projects", "x.jsonl"))).toBe(true);
+		expect(await getCredentialAccounts(storage, PROVIDER, {}, repository)).toEqual([]);
+	});
+
+	it("a failed sign-out keeps the account and names the failure", async () => {
+		ensureAccountDir({ agentDir: join(root, "agent"), dirId: DIR_ID, sharedRoot });
+
+		await expect(
+			removeCredentialAccount(storage, PROVIDER, "work", cliEnv("logout-fail"), repository),
+		).rejects.toThrow(/sign-out failed/);
+
+		expect(existsSync(accountDirFor(join(root, "agent"), DIR_ID))).toBe(true);
+		expect((await getCredentialAccounts(storage, PROVIDER, {}, repository)).map((a) => a.name)).toEqual(["work"]);
+	});
+});

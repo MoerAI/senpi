@@ -3,6 +3,7 @@ import {
 	type AccountSlot,
 	type AnthropicSubscriptionCredential,
 	authGrantDigest,
+	type LegacyAccountSlot,
 	type SlotRefresher,
 } from "./accounts.ts";
 
@@ -30,8 +31,9 @@ export type AuthBlockRecoveryInput = {
  * redeemed once, and a rejected grant, or the grant a recovery produced, is never redeemed again
  * until new material arrives through a refresh rotation or a re-login (senpi#2926).
  */
-export function isAuthBlockRecoverable(slot: AccountSlot): boolean {
+export function isAuthBlockRecoverable(slot: AccountSlot): slot is LegacyAccountSlot {
 	return (
+		slot.store === undefined &&
 		slot.blockReason === "auth_error" &&
 		slot.source !== "env" &&
 		slot.refresh !== "" &&
@@ -39,7 +41,7 @@ export function isAuthBlockRecoverable(slot: AccountSlot): boolean {
 	);
 }
 
-function recovered(slot: AccountSlot, refreshed: Awaited<ReturnType<SlotRefresher>>): AccountSlot {
+function recovered(slot: LegacyAccountSlot, refreshed: Awaited<ReturnType<SlotRefresher>>): AccountSlot {
 	const { blockReason: _blockReason, blockedUntil: _blockedUntil, ...unblocked } = slot;
 	return {
 		...unblocked,

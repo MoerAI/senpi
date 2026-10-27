@@ -101,7 +101,9 @@ function copyGrants(
 	let pinned = subscription.pinned;
 	for (const grant of unrecorded) {
 		const digest = authGrantDigest(grant.refresh);
-		let account = accounts.find((slot) => slot.refresh === grant.refresh || slot.importedFrom === digest);
+		let account = accounts.find(
+			(slot) => slot.store === undefined && (slot.refresh === grant.refresh || slot.importedFrom === digest),
+		);
 		if (!account) {
 			const name = importedSlotName(grant, source.pooled, taken);
 			taken.add(name);

@@ -3,20 +3,25 @@ import type { Credential, CredentialStore, OAuthCredential } from "@earendil-wor
 import { withoutOrderedAccount } from "@earendil-works/pi-ai/auth/pool/select";
 import type { ModelBlocks } from "../../../credential-pool/model-scope.ts";
 
-export type AccountSlot = {
-	/** Immutable operational identity, including SDK session bindings. */
-	name: string;
-	displayName?: string;
-	refresh: string;
-	access: string;
-	expires: number;
-	source: "login" | "import" | "env";
+type SlotBlockState = {
 	blockedUntil?: number;
 	blockReason?: string;
 	/** When the current block was stored, so a turn that started earlier never clears it (senpi#3462). */
 	blockedAt?: number;
 	/** Rate limits that bind one model family on this account, not the account (senpi#2555). */
 	modelBlocks?: ModelBlocks;
+};
+
+/** A token-holding slot: an env token, or a grant from the retired senpi-owned login (removed with it, senpi#4436). */
+export type LegacyAccountSlot = SlotBlockState & {
+	/** Immutable operational identity, including SDK session bindings. */
+	name: string;
+	displayName?: string;
+	store?: undefined;
+	refresh: string;
+	access: string;
+	expires: number;
+	source: "login" | "import" | "env";
 	/**
 	 * Digest of the grant an auth-block recovery must not redeem again: the grant the token endpoint
 	 * rejected, or the grant a recovery produced, so one auth block gets at most one recovery (senpi#2926).
@@ -25,6 +30,41 @@ export type AccountSlot = {
 	/** Digest of the `anthropic` OAuth grant this account was copied from (senpi#3259), so the copy runs once. */
 	importedFrom?: string;
 };
+
+/** The local-only profile `claude auth status` reported; never logged or sent to telemetry. */
+export type ClaudeCliAccountProfile = {
+	email?: string;
+	orgName?: string;
+	subscriptionType?: string;
+	checkedAt: number;
+};
+
+/** The sign-in connection test's last result. */
+export type ClaudeCliAccountCheck = {
+	model: string;
+	outcome: "ok" | "failed";
+	reason?: string;
+	at: number;
+};
+
+/**
+ * An account signed in through the bundled `claude` CLI (senpi#4436). It holds no token: the CLI keeps the
+ * login in its own credential store, keyed on the account dir `accountDirFor(agentDir, dirId)`.
+ */
+export type ClaudeCliAccountSlot = SlotBlockState & {
+	name: string;
+	displayName?: string;
+	source: "login";
+	store: "claude-cli";
+	/** 32 hex chars, fixed at creation. */
+	dirId: string;
+	signedInAt?: number;
+	profile?: ClaudeCliAccountProfile;
+	check?: ClaudeCliAccountCheck;
+	signInRequired?: "legacy_sign_in_retired";
+};
+
+export type AccountSlot = LegacyAccountSlot | ClaudeCliAccountSlot;
 
 export type SlotState = Record<
 	string,
@@ -58,8 +98,12 @@ function storedSlots(credential: AnthropicSubscriptionCredential): AccountSlot[]
  * projection as a generated `login-N` slot. Selecting it fails the provider's
  * auth check and dead-ends the request, so it is never listed as an account.
  */
-export function isSentinelSlot(slot: Pick<AccountSlot, "access" | "refresh">): boolean {
-	return slot.access === SENTINEL_OAUTH_FIELDS.access && slot.refresh === SENTINEL_OAUTH_FIELDS.refresh;
+export function isSentinelSlot(slot: AccountSlot): boolean {
+	return (
+		slot.store === undefined &&
+		slot.access === SENTINEL_OAUTH_FIELDS.access &&
+		slot.refresh === SENTINEL_OAUTH_FIELDS.refresh
+	);
 }
 
 /** A stable, non-reversible name for a refresh token, safe to persist next to it. */
@@ -110,11 +154,19 @@ export function addAccount(
  */
 export function upsertAccount(
 	credential: AnthropicSubscriptionCredential,
-	slot: AccountSlot,
+	slot: LegacyAccountSlot,
 ): AnthropicSubscriptionCredential {
 	assertValidAccountName(slot.name);
 	const existing = storedSlots(credential).find((candidate) => candidate.name === slot.name);
 	if (!existing) return { ...credential, accounts: [...storedSlots(credential), slot] };
+	if (existing.store !== undefined) {
+		const replaced: AccountSlot =
+			existing.displayName === undefined ? slot : { ...slot, displayName: existing.displayName };
+		return {
+			...credential,
+			accounts: storedSlots(credential).map((candidate) => (candidate.name === slot.name ? replaced : candidate)),
+		};
+	}
 	const {
 		blockedUntil: _blockedUntil,
 		blockReason: _blockReason,
@@ -160,8 +212,8 @@ export function assertSentinelInvariant(credential: AnthropicSubscriptionCredent
 	}
 }
 
-export function envSlots(env: (name: string) => string | undefined): AccountSlot[] {
-	const slots: AccountSlot[] = [];
+export function envSlots(env: (name: string) => string | undefined): LegacyAccountSlot[] {
+	const slots: LegacyAccountSlot[] = [];
 	const read = (suffix: string | undefined) =>
 		env(suffix === undefined ? "CLAUDE_CODE_OAUTH_TOKEN" : `CLAUDE_CODE_OAUTH_TOKEN_${suffix}`);
 	const names: Array<{ suffix?: string; slot: string }> = [{ slot: "env" }];
@@ -200,7 +252,7 @@ export async function refreshSlot(
 		if (current?.type !== "oauth") return undefined;
 		const credential = current as AnthropicSubscriptionCredential;
 		const slot = storedSlots(credential).find((candidate) => candidate.name === slotName);
-		if (!slot) return current;
+		if (!slot || slot.store !== undefined) return current;
 		if (!isExpiring(slot.expires)) return current;
 		const refreshed = await refresher(slot.refresh, signal);
 		const accounts = storedSlots(credential).map((candidate) =>
