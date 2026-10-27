@@ -11,7 +11,7 @@ import { streamWithCredentialRotation } from "../../../src/core/credential-pool/
 import { CredentialSlotRepository } from "../../../src/core/credential-pool/state-store.ts";
 import type {
 	AccountSlot,
-	LegacyAccountSlot,
+	ClaudeCliAccountSlot,
 } from "../../../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 import {
 	AllAccountsBlockedError,
@@ -19,12 +19,13 @@ import {
 } from "../../../src/core/extensions/builtin/anthropic-subscription/affinity.ts";
 import { withAuthGuidance } from "../../../src/core/extensions/builtin/anthropic-subscription/stream-guidance.ts";
 import { ModelRuntime } from "../../../src/core/model-runtime.ts";
+import { cliSlot } from "../../support/claude-cli-test-slots.ts";
 
 const NOW = 1_800_000_000_000;
 const PROVIDER = "anthropic-subscription";
 
-function innerAccount(name: string, extra: Partial<LegacyAccountSlot> = {}): AccountSlot {
-	return { name, refresh: `refresh-${name}`, access: `access-${name}`, expires: NOW * 2, source: "login", ...extra };
+function innerAccount(name: string, extra: Partial<ClaudeCliAccountSlot> = {}): AccountSlot {
+	return cliSlot(name, extra);
 }
 
 /** The message the Anthropic Subscription lane reports when its own account pool refuses the request. */

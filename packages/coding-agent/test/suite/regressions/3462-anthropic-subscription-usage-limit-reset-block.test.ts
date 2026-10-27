@@ -2,11 +2,9 @@ import { type CredentialStore, InMemoryCredentialStore } from "@earendil-works/p
 import { describe, expect, it } from "vitest";
 import {
 	type AccountSlot,
-	type LegacyAccountSlot,
 	type AnthropicSubscriptionCredential,
 	addAccount,
 	emptyCredential,
-	upsertAccount,
 } from "../../../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 import { selectAccount } from "../../../src/core/extensions/builtin/anthropic-subscription/affinity.ts";
 import { classifySdkError } from "../../../src/core/extensions/builtin/anthropic-subscription/errors.ts";
@@ -15,15 +13,13 @@ import {
 	runFailover,
 } from "../../../src/core/extensions/builtin/anthropic-subscription/failover.ts";
 import { subscriptionLimits } from "../../../src/core/subscription-limits/limit-store.ts";
+import { cliSlot } from "../../support/claude-cli-test-slots.ts";
 
 const PROVIDER = "anthropic-subscription";
 const T0 = Date.UTC(2026, 9, 16, 10, 0, 0);
 const HOUR = 3_600_000;
-function poolNamed(tag: string): LegacyAccountSlot[] {
-	return [
-		{ name: `primary-${tag}`, refresh: "r-1", access: "a-1", expires: 1, source: "login" },
-		{ name: `secondary-${tag}`, refresh: "r-2", access: "a-2", expires: 1, source: "login" },
-	];
+function poolNamed(tag: string): AccountSlot[] {
+	return [cliSlot(`primary-${tag}`), cliSlot(`secondary-${tag}`)];
 }
 // Each case writes under its own account names: the subscription-limit store is process-wide.
 let pool = poolNamed("3462");
@@ -194,10 +190,17 @@ describe("senpi#3462 an account usage limit blocks the account until its reset",
 		await runTurn(store, T0, "You've hit your 5-hour limit \u00b7 resets in 1 hour");
 		expect(await blockedFor(store, primary, T0)).toBe(HOUR);
 
-		// when the user signs in to the same account again (for example after buying extra usage)
-		await store.modify(PROVIDER, async (current) =>
-			upsertAccount(current as AnthropicSubscriptionCredential, { ...pool[0]!, access: "a-1b", refresh: "r-1b" }),
-		);
+		// when the user signs in to the same account again (for example after buying extra usage): the Claude CLI
+		// sign-in writes the account afresh, in a new account dir and with no block
+		await store.modify(PROVIDER, async (current) => {
+			const credential = current as AnthropicSubscriptionCredential;
+			return {
+				...credential,
+				accounts: (credential.accounts ?? []).map((slot) =>
+					slot.name === primary ? cliSlot(primary, { dirId: "f".repeat(32) }) : slot,
+				),
+			};
+		});
 
 		// then the block is gone and the next turn may use it
 		expect(await blockedFor(store, primary, T0)).toBe(0);

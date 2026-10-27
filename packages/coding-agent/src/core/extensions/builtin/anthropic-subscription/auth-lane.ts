@@ -7,11 +7,10 @@ import {
 	type AccountSlot,
 	type AnthropicSubscriptionCredential,
 	type ClaudeCliAccountSlot,
+	type EnvAccountSlot,
 	emptyCredential,
 	envSlotToken,
-	type LegacyAccountSlot,
 	listAccounts,
-	refreshSlot,
 } from "./accounts.ts";
 import { isBlockedFor, type PinSource, selectAccount } from "./affinity.ts";
 import { type AuthenticatedAttemptInput, createAttemptMessages, type RetainableAttempt } from "./auth-attempt.ts";
@@ -27,16 +26,14 @@ import { runFailover } from "./failover.ts";
 import { logContinuityEvent } from "./session-observability.ts";
 import { markLongContextRefused } from "./long-context.ts";
 import { classifyForRequest, retryAtStandardWindowOnce, sdkFailure, visibleSdkMessage } from "./long-context-retry.ts";
-import { isGrantRejected, refreshFailure } from "./refresh-failure.ts";
+import { refreshFailure } from "./refresh-failure.ts";
 import type { AnthropicSubscriptionAuthLane } from "./options.ts";
 import type { Options, SDKMessage, SdkQuery } from "./sdk-boundary.ts";
 import type { AnthropicSubscriptionProviderSettings, AnthropicSubscriptionTokenInjection } from "./settings.ts";
 import { ClaudeSignInRequiredError, signInRequiredNames } from "./sign-in-again.ts";
 
 export { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./account-management.ts";
-export { authLaneRefresher, overrideAuthLaneBoundary, resetAuthLaneBoundary } from "./auth-lane-boundary.ts";
-
-export const EXPIRING_WITHIN_MS = 5 * 60_000;
+export { overrideAuthLaneBoundary, resetAuthLaneBoundary } from "./auth-lane-boundary.ts";
 
 /** A managed lane with an empty pool must refuse rather than spawn the SDK against ambient host credentials. */
 const NO_MANAGED_ACCOUNTS_ERROR =
@@ -132,26 +129,6 @@ function storedAccounts(credential: Credential | undefined, pool: ManagedPool): 
 	return listAccounts(stored ?? emptyCredential(), (key) => pool.environment[key]);
 }
 
-function storedSlot(credential: Credential | undefined, pool: ManagedPool, name: string): AccountSlot | undefined {
-	return storedAccounts(credential, pool).find((candidate) => candidate.name === name);
-}
-
-/**
- * Another writer holds auth.json for longer than the lock budget, almost always
- * a sibling session redeeming this same slot. Contention says nothing about the
- * credential: adopt the sibling's rotated token, or keep the stored one while it
- * is still inside its lifetime (the refresh window opens before expiry).
- */
-async function continueWhileStoreBusy(pool: ManagedPool, slot: LegacyAccountSlot, busy: Error): Promise<void> {
-	const latest = storedSlot(await pool.store.read(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID), pool, slot.name);
-	if (latest?.store === undefined && latest !== undefined && latest.refresh !== slot.refresh) {
-		Object.assign(slot, latest);
-		return;
-	}
-	if (activeBoundary.now() < slot.expires) return;
-	throw busy;
-}
-
 function laneFor(pool: ManagedPool, slot: AccountSlot): AnthropicSubscriptionAuthLane {
 	return slot.store === "claude-cli" ? "claude-cli" : pool.lane;
 }
@@ -206,36 +183,13 @@ function claudeCliInitializationCheck(pool: ManagedPool, slot: ClaudeCliAccountS
 	};
 }
 
-async function prepareSlot(
+/** An env token account's turn: the token goes to the SDK child, or into a per-account config dir on that lane. */
+function prepareEnvSlot(
 	pool: ManagedPool,
-	selected: AccountSlot,
-	signal: AbortSignal,
-): Promise<{ env: Record<string, string | undefined>; credentialDigest: string }> {
+	slot: EnvAccountSlot,
+): { env: Record<string, string | undefined>; credentialDigest: string } {
 	const environment = pool.environment;
-	if (selected.store === "claude-cli") return prepareClaudeCliSlot(pool, selected);
-	const slot = selected;
-	if (slot.source !== "env" && activeBoundary.now() >= slot.expires - EXPIRING_WITHIN_MS) {
-		try {
-			const refreshed = await refreshSlot(
-				pool.store,
-				ANTHROPIC_SUBSCRIPTION_PROVIDER_ID,
-				slot.name,
-				activeBoundary.refresher,
-				signal,
-				(expires) => activeBoundary.now() >= expires - EXPIRING_WITHIN_MS,
-			);
-			const updated = storedSlot(refreshed, pool, slot.name);
-			if (!updated) throw new Error("selected account disappeared during refresh");
-			Object.assign(slot, updated);
-		} catch (error) {
-			// A cancelled turn is not an authentication verdict: an aborted refresh
-			// must not surface as authentication_failed and auth-block the account.
-			signal.throwIfAborted();
-			if (!(error instanceof CredentialStoreBusyError)) throw refreshFailure(error);
-			await continueWhileStoreBusy(pool, slot, error);
-		}
-	}
-	const access = slot.source === "env" ? envSlotToken((name) => environment[name], slot.name) : slot.access;
+	const access = envSlotToken((name) => environment[name], slot.name);
 	if (!access) throw new Error("authentication_failed: selected OAuth token is unavailable");
 	const childEnvironment = stripManagedAuthEnvironment(environment);
 	const credentialDigest = createHash("sha256").update(access).digest("hex");
@@ -278,9 +232,7 @@ export async function* queryWithAuthLane(input: AuthenticatedQueryInput): AsyncG
 			store: pool.store,
 			providerId: ANTHROPIC_SUBSCRIPTION_PROVIDER_ID,
 			accounts: pool.accounts,
-			refresher: activeBoundary.refresher,
 			signal,
-			isGrantRejected,
 			reload: async () => storedAccounts(await pool.store.read(ANTHROPIC_SUBSCRIPTION_PROVIDER_ID), pool),
 			isUsable: (account) => !isBlockedFor(account, activeBoundary.now(), input.model),
 			now: activeBoundary.now(),
@@ -319,7 +271,7 @@ export async function* queryWithAuthLane(input: AuthenticatedQueryInput): AsyncG
 			const options = input.buildOptions(authLane);
 			askedLegacyLongContext = asksLegacyLongContext(options.model);
 			const accounts = pool.accounts.map((account) => ({ ...account }));
-			const prepared = await prepareSlot(pool, slot, signal);
+			const prepared = slot.store === "claude-cli" ? prepareClaudeCliSlot(pool, slot) : prepareEnvSlot(pool, slot);
 			options.env = { ...prepared.env, ...options.env };
 			return createAttemptMessages(input, {
 				accountName: slot.name,

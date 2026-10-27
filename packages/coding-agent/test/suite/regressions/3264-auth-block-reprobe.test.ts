@@ -9,25 +9,19 @@ import { listRotationSlots, streamWithCredentialRotation } from "../../../src/co
 import { CredentialSlotRepository, slotHealth } from "../../../src/core/credential-pool/state-store.ts";
 import type {
 	AccountSlot,
-	LegacyAccountSlot,
+	ClaudeCliAccountSlot,
 } from "../../../src/core/extensions/builtin/anthropic-subscription/accounts.ts";
 import {
 	AllAccountsBlockedError,
 	selectAccount,
 } from "../../../src/core/extensions/builtin/anthropic-subscription/affinity.ts";
 import { runFailover } from "../../../src/core/extensions/builtin/anthropic-subscription/failover.ts";
+import { cliSlot } from "../../support/claude-cli-test-slots.ts";
 
 const NOW = 1_800_000_000_000;
 
-function account(name: string, extra: Partial<LegacyAccountSlot> = {}): AccountSlot {
-	return {
-		name,
-		refresh: `refresh-${name}`,
-		access: `access-${name}`,
-		expires: NOW + 3_600_000,
-		source: "login",
-		...extra,
-	};
+function account(name: string, extra: Partial<ClaudeCliAccountSlot> = {}): AccountSlot {
+	return cliSlot(name, extra);
 }
 
 function memoryStore(initial: { accounts: AccountSlot[] }): CredentialStore & { accounts: () => AccountSlot[] } {

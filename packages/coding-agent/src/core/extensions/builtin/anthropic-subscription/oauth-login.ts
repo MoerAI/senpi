@@ -17,7 +17,6 @@ import {
 	type ClaudeCliAccountCheck,
 	type ClaudeCliAccountSlot,
 	emptyCredential,
-	isTokenSlot,
 	listAccounts,
 	SENTINEL_OAUTH_FIELDS,
 } from "./accounts.ts";
@@ -136,41 +135,21 @@ function requestClaudeEnvironment(value: unknown): Record<string, string> {
 	return environment;
 }
 
-/**
- * Recovery target for a re-login (omo#7084): a lone slot, or the pool's one
- * auth-blocked slot, is refreshed in place — identity-safe because no working
- * account is displaced. Anything else stays append-only unless the user names
- * an existing slot explicitly, so a blank or headless re-login never
- * overwrites the newest working slot in a multi-account pool.
- */
-function recoveryTargetName(existing: AccountSlot[]): string | undefined {
-	// A Claude CLI account is never a refresh target: a token login cannot replace it.
-	const tokenSlots = existing.filter(isTokenSlot);
-	if (existing.length === 1) return tokenSlots[0]?.name;
-	const authBlocked = tokenSlots.filter((slot) => slot.blockReason === "auth_error");
-	if (authBlocked.length === 1) return authBlocked[0]?.name;
-	return undefined;
-}
-
+/** A blank answer adds a new account; typing an existing name signs that account in again. */
 async function promptAccountName(callbacks: OAuthLoginCallbacks, existing: AccountSlot[]): Promise<string> {
 	if (existing.length === 0) return "default";
-	const recovery = recoveryTargetName(existing);
 	let next = existing.length + 1;
 	while (existing.some((slot) => slot.name === `account-${next}`)) next++;
 	const fallback = `account-${next}`;
-	if (!callbacks.onPrompt) return recovery ?? fallback;
+	if (!callbacks.onPrompt) return fallback;
 	const names = existing.map((slot) => slot.name).join(", ");
-	const message =
-		recovery === undefined
-			? `Name for this account (existing: ${names}; press Enter to add ${fallback}, or type an existing name to refresh it)`
-			: `Name for this account (existing: ${names}; press Enter to refresh '${recovery}' with this login)`;
 	const answer = (
 		await callbacks.onPrompt({
-			message,
-			placeholder: recovery ?? fallback,
+			message: `Name for this account (existing: ${names}; press Enter to add ${fallback}, or type an existing name to refresh it)`,
+			placeholder: fallback,
 		})
 	).trim();
-	return answer || recovery || fallback;
+	return answer || fallback;
 }
 
 /** Removes a new account dir that holds no login (a cancelled or failed first sign-in), never following its links. */

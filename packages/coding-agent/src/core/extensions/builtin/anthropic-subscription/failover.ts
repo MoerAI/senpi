@@ -292,10 +292,10 @@ function replaceAccount(accounts: readonly AccountSlot[], replacement: AccountSl
 
 /**
  * Persists a block onto the stored slot. An `auth_error` is a verdict on the
- * token that failed, so it is written only while the stored slot still holds
- * that token. When another writer replaced the material meanwhile (a refresh in
- * this or another process, or a re-login), nothing is written and the stored
- * slot is returned: locking it "until re-login" would strand a valid token.
+ * sign-in that failed, so it is written only while the stored slot still names
+ * that sign-in's account dir. When a re-login replaced it meanwhile, nothing is
+ * written and the stored slot is returned: locking it "until re-login" would
+ * strand a valid sign-in.
  */
 async function persistBlock(
 	store: CredentialStore,
@@ -303,8 +303,7 @@ async function persistBlock(
 	account: AccountSlot,
 	now: number,
 ): Promise<AccountSlot | undefined> {
-	const signInMaterial = (slot: AccountSlot): string =>
-		JSON.stringify(slot.store === undefined ? [slot.access, slot.refresh] : [slot.store, slot.dirId]);
+	const signInMaterial = (slot: AccountSlot): string | undefined => slot.dirId;
 	let superseded: AccountSlot | undefined;
 	await store.modify(providerId, async (current) => {
 		if (current?.type !== "oauth") return current;
@@ -380,8 +379,8 @@ export async function* runFailover<TEvent>(options: FailoverOptions<TEvent>): As
 	let retryAccountName: string | undefined;
 
 	for (let attempt = 0; attempt < attemptLimit; attempt++) {
-		// Each attempt gets its own copy: prepareSlot refreshes the slot in place, and a concurrent
-		// attempt holding the same stored object must still report the token it actually sent.
+		// Each attempt gets its own copy: an attempt may record a profile on its slot, and a concurrent
+		// attempt holding the same stored object must still report the account it actually ran on.
 		const retrySlot =
 			retryAccountName === undefined ? undefined : accounts.find((slot) => slot.name === retryAccountName);
 		retryAccountName = undefined;

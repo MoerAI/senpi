@@ -1,6 +1,4 @@
 import { randomBytes } from "node:crypto";
-import type { ClaudeCliAccountSlot, LegacyAccountSlot } from "./accounts.ts";
-import { EXPIRING_WITHIN_MS } from "./auth-lane.ts";
 import type { Options, SDKUserMessage, SdkQuery, SdkQueryHandle } from "./sdk-boundary.ts";
 import { getSdkBoundary } from "./sdk-boundary.ts";
 import {
@@ -339,17 +337,4 @@ export function recordBranchInfo(senpiSessionId: string, info: SessionBranchInfo
 
 export function isCurrentGeneration(senpiSessionId: string, generation: number): boolean {
 	return sessionRegistry.isCurrentGeneration(senpiSessionId, generation);
-}
-
-export function isBoundAccountTokenExpiring(
-	entry: Pick<AnthropicSubscriptionSessionEntry, "accountName">,
-	accounts: readonly (
-		| Pick<LegacyAccountSlot, "name" | "expires" | "source">
-		| Pick<ClaudeCliAccountSlot, "name" | "source">
-	)[],
-): boolean {
-	const account = accounts.find((candidate) => candidate.name === entry.accountName);
-	return account !== undefined && account.source !== "env" && "expires" in account
-		? activeSessionRegistryBoundary.now() >= account.expires - EXPIRING_WITHIN_MS
-		: false;
 }
