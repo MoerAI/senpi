@@ -18,6 +18,7 @@ import {
 	queryWithAuthLane,
 } from "../../../src/core/extensions/builtin/anthropic-subscription/auth-lane.ts";
 import { createOAuthConfig } from "../../../src/core/extensions/builtin/anthropic-subscription/oauth-login.ts";
+import { withAuthGuidance } from "../../../src/core/extensions/builtin/anthropic-subscription/stream-guidance.ts";
 import type { SdkQuery } from "../../../src/core/extensions/builtin/anthropic-subscription/sdk-boundary.ts";
 import { resetScriptedSdk, SCRIPTED_PROVIDER } from "../../helpers/anthropic-subscription-scripted-sdk.ts";
 import { cleanupFakeClaudeCliLogins, fakeClaudeCliLogin } from "../../support/fake-claude-cli-login.ts";
@@ -199,9 +200,16 @@ describe("senpi#4436 legacy Claude logins are signed out with a clear prompt", (
 				// drain
 			}
 		};
-		await expect(turn()).rejects.toThrow(
+		const failure = await turn().then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect(failure).toBeInstanceOf(Error);
+		const message = (failure as Error).message;
+		expect(message).toContain(
 			"Claude sign-in changed. Sign in again with Claude to keep using: work, imported-anthropic. Run /login anthropic-subscription.",
 		);
+		expect(withAuthGuidance(failure, message)).toBe(message);
 		expect(spawned).toEqual([]);
 	});
 
