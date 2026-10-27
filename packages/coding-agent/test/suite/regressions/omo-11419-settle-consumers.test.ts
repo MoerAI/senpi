@@ -8,7 +8,7 @@ import type { ExtensionHandlerStall } from "../../../src/core/extensions/handler
 import type { SessionLogger } from "../../../src/core/session-log.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { IdleExitDecider } from "../../../src/modes/rpc/host-lifecycle-policy.ts";
-import { SessionRunActivity } from "../../../src/modes/rpc/host-run-activity.ts";
+import { holdIdleExitForSettling, SessionRunActivity } from "../../../src/modes/rpc/host-run-activity.ts";
 import { RpcClient } from "../../../src/modes/rpc/rpc-client.ts";
 import { SessionOpenTurns } from "../../../src/modes/rpc/session-open-turns.ts";
 
@@ -57,20 +57,26 @@ describe("settled handler stalls are diagnostics, not notices", () => {
 const WINDOW_MS = 600;
 const line = (type: string, extra: Record<string, unknown> = {}) => JSON.stringify({ type, sessionId: "s", ...extra });
 
-function idleDecision(lines: readonly string[]): string {
+/** The supervisor's rule: the decider over running turns, held while a settled session is within its settle hold. */
+function idleDecision(
+	lines: readonly string[],
+	settleHoldMs = 60_000,
+	onExpired?: (sessionId: string, heldMs: number) => void,
+): string {
 	let now = 0;
-	const runs = new SessionRunActivity();
+	const runs = new SessionRunActivity({ settleHoldMs, now: () => now, onSettleHoldExpired: onExpired });
 	const decider = new IdleExitDecider(WINDOW_MS, () => now);
-	const activity = () => ({ connections: 0, activeTurns: runs.busySessions });
-	for (const entry of lines) if (runs.observe(entry)) decider.update(activity());
-	decider.update(activity());
+	const decide = () =>
+		holdIdleExitForSettling(decider.update({ connections: 0, activeTurns: runs.busySessions }), runs);
+	for (const entry of lines) if (runs.observe(entry)) decide();
+	decide();
 	now += WINDOW_MS;
-	return decider.update(activity());
+	return decide();
 }
 
-describe("host idle exit waits for the settle-time handlers", () => {
-	it("stays up between agent_settled and agent_idle", () => {
-		expect(idleDecision([line("agent_start"), line("agent_settled")])).toBe("active");
+describe("host idle exit waits for the settle-time handlers, within a bound", () => {
+	it("does not exit between agent_settled and agent_idle while the settle hold lasts", () => {
+		expect(idleDecision([line("agent_start"), line("agent_settled")])).toBe("idle");
 	});
 
 	it("exits once agent_idle says the handlers drained", () => {
@@ -85,6 +91,18 @@ describe("host idle exit waits for the settle-time handlers", () => {
 				line("agent_settled", { reason: "session_closed" }),
 			]),
 		).toBe("exit");
+	});
+
+	it("exits once the settle hold ran out though the handlers never finished, and says so once", () => {
+		// given a hold shorter than the idle window and a session that settled but never went idle
+		const expired = vi.fn();
+
+		// when the idle window passes
+		const decision = idleDecision([line("agent_start"), line("agent_settled")], WINDOW_MS / 2, expired);
+
+		// then the host may exit, and the expired hold was reported for that session
+		expect(decision).toBe("exit");
+		expect(expired.mock.calls.map((call) => call[0])).toEqual(["s"]);
 	});
 });
 
