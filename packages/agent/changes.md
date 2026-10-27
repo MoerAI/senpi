@@ -1,3 +1,39 @@
+## 2026-10-26 - Remove the internal channel subpath (senpi#4349, part of #4272)
+
+### What changed
+
+- `packages/agent/package.json`: removes the internal-events export from the manifest used by pack and publish.
+
+### Why
+
+- `packages/agent/package.json`: every exports entry is public npm API; the session now uses a construction capability.
+
+### Why an extension could not handle it
+
+- `packages/agent/package.json`: the package loader resolves exports before extensions run.
+
+### Expected merge conflict zones
+
+- LOW: `packages/agent/package.json` exports map.
+
+## 2026-10-10 - Test-run temporary storage has an owner (senpi#3064)
+
+### What changed
+
+- `packages/agent/package.json`: test invocations use scripts/run-tests.mjs so TMPDIR/TEMP/TMP are scoped before the test runtime starts and cleaned after exit.
+
+### Why
+
+- Vitest SSR copies and interrupted fixture writes must not accumulate in the OS temp directory.
+
+### Why an extension could not handle it
+
+- Test-process bootstrap is repository tooling, before runtime extensions load.
+
+### Expected merge conflict zones
+
+- Test command arguments and runtime selection; preserve existing reporters, shards and test filters.
+
 ## 2026-09-30 - Keep the docs/ mobile-handoff prototype out of the agent test run (senpi#2447)
 
 ### What changed
