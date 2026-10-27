@@ -399,12 +399,15 @@ function snapshotEventHandlers(extensions: Extension[], event: ExtensionEvent["t
 function beforeAgentStartDispatchOrder(extensions: Extension[]) {
 	const snapshot = snapshotEventHandlers(extensions, "before_agent_start");
 	const runsLast = (ext: Extension, handler: EventHandlerFn) => ext.runLastHandlers?.has(handler) === true;
+	const isBuiltin = (ext: Extension) => ext.path.startsWith("<builtin:");
+	const phase = (keep: (ext: Extension, handler: EventHandlerFn) => boolean) =>
+		snapshot.map(({ ext, handlers }) => ({ ext, handlers: handlers.filter((handler) => keep(ext, handler)) }));
+	// Builtin run-last handlers close the phase order, so MCP instructions stay last even after another
+	// extension's run-last handler (senpi#4448).
 	return [
-		...snapshot.map(({ ext, handlers }) => ({
-			ext,
-			handlers: handlers.filter((handler) => !runsLast(ext, handler)),
-		})),
-		...snapshot.map(({ ext, handlers }) => ({ ext, handlers: handlers.filter((handler) => runsLast(ext, handler)) })),
+		...phase((ext, handler) => !runsLast(ext, handler)),
+		...phase((ext, handler) => runsLast(ext, handler) && !isBuiltin(ext)),
+		...phase((ext, handler) => runsLast(ext, handler) && isBuiltin(ext)),
 	];
 }
 

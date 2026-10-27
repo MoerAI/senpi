@@ -1657,8 +1657,9 @@ export interface BeforeAgentStartHandlerOptions {
 	previewSafe?: boolean;
 	/**
 	 * Runs the handler after every handler registered without it, on real turns and previews alike;
-	 * run-last handlers keep their registration order among themselves. For additions that must close
-	 * the system prompt, such as MCP server instructions (senpi#4448).
+	 * run-last handlers keep their registration order among themselves, except that builtin run-last
+	 * handlers run after every other extension's, so MCP server instructions always close the system
+	 * prompt (senpi#4448).
 	 */
 	runLast?: boolean;
 }
