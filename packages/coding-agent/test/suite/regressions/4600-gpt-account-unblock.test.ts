@@ -1,0 +1,196 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai";
+import type { PooledCredential } from "@earendil-works/pi-ai/auth/pool/slots";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { AuthStorage } from "../../../src/core/auth-storage.ts";
+import { getCredentialAccounts } from "../../../src/core/credential-accounts.ts";
+import { streamWithCredentialRotation } from "../../../src/core/credential-pool/rotation-stream.ts";
+import { CredentialSlotRepository } from "../../../src/core/credential-pool/state-store.ts";
+import gptAccountExtension from "../../../src/core/extensions/builtin/gpt-account.ts";
+import { type Command, createAccountCommandContext, registerCommand } from "../account-command-harness.ts";
+
+// senpi#4600 (reported by ksr7439): /gpt-account had no `unblock`, so a ChatGPT account stayed
+// blocked until its stored `blockedUntil` even after the user reset the limit on the provider
+// side. The command now lifts a usage block exactly like /claude-account unblock, and a 2xx on
+// the account clears its stale block - for that account only.
+
+const NOW = 1_800_000_000_000;
+const FAR_FUTURE = 4_102_444_800_000;
+const PROVIDER = "chatgpt-subscription";
+
+let dir: string;
+let storage: AuthStorage;
+let repository: CredentialSlotRepository;
+
+beforeEach(() => {
+	dir = mkdtempSync(join(tmpdir(), "gpt-account-unblock-4600-"));
+	storage = AuthStorage.create(join(dir, "auth.json"));
+	repository = new CredentialSlotRepository(join(dir, "credential-pool-state.json"));
+});
+
+afterEach(() => {
+	rmSync(dir, { recursive: true, force: true });
+});
+
+function command(): Command {
+	return registerCommand("gpt-account", gptAccountExtension);
+}
+
+async function seedPool(): Promise<void> {
+	await storage.modify(PROVIDER, async () => ({
+		type: "oauth",
+		access: "access-secret",
+		refresh: "refresh-secret",
+		expires: 1,
+		accounts: [
+			{ name: "default", access: "access-secret", refresh: "refresh-secret", expires: 1, source: "login" },
+			{ name: "work", access: "work-access", refresh: "work-refresh", expires: 1, source: "login" },
+		],
+	}));
+}
+
+async function blockSlot(
+	name: string,
+	material: { key?: string; access?: string; refresh?: string },
+	reason: "rate_limit" | "auth_error" = "rate_limit",
+): Promise<void> {
+	// A block belongs to the material that earned it: without the matching revision the
+	// listing discards it (omo#7084), so the seed would be a no-op.
+	const credentialRevision = await repository.storedCredentialRevision(PROVIDER, name, material);
+	await repository.mutateSlotState(PROVIDER, "stored", name, () => ({
+		blockedUntil: FAR_FUTURE,
+		blockReason: reason,
+		failureCount: 1,
+		credentialRevision,
+	}));
+}
+
+const WORK_OAUTH = { access: "work-access", refresh: "work-refresh" };
+
+async function blocked(name: string): Promise<boolean | undefined> {
+	const accounts = await getCredentialAccounts(storage, PROVIDER, {}, repository);
+	return accounts.find((account) => account.name === name)?.blocked;
+}
+
+describe("/gpt-account unblock lifts a stale usage block (#4600)", () => {
+	test("unblock clears the block so the account is available again", async () => {
+		await seedPool();
+		await blockSlot("work", WORK_OAUTH);
+		expect(await blocked("work")).toBe(true);
+		const { ctx, notices } = createAccountCommandContext(storage, dir);
+
+		await command().handler("unblock work", ctx);
+
+		expect(await blocked("work")).toBe(false);
+		expect(await blocked("default")).toBe(false);
+		expect(notices.at(-1)?.type).toBe("info");
+		expect(notices.at(-1)?.message).toContain("Unblocked ChatGPT Subscription OAuth account 'work'");
+	});
+
+	test("unblock on an account with no usage block says so instead of claiming a lift", async () => {
+		await seedPool();
+		const { ctx, notices } = createAccountCommandContext(storage, dir);
+
+		await command().handler("unblock work", ctx);
+
+		expect(notices.at(-1)?.message).toContain("has no usage block to lift");
+	});
+
+	test("unblock leaves an auth block in place, like /claude-account", async () => {
+		await seedPool();
+		await blockSlot("work", WORK_OAUTH, "auth_error");
+		const { ctx, notices } = createAccountCommandContext(storage, dir);
+
+		await command().handler("unblock work", ctx);
+
+		expect(await blocked("work")).toBe(true);
+		expect(notices.at(-1)?.message).toContain("has no usage block to lift");
+	});
+
+	test("an unknown id reports the same error shape as /claude-account", async () => {
+		await seedPool();
+		const { ctx, notices } = createAccountCommandContext(storage, dir);
+
+		await command().handler("unblock nope", ctx);
+
+		expect(notices.at(-1)?.type).toBe("error");
+		expect(notices.at(-1)?.message).toBe("ChatGPT Subscription OAuth account 'nope' does not exist.");
+	});
+
+	test("unblock without an id reports usage instead of touching any account", async () => {
+		await seedPool();
+		await blockSlot("work", WORK_OAUTH);
+		const { ctx, notices } = createAccountCommandContext(storage, dir);
+
+		await command().handler("unblock", ctx);
+
+		expect(await blocked("work")).toBe(true);
+		expect(notices.at(-1)?.type).toBe("error");
+		expect(notices.at(-1)?.message).toContain("Usage: /gpt-account unblock <id>");
+	});
+
+	test("the help text lists unblock", async () => {
+		const { ctx, notices } = createAccountCommandContext(storage, dir);
+
+		await command().handler("bogus-action", ctx);
+
+		expect(notices.at(-1)?.message).toContain("unblock <id>");
+	});
+});
+
+describe("a 2xx on a blocked account clears that account's stale block only (#4600)", () => {
+	test("the served account recovers while another account keeps its block", async () => {
+		const clock = { now: NOW };
+		await blockSlot("default", { key: "key-default" });
+		await blockSlot("work", { key: "key-work" });
+		const credential: PooledCredential = {
+			type: "api_key",
+			key: "key-default",
+			accounts: [
+				{ name: "default", key: "key-default", source: "login" },
+				{ name: "work", key: "key-work", source: "login" },
+			],
+			pinned: "default",
+		};
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "ok" }],
+			api: "openai-codex-responses",
+			provider: PROVIDER,
+			model: "gpt-5.1-codex",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		};
+		async function* succeed(): AsyncGenerator<AssistantMessageEvent> {
+			yield { type: "done", reason: "stop", message };
+		}
+
+		const served: string[] = [];
+		const stream = streamWithCredentialRotation({
+			sources: { providerId: PROVIDER, credential, env: () => undefined, repository, now: () => clock.now },
+			affinityKey: "session-4600",
+			runAttempt: (slot) => {
+				served.push(slot.name);
+				return succeed();
+			},
+		});
+		for await (const _event of stream) {
+			// drain
+		}
+
+		expect(served).toEqual(["default"]);
+		const slots = await repository.listSlots(PROVIDER, "stored");
+		expect(slots.default?.blockedUntil).toBeUndefined();
+		expect(slots.work?.blockedUntil).toBe(FAR_FUTURE);
+	});
+});

@@ -1,6 +1,8 @@
 import type { AccountLoginReceipt } from "@earendil-works/pi-ai";
 import { accountLabel } from "@earendil-works/pi-ai/auth/pool/slots";
+import { resetCredentialAccount } from "../../../core/credential-account-reset.ts";
 import {
+	type CredentialAccountSummary,
 	getCredentialAccounts,
 	pinCredentialAccount,
 	removeCredentialAccount,
@@ -12,6 +14,8 @@ import { createExtensionLoginInteraction, LOGIN_CANCELLED_MESSAGE } from "./oaut
 
 const CHATGPT_SUBSCRIPTION_PROVIDER_ID = "chatgpt-subscription";
 const CHATGPT_SUBSCRIPTION_PROVIDER_LABEL = "ChatGPT Subscription OAuth";
+const USAGE_ACTIONS =
+	"[add | remove <id> | pin <id> | unpin | unblock <id> | rename <id> <display name...> | clear-name <id>]";
 
 export interface GptAccountExtensionDeps {
 	/** Browser launcher for the browser login method; tests inject a recorder. */
@@ -23,10 +27,7 @@ function parseArgs(rawArgs: string): string[] {
 }
 
 function usage(ctx: ExtensionCommandContext): void {
-	ctx.ui.notify(
-		"Usage: /gpt-account [add | remove <id> | pin <id> | unpin | rename <id> <display name...> | clear-name <id>]",
-		"error",
-	);
+	ctx.ui.notify(`Usage: /gpt-account ${USAGE_ACTIONS}`, "error");
 }
 
 async function showAccounts(ctx: ExtensionCommandContext): Promise<void> {
@@ -86,10 +87,39 @@ async function pinAccount(ctx: ExtensionCommandContext, name: string | undefined
 	ctx.ui.notify(`Pinned ChatGPT Subscription OAuth account '${name}'.`, "info");
 }
 
+/**
+ * A usage block the user knows is gone (the limit reset on the provider side) is lifted here,
+ * mirroring `/claude-account unblock` (senpi#4600). An auth block stays: only a login or the
+ * re-probe can clear a rejected credential. The clearing itself is the shared primitive
+ * `resetCredentialAccount` (senpi#3285), which both health sources use.
+ */
+function liftableBlock(account: CredentialAccountSummary): boolean {
+	return account.blocked && account.blockedReason !== "auth_error" && account.blockedUntil !== undefined;
+}
+
+async function unblockAccount(ctx: ExtensionCommandContext, name: string | undefined): Promise<void> {
+	if (!name) {
+		ctx.ui.notify("Usage: /gpt-account unblock <id>", "error");
+		return;
+	}
+	const accounts = await getCredentialAccounts(ctx.modelRegistry.authStorage, CHATGPT_SUBSCRIPTION_PROVIDER_ID);
+	const account = accounts.find((candidate) => candidate.name === name);
+	if (!account) {
+		ctx.ui.notify(`ChatGPT Subscription OAuth account '${name}' does not exist.`, "error");
+		return;
+	}
+	if (!liftableBlock(account)) {
+		ctx.ui.notify(`ChatGPT Subscription OAuth account '${name}' has no usage block to lift.`, "info");
+		return;
+	}
+	await resetCredentialAccount(ctx.modelRegistry.authStorage, CHATGPT_SUBSCRIPTION_PROVIDER_ID, name);
+	ctx.ui.notify(`Unblocked ChatGPT Subscription OAuth account '${name}'. The next turn may use it.`, "info");
+}
+
 export default function gptAccountExtension(pi: ExtensionAPI, deps: GptAccountExtensionDeps = {}): void {
 	pi.registerCommand("gpt-account", {
 		description: "List and manage ChatGPT Subscription OAuth accounts.",
-		argumentHint: "[add | remove <id> | pin <id> | unpin | rename <id> <display name...> | clear-name <id>]",
+		argumentHint: USAGE_ACTIONS,
 		requiresArguments: false,
 		handler: async (rawArgs, ctx) => {
 			if (await accountDisplayNameCommand(ctx, CHATGPT_SUBSCRIPTION_PROVIDER_ID, rawArgs)) return;
@@ -106,6 +136,10 @@ export default function gptAccountExtension(pi: ExtensionAPI, deps: GptAccountEx
 				}
 				if (action === "remove") {
 					await removeAccount(ctx, args[1]);
+					return;
+				}
+				if (action === "unblock") {
+					await unblockAccount(ctx, args[1]);
 					return;
 				}
 				if (action === "pin" && args[1] !== "unpin") {
