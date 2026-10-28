@@ -1,4 +1,4 @@
-import type { CredentialSlot, PooledCredential } from "@earendil-works/pi-ai/auth/pool/slots";
+import { type CredentialSlot, findSlot, type PooledCredential } from "@earendil-works/pi-ai/auth/pool/slots";
 import type { AuthStorage } from "./auth-storage.ts";
 import {
 	type CredentialAccountBlockedReason,
@@ -66,7 +66,10 @@ function storedMaterial(
 	name: string,
 ): { key?: string; access?: string; refresh?: string } | undefined {
 	const credential = storage.get(provider) as PooledCredential | undefined;
-	const slot = credential?.accounts?.find((candidate) => candidate.name === name);
+	// `findSlot` is what the listing itself reads with, so a flat pre-pool credential resolves to
+	// its implicit `default` slot here too; searching `accounts` alone would leave the revision
+	// undefined and let a block from a previous login look liftable.
+	const slot = findSlot(credential, name);
 	if (!slot) return undefined;
 	const { key, access, refresh } = slot as CredentialSlot & { key?: string; access?: string; refresh?: string };
 	return {
@@ -126,18 +129,24 @@ export async function unblockPooledAccount(
 		// version or create an empty one. The race the locked re-check guards against can only
 		// hide a block, never create a liftable one out of nothing the user asked about.
 		if (liftableSidecarBlock((await repo.listSlots(provider, lane))[name], revision, Date.now())) {
+			// The callback runs before the document is written, so its decision is only a proposal:
+			// `lifted` is promoted once the write has returned, never from inside the callback.
+			let clearing = false;
 			await repo.mutateSlotState(provider, lane, name, (current) => {
 				if (!liftableSidecarBlock(current, revision, Date.now())) {
+					clearing = false;
 					if (current === undefined) return current;
 					const { stateVersion: _version, ...unchanged } = current;
 					return unchanged;
 				}
-				lifted = true;
+				clearing = true;
 				return withoutAccountBlock(current as CredentialSlotState);
 			});
+			lifted = clearing;
 		}
 
 		if (storage.get(provider) !== undefined) {
+			let clearing = false;
 			await storage.modify(provider, async (current) => {
 				if (current === undefined) return current;
 				const pooled = current as PooledCredential;
@@ -155,13 +164,15 @@ export async function unblockPooledAccount(
 					return storedSlotWithoutBlock(stored);
 				});
 				if (!changed) return current;
-				lifted = true;
+				clearing = true;
 				return { ...pooled, accounts: next };
 			});
+			lifted ||= clearing;
 		}
 	} finally {
 		// A lift that already landed is visible to every reader, so the event is owed even when the
-		// second write throws: state and the event must not disagree.
+		// second write throws: state and the event must not disagree. A write that threw never
+		// landed, so it never sets `lifted` and never fires the event.
 		if (lifted) emitProviderAccountsChanged(provider);
 	}
 

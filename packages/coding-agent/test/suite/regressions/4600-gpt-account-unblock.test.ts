@@ -357,3 +357,118 @@ describe("the outcome is the merged state, and dead blocks are left alone (#4603
 		expect((await repository.listSlots(PROVIDER, "stored")).work?.blockedUntil).toBeUndefined();
 	});
 });
+
+describe("the lift is only claimed once the write landed, and flat credentials are covered (#4603 delta 2)", () => {
+	test("a write that throws after its callback ran neither lifts nor emits", async () => {
+		await seedPool();
+		await blockSlot("work", WORK_OAUTH);
+		const events: string[] = [];
+		const unsubscribe = subscribeProviderAccountEvents((event) => {
+			if (event.type === "accounts_changed") events.push(event.provider);
+		});
+
+		// The real repository runs the callback and only then writes the document, so a write that
+		// fails must leave the caller with "nothing lifted".
+		class ThrowingRepository extends CredentialSlotRepository {
+			override async mutateSlotState(
+				providerId: string,
+				laneId: string,
+				slotId: string,
+				fn: Parameters<CredentialSlotRepository["mutateSlotState"]>[3],
+			): ReturnType<CredentialSlotRepository["mutateSlotState"]> {
+				fn((await super.listSlots(providerId, laneId))[slotId]);
+				throw new Error("credential-pool-state.json is not writable");
+			}
+		}
+		const throwing = new ThrowingRepository(join(dir, "credential-pool-state.json"));
+
+		await expect(unblockPooledAccount(storage, PROVIDER, "work", {}, throwing)).rejects.toThrow("not writable");
+
+		unsubscribe();
+		expect(events).toEqual([]);
+		expect((await repository.listSlots(PROVIDER, "stored")).work?.blockedUntil).toBe(FAR_FUTURE);
+	});
+
+	test("a previous-login block on a flat pre-pool credential is not lifted", async () => {
+		// No `accounts` array: the listing reads this as the implicit `default` slot.
+		await storage.modify(PROVIDER, async () => ({
+			type: "oauth",
+			access: "flat-access",
+			refresh: "flat-refresh",
+			expires: 1,
+		}));
+		const staleRevision = await repository.storedCredentialRevision(PROVIDER, "default", {
+			access: "previous-login-access",
+			refresh: "previous-login-refresh",
+		});
+		await repository.mutateSlotState(PROVIDER, "stored", "default", () => ({
+			blockedUntil: FAR_FUTURE,
+			blockReason: "rate_limit",
+			credentialRevision: staleRevision,
+		}));
+		const before = (await repository.listSlots(PROVIDER, "stored")).default;
+		const { ctx, notices } = createAccountCommandContext(storage, dir);
+
+		await command().handler("unblock default", ctx);
+
+		expect(notices.at(-1)?.message).toContain("has no usage block to lift");
+		expect((await repository.listSlots(PROVIDER, "stored")).default).toEqual(before);
+	});
+
+	test("a live block on a flat pre-pool credential is still lifted", async () => {
+		await storage.modify(PROVIDER, async () => ({
+			type: "oauth",
+			access: "flat-access",
+			refresh: "flat-refresh",
+			expires: 1,
+		}));
+		const credentialRevision = await repository.storedCredentialRevision(PROVIDER, "default", {
+			access: "flat-access",
+			refresh: "flat-refresh",
+		});
+		await repository.mutateSlotState(PROVIDER, "stored", "default", () => ({
+			blockedUntil: FAR_FUTURE,
+			blockReason: "rate_limit",
+			credentialRevision,
+		}));
+		const { ctx, notices } = createAccountCommandContext(storage, dir);
+
+		await command().handler("unblock default", ctx);
+
+		expect(notices.at(-1)?.message).toContain("Unblocked");
+		expect((await repository.listSlots(PROVIDER, "stored")).default?.blockedUntil).toBeUndefined();
+	});
+
+	test("a block written between the unlocked pre-check and the locked write is refused", async () => {
+		await seedPool();
+		const credentialRevision = await repository.storedCredentialRevision(PROVIDER, "work", WORK_OAUTH);
+		await blockSlot("work", WORK_OAUTH);
+
+		// The pre-check is the LAST stored listing before the write, so injecting on it lands the
+		// competing block strictly between the pre-check and the locked callback.
+		class LateRacingRepository extends CredentialSlotRepository {
+			private storedReads = 0;
+			override async listSlots(providerId: string, laneId: string) {
+				const slots = await super.listSlots(providerId, laneId);
+				if (laneId !== "stored") return slots;
+				this.storedReads += 1;
+				if (this.storedReads === 2) {
+					await super.mutateSlotState(providerId, laneId, "work", () => ({
+						blockedUntil: FAR_FUTURE,
+						blockReason: "auth_error",
+						credentialRevision,
+					}));
+				}
+				return slots;
+			}
+		}
+		const racing = new LateRacingRepository(join(dir, "credential-pool-state.json"));
+
+		const outcome = await unblockPooledAccount(storage, PROVIDER, "work", {}, racing);
+
+		expect(outcome.lifted).toBe(false);
+		const slot = (await repository.listSlots(PROVIDER, "stored")).work;
+		expect(slot?.blockReason).toBe("auth_error");
+		expect(slot?.blockedUntil).toBe(FAR_FUTURE);
+	});
+});
