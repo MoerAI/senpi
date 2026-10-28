@@ -12,6 +12,7 @@ import {
 	emptyCredential as emptyCursorCredential,
 } from "../../../src/core/extensions/builtin/cursor-cli-oauth/accounts.ts";
 import { createCursorCliOauthConfig } from "../../../src/core/extensions/builtin/cursor-cli-oauth/oauth-login.ts";
+import { cliSlot as claudeCliSlot } from "../../support/claude-cli-test-slots.ts";
 import { cleanupFakeClaudeCliLogins, fakeClaudeCliLogin } from "../../support/fake-claude-cli-login.ts";
 
 afterEach(() => cleanupFakeClaudeCliLogins());
@@ -60,11 +61,16 @@ type Row = {
 	provider: string;
 	mode: "blank" | "headless" | "named";
 	login(): Promise<Credential>;
+	/** What the first account holds before and after the login: tokens, or the stored Claude CLI slot. */
+	first: Record<string, unknown>;
 	/** What the new second account holds: the fake flow's tokens, or a Claude CLI slot. */
 	added: Record<string, unknown>;
 };
 
 const cliSlot = { store: "claude-cli" };
+const healthyTokens = { name: "default", access: healthy.access, refresh: healthy.refresh, expires: healthy.expires };
+// A stored Claude account is a Claude CLI account (senpi#4436): a token slot is hidden from the Claude lane.
+const healthyClaude = claudeCliSlot("default");
 
 /**
  * Persists a re-login the way Models.login does: merged onto what the store holds at commit time, which already
@@ -80,7 +86,10 @@ async function refreshedSlots(stored: AnthropicSubscriptionCredential, mode: "bl
 	return listAnthropicAccounts(appendLoginSlot(atCommit, result as AnthropicSubscriptionCredential) as never);
 }
 
-const anthropicStored = (): AnthropicSubscriptionCredential => ({ ...emptyAnthropicCredential(), accounts: [healthy] });
+const anthropicStored = (): AnthropicSubscriptionCredential => ({
+	...emptyAnthropicCredential(),
+	accounts: [healthyClaude],
+});
 
 async function anthropicLogin(mode: Row["mode"]): Promise<Credential> {
 	const stored = anthropicStored();
@@ -120,38 +129,47 @@ async function pooledLogin(): Promise<Credential> {
 }
 
 const rows: Row[] = [
-	{ provider: "anthropic-subscription", mode: "blank", login: () => anthropicLogin("blank"), added: cliSlot },
-	{ provider: "anthropic-subscription", mode: "headless", login: () => anthropicLogin("headless"), added: cliSlot },
+	{
+		provider: "anthropic-subscription",
+		mode: "blank",
+		login: () => anthropicLogin("blank"),
+		first: healthyClaude,
+		added: cliSlot,
+	},
+	{
+		provider: "anthropic-subscription",
+		mode: "headless",
+		login: () => anthropicLogin("headless"),
+		first: healthyClaude,
+		added: cliSlot,
+	},
 	{
 		provider: "anthropic-subscription",
 		mode: "named",
 		login: () => anthropicLogin("named"),
+		first: healthyClaude,
 		added: { ...cliSlot, name: "work" },
 	},
-	{ provider: "cursor-cli-oauth", mode: "blank", login: cursorLogin, added: second },
-	{ provider: "generic credential pool", mode: "headless", login: pooledLogin, added: second },
+	{ provider: "cursor-cli-oauth", mode: "blank", login: cursorLogin, first: healthyTokens, added: second },
+	{ provider: "generic credential pool", mode: "headless", login: pooledLogin, first: healthyTokens, added: second },
 ];
 
 describe("a login next to one healthy account adds a second account (senpi#3619)", () => {
-	it.each(rows)("$provider, $mode login: two accounts, the first unchanged", async ({ login, added }) => {
+	it.each(rows)("$provider, $mode login: two accounts, the first unchanged", async ({ login, first, added }) => {
 		const slots = slotsOf(await login());
 		expect(slots).toHaveLength(2);
-		expect(slots[0]).toMatchObject({
-			name: "default",
-			access: healthy.access,
-			refresh: healthy.refresh,
-			expires: healthy.expires,
-		});
+		expect(slots[0]).toMatchObject(first);
 		expect(slots[1]).toMatchObject(added);
 		expect(slots[1]?.name).not.toBe("default");
 	});
 });
 
+// The omo#7084 recovery for a Claude CLI account is signing that account in again by name (senpi#4436).
 describe("the omo#7084 recovery still refreshes a lone auth-blocked Claude account", () => {
-	it.each(["blank", "headless"] as const)("%s login refreshes the blocked slot in place", async (mode) => {
-		const blocked = { ...healthy, blockReason: "auth_error" as const, blockedUntil: Date.now() + 60_000 };
+	it("typing the blocked slot's name refreshes it in place and clears the block", async () => {
+		const blocked = claudeCliSlot("default", { blockReason: "auth_error", blockedUntil: Date.now() + 60_000 });
 		const stored: AnthropicSubscriptionCredential = { ...emptyAnthropicCredential(), accounts: [blocked] };
-		const slots = await refreshedSlots(stored, mode);
+		const slots = await refreshedSlots(stored, "named");
 		expect(slots.map((slot) => slot.name)).toEqual(["default"]);
 		expect(slots[0]).toMatchObject(cliSlot);
 		expect(slots[0]?.blockReason).toBeUndefined();
