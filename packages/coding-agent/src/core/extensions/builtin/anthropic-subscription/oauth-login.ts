@@ -137,17 +137,14 @@ function requestClaudeEnvironment(value: unknown): Record<string, string> {
 }
 
 /**
- * Recovery target for a re-login (omo#7084): a lone slot, or the pool's one
- * auth-blocked slot, is refreshed in place — identity-safe because no working
- * account is displaced. Anything else stays append-only unless the user names
- * an existing slot explicitly, so a blank or headless re-login never
- * overwrites the newest working slot in a multi-account pool.
+ * Recovery target for a re-login (omo#7084): the pool's one auth-blocked slot
+ * is refreshed in place, so no working account is displaced. A healthy slot,
+ * even a lone one, is never a target (senpi#3619): a blank or headless login
+ * appends unless the user names an existing slot explicitly.
  */
 function recoveryTargetName(existing: AccountSlot[]): string | undefined {
 	// A Claude CLI account is never a refresh target: a token login cannot replace it.
-	const tokenSlots = existing.filter(isTokenSlot);
-	if (existing.length === 1) return tokenSlots[0]?.name;
-	const authBlocked = tokenSlots.filter((slot) => slot.blockReason === "auth_error");
+	const authBlocked = existing.filter(isTokenSlot).filter((slot) => slot.blockReason === "auth_error");
 	if (authBlocked.length === 1) return authBlocked[0]?.name;
 	return undefined;
 }
