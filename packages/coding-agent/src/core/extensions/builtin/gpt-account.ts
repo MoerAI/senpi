@@ -86,11 +86,17 @@ async function pinAccount(ctx: ExtensionCommandContext, name: string | undefined
 	ctx.ui.notify(`Pinned ChatGPT Subscription OAuth account '${name}'.`, "info");
 }
 
+const STILL_BLOCKED_REASON: Record<string, string> = {
+	auth_error: "the credential was rejected; sign in again to clear it",
+	disabled: "the account is disabled until its credential is replaced",
+	rate_limit: "another cooldown on it is still running",
+};
+
 /**
- * A usage block the user knows is gone (the limit reset on the provider side) is lifted here,
- * mirroring `/claude-account unblock` (senpi#4600). An auth block stays: only a login or the
- * re-probe can clear a rejected credential. The lift itself is `unblockPooledAccount`, which
- * decides under the same lock it writes in and leaves model-scoped blocks and the lease alone.
+ * Lifts a usage-limit block the user knows is gone (the limit reset on the provider side), like
+ * `/claude-account unblock` (senpi#4600). The lift is `unblockPooledAccount`, which clears only a
+ * live account-level usage or rate-limit block and reports the MERGED state afterwards, so a lift
+ * that leaves an auth block standing is never announced as "usable again".
  */
 async function unblockAccount(ctx: ExtensionCommandContext, name: string | undefined): Promise<void> {
 	if (!name) {
@@ -102,13 +108,22 @@ async function unblockAccount(ctx: ExtensionCommandContext, name: string | undef
 		ctx.ui.notify(`ChatGPT Subscription OAuth account '${name}' does not exist.`, "error");
 		return;
 	}
-	const lifted = await unblockPooledAccount(ctx.modelRegistry.authStorage, CHATGPT_SUBSCRIPTION_PROVIDER_ID, name);
-	ctx.ui.notify(
-		lifted
-			? `Unblocked ChatGPT Subscription OAuth account '${name}'. The next turn may use it.`
-			: `ChatGPT Subscription OAuth account '${name}' has no usage block to lift.`,
-		"info",
-	);
+	const outcome = await unblockPooledAccount(ctx.modelRegistry.authStorage, CHATGPT_SUBSCRIPTION_PROVIDER_ID, name);
+	if (!outcome.lifted) {
+		ctx.ui.notify(`ChatGPT Subscription OAuth account '${name}' has no usage block to lift.`, "info");
+		return;
+	}
+	if (outcome.blocked) {
+		const reason = outcome.blockedReason === undefined ? undefined : STILL_BLOCKED_REASON[outcome.blockedReason];
+		ctx.ui.notify(
+			`Lifted the usage block on ChatGPT Subscription OAuth account '${name}', but it is still blocked${
+				reason === undefined ? "" : `: ${reason}`
+			}.`,
+			"warning",
+		);
+		return;
+	}
+	ctx.ui.notify(`Unblocked ChatGPT Subscription OAuth account '${name}'. The next turn may use it.`, "info");
 }
 
 export default function gptAccountExtension(pi: ExtensionAPI, deps: GptAccountExtensionDeps = {}): void {

@@ -9,6 +9,7 @@ import { getCredentialAccounts } from "../../../src/core/credential-accounts.ts"
 import { streamWithCredentialRotation } from "../../../src/core/credential-pool/rotation-stream.ts";
 import { CredentialSlotRepository } from "../../../src/core/credential-pool/state-store.ts";
 import { unblockPooledAccount } from "../../../src/core/credential-account-unblock.ts";
+import { subscribeProviderAccountEvents } from "../../../src/core/extensions/builtin/anthropic-subscription/account-events.ts";
 import gptAccountExtension from "../../../src/core/extensions/builtin/gpt-account.ts";
 import { type Command, createAccountCommandContext, registerCommand } from "../account-command-harness.ts";
 
@@ -248,11 +249,111 @@ describe("unblock is narrow: only the account-level block is lifted (#4600)", ()
 		}
 		const racing = new RacingRepository(join(dir, "credential-pool-state.json"));
 
-		const lifted = await unblockPooledAccount(storage, PROVIDER, "work", {}, racing);
+		const outcome = await unblockPooledAccount(storage, PROVIDER, "work", {}, racing);
 
-		expect(lifted).toBe(false);
+		expect(outcome).toMatchObject({ lifted: false, blocked: true, blockedReason: "auth_error" });
 		const slot = (await repository.listSlots(PROVIDER, "stored")).work;
 		expect(slot?.blockReason).toBe("auth_error");
 		expect(slot?.blockedUntil).toBe(FAR_FUTURE);
+	});
+});
+
+describe("the outcome is the merged state, and dead blocks are left alone (#4603 review)", () => {
+	test("lifting the sidecar block while auth.json still holds an auth block reports still blocked", async () => {
+		await storage.modify(PROVIDER, async () => ({
+			type: "oauth",
+			access: "access-secret",
+			refresh: "refresh-secret",
+			expires: 1,
+			accounts: [
+				{ name: "default", access: "access-secret", refresh: "refresh-secret", expires: 1, source: "login" },
+				{
+					name: "work",
+					access: "work-access",
+					refresh: "work-refresh",
+					expires: 1,
+					source: "login",
+					blockReason: "auth_error",
+					blockedUntil: FAR_FUTURE,
+				},
+			],
+		}));
+		await blockSlot("work", WORK_OAUTH);
+		const { ctx, notices } = createAccountCommandContext(storage, dir);
+
+		await command().handler("unblock work", ctx);
+
+		expect(notices.at(-1)?.message).toContain("still blocked");
+		expect(notices.at(-1)?.message).toContain("rejected");
+		expect(notices.at(-1)?.message).not.toContain("The next turn may use it");
+		expect(await blocked("work")).toBe(true);
+	});
+
+	test("an expired block is not rewritten and reports nothing to lift", async () => {
+		await seedPool();
+		const credentialRevision = await repository.storedCredentialRevision(PROVIDER, "work", WORK_OAUTH);
+		await repository.mutateSlotState(PROVIDER, "stored", "work", () => ({
+			blockedUntil: Date.now() - 60_000,
+			blockReason: "rate_limit",
+			credentialRevision,
+		}));
+		const before = (await repository.listSlots(PROVIDER, "stored")).work;
+		const { ctx, notices } = createAccountCommandContext(storage, dir);
+
+		await command().handler("unblock work", ctx);
+
+		expect(notices.at(-1)?.message).toContain("has no usage block to lift");
+		expect((await repository.listSlots(PROVIDER, "stored")).work).toEqual(before);
+	});
+
+	test("a block left by a previous login is not rewritten", async () => {
+		await seedPool();
+		const staleRevision = await repository.storedCredentialRevision(PROVIDER, "work", { access: "stale-access" });
+		await repository.mutateSlotState(PROVIDER, "stored", "work", () => ({
+			blockedUntil: FAR_FUTURE,
+			blockReason: "rate_limit",
+			credentialRevision: staleRevision,
+		}));
+		const before = (await repository.listSlots(PROVIDER, "stored")).work;
+		const { ctx, notices } = createAccountCommandContext(storage, dir);
+
+		await command().handler("unblock work", ctx);
+
+		expect(notices.at(-1)?.message).toContain("has no usage block to lift");
+		expect((await repository.listSlots(PROVIDER, "stored")).work).toEqual(before);
+	});
+
+	test("an account with no sidecar entry gets none created", async () => {
+		await seedPool();
+		const { ctx } = createAccountCommandContext(storage, dir);
+
+		await command().handler("unblock work", ctx);
+
+		expect(await repository.listSlots(PROVIDER, "stored")).toEqual({});
+	});
+
+	test("a failing stored write still emits the accounts-changed event for the sidecar lift", async () => {
+		await seedPool();
+		await blockSlot("work", WORK_OAUTH);
+		const events: string[] = [];
+		const unsubscribe = subscribeProviderAccountEvents((event) => {
+			if (event.type === "accounts_changed") events.push(event.provider);
+		});
+		const failing = {
+			get: (provider: string) => storage.get(provider),
+			getStoragePath: () => storage.getStoragePath(),
+			listSlots: (provider: string) => storage.listSlots(provider),
+			modify: async () => {
+				throw new Error("auth.json is locked");
+			},
+		} as unknown as AuthStorage;
+
+		await expect(unblockPooledAccount(failing, PROVIDER, "work", {}, repository)).rejects.toThrow(
+			"auth.json is locked",
+		);
+
+		unsubscribe();
+		expect(events).toContain(PROVIDER);
+		expect((await repository.listSlots(PROVIDER, "stored")).work?.blockedUntil).toBeUndefined();
 	});
 });
