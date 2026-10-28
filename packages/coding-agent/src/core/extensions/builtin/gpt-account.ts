@@ -1,8 +1,7 @@
 import type { AccountLoginReceipt } from "@earendil-works/pi-ai";
 import { accountLabel } from "@earendil-works/pi-ai/auth/pool/slots";
-import { resetCredentialAccount } from "../../../core/credential-account-reset.ts";
+import { unblockPooledAccount } from "../../../core/credential-account-unblock.ts";
 import {
-	type CredentialAccountSummary,
 	getCredentialAccounts,
 	pinCredentialAccount,
 	removeCredentialAccount,
@@ -90,30 +89,26 @@ async function pinAccount(ctx: ExtensionCommandContext, name: string | undefined
 /**
  * A usage block the user knows is gone (the limit reset on the provider side) is lifted here,
  * mirroring `/claude-account unblock` (senpi#4600). An auth block stays: only a login or the
- * re-probe can clear a rejected credential. The clearing itself is the shared primitive
- * `resetCredentialAccount` (senpi#3285), which both health sources use.
+ * re-probe can clear a rejected credential. The lift itself is `unblockPooledAccount`, which
+ * decides under the same lock it writes in and leaves model-scoped blocks and the lease alone.
  */
-function liftableBlock(account: CredentialAccountSummary): boolean {
-	return account.blocked && account.blockedReason !== "auth_error" && account.blockedUntil !== undefined;
-}
-
 async function unblockAccount(ctx: ExtensionCommandContext, name: string | undefined): Promise<void> {
 	if (!name) {
 		ctx.ui.notify("Usage: /gpt-account unblock <id>", "error");
 		return;
 	}
 	const accounts = await getCredentialAccounts(ctx.modelRegistry.authStorage, CHATGPT_SUBSCRIPTION_PROVIDER_ID);
-	const account = accounts.find((candidate) => candidate.name === name);
-	if (!account) {
+	if (!accounts.some((candidate) => candidate.name === name)) {
 		ctx.ui.notify(`ChatGPT Subscription OAuth account '${name}' does not exist.`, "error");
 		return;
 	}
-	if (!liftableBlock(account)) {
-		ctx.ui.notify(`ChatGPT Subscription OAuth account '${name}' has no usage block to lift.`, "info");
-		return;
-	}
-	await resetCredentialAccount(ctx.modelRegistry.authStorage, CHATGPT_SUBSCRIPTION_PROVIDER_ID, name);
-	ctx.ui.notify(`Unblocked ChatGPT Subscription OAuth account '${name}'. The next turn may use it.`, "info");
+	const lifted = await unblockPooledAccount(ctx.modelRegistry.authStorage, CHATGPT_SUBSCRIPTION_PROVIDER_ID, name);
+	ctx.ui.notify(
+		lifted
+			? `Unblocked ChatGPT Subscription OAuth account '${name}'. The next turn may use it.`
+			: `ChatGPT Subscription OAuth account '${name}' has no usage block to lift.`,
+		"info",
+	);
 }
 
 export default function gptAccountExtension(pi: ExtensionAPI, deps: GptAccountExtensionDeps = {}): void {

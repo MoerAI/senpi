@@ -8,10 +8,11 @@ import { AuthStorage } from "../../../src/core/auth-storage.ts";
 import { getCredentialAccounts } from "../../../src/core/credential-accounts.ts";
 import { streamWithCredentialRotation } from "../../../src/core/credential-pool/rotation-stream.ts";
 import { CredentialSlotRepository } from "../../../src/core/credential-pool/state-store.ts";
+import { unblockPooledAccount } from "../../../src/core/credential-account-unblock.ts";
 import gptAccountExtension from "../../../src/core/extensions/builtin/gpt-account.ts";
 import { type Command, createAccountCommandContext, registerCommand } from "../account-command-harness.ts";
 
-// senpi#4600 (reported by ksr7439): /gpt-account had no `unblock`, so a ChatGPT account stayed
+// senpi#4600 (reported by CodeRiever): /gpt-account had no `unblock`, so a ChatGPT account stayed
 // blocked until its stored `blockedUntil` even after the user reset the limit on the provider
 // side. The command now lifts a usage block exactly like /claude-account unblock, and a 2xx on
 // the account clears its stale block - for that account only.
@@ -192,5 +193,66 @@ describe("a 2xx on a blocked account clears that account's stale block only (#46
 		const slots = await repository.listSlots(PROVIDER, "stored");
 		expect(slots.default?.blockedUntil).toBeUndefined();
 		expect(slots.work?.blockedUntil).toBe(FAR_FUTURE);
+	});
+});
+
+describe("unblock is narrow: only the account-level block is lifted (#4600)", () => {
+	test("per-model usage limits and an in-flight lease survive the unblock", async () => {
+		await seedPool();
+		const credentialRevision = await repository.storedCredentialRevision(PROVIDER, "work", WORK_OAUTH);
+		await repository.mutateSlotState(PROVIDER, "stored", "work", () => ({
+			blockedUntil: FAR_FUTURE,
+			blockReason: "rate_limit",
+			failureCount: 1,
+			credentialRevision,
+			lease: { id: "lease-1", expiresAt: FAR_FUTURE },
+			modelBlocks: { "gpt-5.1-codex": { blockedUntil: FAR_FUTURE } },
+		}));
+		const { ctx } = createAccountCommandContext(storage, dir);
+
+		await command().handler("unblock work", ctx);
+
+		const slot = (await repository.listSlots(PROVIDER, "stored")).work;
+		expect(slot?.blockedUntil).toBeUndefined();
+		expect(slot?.blockReason).toBeUndefined();
+		expect(slot?.modelBlocks).toEqual({ "gpt-5.1-codex": { blockedUntil: FAR_FUTURE } });
+		expect(slot?.lease).toEqual({ id: "lease-1", expiresAt: FAR_FUTURE });
+		const accounts = await getCredentialAccounts(storage, PROVIDER, {}, repository);
+		const work = accounts.find((account) => account.name === "work");
+		expect(work?.blocked).toBe(false);
+		expect(work?.blockedModels).toEqual([{ model: "gpt-5.1-codex", until: FAR_FUTURE }]);
+	});
+
+	test("a block written between the listing and the write is not erased", async () => {
+		await seedPool();
+		const credentialRevision = await repository.storedCredentialRevision(PROVIDER, "work", WORK_OAUTH);
+		await blockSlot("work", WORK_OAUTH);
+
+		// The listing that decides liftability is unlocked, so another session can record an auth
+		// block right after it. The decision is retaken inside the locked write, so that block stays.
+		class RacingRepository extends CredentialSlotRepository {
+			private raced = false;
+			override async listSlots(providerId: string, laneId: string) {
+				const slots = await super.listSlots(providerId, laneId);
+				if (!this.raced && laneId === "stored") {
+					this.raced = true;
+					await super.mutateSlotState(providerId, laneId, "work", () => ({
+						blockedUntil: FAR_FUTURE,
+						blockReason: "auth_error",
+						failureCount: 2,
+						credentialRevision,
+					}));
+				}
+				return slots;
+			}
+		}
+		const racing = new RacingRepository(join(dir, "credential-pool-state.json"));
+
+		const lifted = await unblockPooledAccount(storage, PROVIDER, "work", {}, racing);
+
+		expect(lifted).toBe(false);
+		const slot = (await repository.listSlots(PROVIDER, "stored")).work;
+		expect(slot?.blockReason).toBe("auth_error");
+		expect(slot?.blockedUntil).toBe(FAR_FUTURE);
 	});
 });
