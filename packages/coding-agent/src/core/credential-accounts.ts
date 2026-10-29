@@ -1,4 +1,4 @@
-import { lstatSync } from "node:fs";
+import { lstat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type Credential, normalizeProviderId } from "@earendil-works/pi-ai";
 import { slotsOfOwnKind } from "@earendil-works/pi-ai/auth/pool/kinds";
@@ -414,9 +414,9 @@ async function dropStoredSlot(
 	await repo.mutateSlotState(provider, "stored", name, () => undefined);
 }
 
-function pathExists(path: string): boolean {
+async function pathExists(path: string): Promise<boolean> {
 	try {
-		lstatSync(path);
+		await lstat(path);
 		return true;
 	} catch {
 		return false;
@@ -443,11 +443,11 @@ async function signOutAndDropSlot(
 	let notice: string | undefined;
 	if (normalizeProviderId(provider) === "anthropic-subscription") {
 		const accountDir = claudeCliAccountDir(storage, credential, name);
-		const dirExisted = accountDir !== undefined && pathExists(accountDir);
+		const dirExisted = accountDir !== undefined && (await pathExists(accountDir));
 		try {
 			notice = await signOutClaudeCliSlot(storage, credential, name, env, signal);
 		} catch (error) {
-			if (dirExisted && !pathExists(accountDir)) await dropStoredSlot(storage, provider, name, repo);
+			if (dirExisted && !(await pathExists(accountDir))) await dropStoredSlot(storage, provider, name, repo);
 			throw error;
 		}
 	}

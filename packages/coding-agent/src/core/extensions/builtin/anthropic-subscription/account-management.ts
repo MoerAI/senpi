@@ -11,8 +11,9 @@ import {
 	pinAccount,
 } from "./accounts.ts";
 import { forgetSessionBlocksFor } from "./failover.ts";
+import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./provider-id.ts";
 
-export const ANTHROPIC_SUBSCRIPTION_PROVIDER_ID = "anthropic-subscription";
+export { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID };
 
 export type ProviderAccountSummary = {
 	readonly name: string;
