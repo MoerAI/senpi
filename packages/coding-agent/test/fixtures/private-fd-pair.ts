@@ -9,8 +9,10 @@ const { parseTable } = await import("../../src/private-fds.ts");
 const { preparePrivateFdSpawn } = await import("../../src/private-fd-spawn.ts");
 const local = process.argv[2]?.startsWith("local-");
 // Test-only proof injection; the local socketpair exercises composition without pretending to prove Windows.
+const bunVersion = process.versions.bun;
+if (bunVersion === undefined) throw new Error("private-fd-pair fixture must run under Bun");
 const parsed = parseTable(encoded, {
-	proven: { bun: process.versions.bun! },
+	proven: { bun: bunVersion },
 	...(local
 		? { platform: "win32" as const, isPipe: (fd: number) => fstatSync(fd).isSocket(), clearInherit: () => true }
 		: {}),

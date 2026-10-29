@@ -147,12 +147,12 @@ describe("Windows private descriptor pairs (#4859)", () => {
 	it("pair forwarding carries both stdio slots atomically", () => {
 		const transfer = forwardPair({ stdio: "ignore" });
 		expect(transfer.options.stdio.slice(5, 7)).toEqual([5, 6]);
-		expect(JSON.parse(transfer.options.env.SENPI_PRIVATE_FDS!)).toEqual({ a: [5, 6] });
+		expect(JSON.parse(transfer.options.env.SENPI_PRIVATE_FDS ?? "")).toEqual({ a: [5, 6] });
 	});
 
 	it("pair shell forwarding carries neither stdio half", () => {
 		const transfer = forwardPair({ shell: true });
-		expect(JSON.parse(transfer.options.env.SENPI_PRIVATE_FDS!)).toEqual({ a: null });
+		expect(JSON.parse(transfer.options.env.SENPI_PRIVATE_FDS ?? "")).toEqual({ a: null });
 		expect(transfer.options.stdio).toHaveLength(3);
 	});
 
