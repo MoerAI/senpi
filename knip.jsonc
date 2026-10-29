@@ -182,7 +182,6 @@
       // pre-existing at origin main aceb1cc1d9: unused exports DEFAULT_OAUTH_REFRESH_TIMEOUT_MS
       "packages/ai/src/auth/oauth-refresh.ts": ["DEFAULT_OAUTH_REFRESH_TIMEOUT_MS"],
       // pre-existing at origin main aceb1cc1d9: unused exports CALLBACK_PATH, callbackRedirectUri
-      "packages/ai/src/auth/oauth/anthropic-callback-listener.ts": ["CALLBACK_PATH", "callbackRedirectUri"],
       // pre-existing at origin main aceb1cc1d9: unused exports CHATGPT_CALLBACK_PORTS
       "packages/ai/src/auth/oauth/chatgpt-subscription-callback.ts": ["CHATGPT_CALLBACK_PORTS"],
       // pre-existing at origin main aceb1cc1d9: unused exports buildCursorLoginUrl
