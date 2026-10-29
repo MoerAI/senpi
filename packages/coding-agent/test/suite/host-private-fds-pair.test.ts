@@ -179,6 +179,25 @@ describe("Windows private descriptor pairs (#4859)", () => {
 		expect(runtime.clearInherit.mock.calls).toEqual([[5], [6]]);
 	});
 
+	// #4859 review: a handle whose inherit flag stays set must not reach any child this process spawns.
+	it.each([
+		{ label: "pair half", table: '{"a":[5,6]}', failing: [6], discard: [6] },
+		{ label: "both pair halves", table: '{"a":[5,6]}', failing: [5, 6], discard: [5, 6] },
+		{ label: "bare number", table: '{"a":7}', failing: [7], discard: [7] },
+		{ label: "aliased handle", table: '{"a":[5,6],"b":6}', failing: [6], discard: [6] },
+	])("N9 clearing failure discards the $label", ({ table, failing, discard }) => {
+		const runtime = { ...inspection(), clearInherit: (fd: number) => !failing.includes(fd) };
+		const result = parseTable(table, runtime);
+		expect([...result.entries.values()].every((entry) => entry === null)).toBe(true);
+		expect([...result.discard].sort((left, right) => left - right)).toEqual(discard);
+	});
+
+	it("N9 clearing failure never discards the runtime IPC descriptor", () => {
+		const runtime = { ...inspection(), ipc: 6, clearInherit: () => false };
+		const result = parseTable('{"a":[5,6]}', runtime);
+		expect([...result.discard]).toEqual([5]);
+	});
+
 	it("old-parser compatibility control refuses pairs on every Bun bump", () => {
 		const result = oldParseTable('{"a":[5,6],"b":null}');
 		expect(result.parsed).toBe(true);

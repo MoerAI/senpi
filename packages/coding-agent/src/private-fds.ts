@@ -198,7 +198,18 @@ export function parseTable(
 		entries.set(name, entry.channel);
 		if (entry.discard !== null) discard.add(entry.discard);
 	}
+	// A handle that stays inheritable would reach every child this process spawns, so close it like POSIX does.
+	for (const [fd, ok] of cleared) if (!ok && fd !== runtime.ipc) discard.add(fd);
 	return { entries, parsed: true, discard };
+}
+
+/** A discarded Windows name may not be open at all (its clear failed for that reason): nothing to close then. */
+function closeDiscarded(fd: number): void {
+	try {
+		closeSync(fd);
+	} catch (error) {
+		if (!(error instanceof Error && "code" in error && error.code === "EBADF")) throw error;
+	}
 }
 
 /** Read once, in the capturing main thread; session Workers never read a table. */
@@ -214,7 +225,7 @@ function capturedState(): PrivateFdState {
 	const { entries, parsed, discard } = encoded
 		? parseTable(encoded)
 		: { entries: new Map<string, PrivateFdEntry>(), parsed: true, discard: new Set<number>() };
-	for (const fd of discard) closeSync(fd);
+	for (const fd of discard) closeDiscarded(fd);
 	const unparseable = !parsed && entries.size === 0;
 	const state: PrivateFdState = {
 		present: Boolean(encoded),
