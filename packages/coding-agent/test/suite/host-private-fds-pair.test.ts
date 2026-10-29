@@ -34,15 +34,39 @@ function forwardPair(options: SpawnOptions) {
 
 describe("Windows private descriptor pairs (#4859)", () => {
 	it.each([
-		{ label: "pair/pair", table: { a: [5, 6], b: [6, 7] } },
-		{ label: "bare/pair", table: { a: 6, b: [6, 7] } },
-		{ label: "malformed-pair alias", table: { a: [5, 6], b: [7, 6, 8] } },
-	])("N1/N2 $label entries are null without double adoption", ({ table }) => {
+		{ label: "pair/pair", table: { a: [5, 6], b: [6, 7] }, cleared: [5, 6, 7] },
+		{ label: "bare/pair", table: { a: 6, b: [6, 7] }, cleared: [6, 7] },
+		{ label: "malformed-pair alias", table: { a: [5, 6], b: [7, 6, 8] }, cleared: [5, 6, 7, 8] },
+	])("N1/N2 $label entries are null without double adoption", ({ table, cleared }) => {
 		const runtime = inspection();
 		const result = parseTable(JSON.stringify(table), runtime);
 		expect(Object.fromEntries(result.entries)).toEqual({ a: null, b: null });
 		expect(result.discard.size).toBe(0);
-		expect(runtime.clearInherit).not.toHaveBeenCalled();
+		expect(runtime.clearInherit.mock.calls).toEqual(cleared.map((fd) => [fd]));
+	});
+
+	// #4859: receipt protection applies even when an alias prevents adoption.
+	it("N9 clears both descriptors in the pair and bare alias probe", () => {
+		const runtime = inspection();
+		const result = parseTable('{"a":[5,6],"b":6}', runtime);
+		expect(Object.fromEntries(result.entries)).toEqual({ a: null, b: null });
+		expect(runtime.clearInherit.mock.calls).toEqual([[5], [6]]);
+	});
+
+	it("N9 clears the whole table before any pipe type inspection", () => {
+		const events: string[] = [];
+		parseTable('{"a":[5,6],"b":[9,10]}', {
+			...inspection(),
+			clearInherit: (fd) => {
+				events.push(`clear:${fd}`);
+				return true;
+			},
+			isPipe: (fd) => {
+				events.push(`pipe:${fd}`);
+				return true;
+			},
+		});
+		expect(events).toEqual(["clear:5", "clear:6", "clear:9", "clear:10", "pipe:5", "pipe:6", "pipe:9", "pipe:10"]);
 	});
 
 	it("N1 counts a POSIX socket alias inside a refused pair", () => {
@@ -56,22 +80,22 @@ describe("Windows private descriptor pairs (#4859)", () => {
 	});
 
 	it.each([
-		{ label: "empty", pair: [] },
-		{ label: "one element", pair: [5] },
-		{ label: "three elements", pair: [5, 6, 7] },
-		{ label: "equal elements", pair: [5, 5] },
-		{ label: "reserved descriptor", pair: [4, 6] },
-		{ label: "above range", pair: [5, 65] },
-		{ label: "fractional descriptor", pair: [5.5, 6] },
-		{ label: "string descriptor", pair: [5, "6"] },
-		{ label: "null descriptor", pair: [5, null] },
-		{ label: "unsafe integer", pair: [5, 1e30] },
-	])("N3 malformed $label is a null declaration", ({ pair }) => {
+		{ label: "empty", pair: [], cleared: [] },
+		{ label: "one element", pair: [5], cleared: [5] },
+		{ label: "three elements", pair: [5, 6, 7], cleared: [5, 6, 7] },
+		{ label: "equal elements", pair: [5, 5], cleared: [5] },
+		{ label: "reserved descriptor", pair: [4, 6], cleared: [6] },
+		{ label: "above range", pair: [5, 65], cleared: [5] },
+		{ label: "fractional descriptor", pair: [5.5, 6], cleared: [6] },
+		{ label: "string descriptor", pair: [5, "6"], cleared: [5] },
+		{ label: "null descriptor", pair: [5, null], cleared: [5] },
+		{ label: "unsafe integer", pair: [5, 1e30], cleared: [5] },
+	])("N3 malformed $label is a null declaration", ({ pair, cleared }) => {
 		const runtime = inspection();
 		const result = parseTable(JSON.stringify({ bad: pair }), runtime);
 		expect(result.parsed).toBe(true);
 		expect(result.entries.get("bad")).toBeNull();
-		expect(runtime.clearInherit).not.toHaveBeenCalled();
+		expect(runtime.clearInherit.mock.calls).toEqual(cleared.map((fd) => [fd]));
 	});
 
 	it("N3 malformed sibling leaves an independent valid pair usable", () => {
@@ -84,18 +108,20 @@ describe("Windows private descriptor pairs (#4859)", () => {
 	});
 
 	it("N4 win32 bare number stays a null declaration", () => {
-		expect(parseTable('{"a":5}', inspection()).entries.get("a")).toBeNull();
+		const runtime = inspection();
+		expect(parseTable('{"a":5}', runtime).entries.get("a")).toBeNull();
+		expect(runtime.clearInherit.mock.calls).toEqual([[5]]);
 	});
 
 	it.each([
 		{ label: "false proof", proven: false as const, bun: "1.4.4" },
 		{ label: "version mismatch", proven: { bun: "1.4.4" }, bun: "1.4.5" },
 		{ label: "no Bun version", proven: { bun: "1.4.4" }, bun: undefined },
-	])("gate $label refuses pairs without inspection", ({ label: _label, ...gate }) => {
+	])("gate $label refuses pairs after receipt clearing without type inspection", ({ label: _label, ...gate }) => {
 		const runtime = { ...inspection(), ...gate };
 		expect(parseTable('{"a":[5,6]}', runtime).entries.get("a")).toBeNull();
 		expect(runtime.isPipe).not.toHaveBeenCalled();
-		expect(runtime.clearInherit).not.toHaveBeenCalled();
+		expect(runtime.clearInherit.mock.calls).toEqual([[5], [6]]);
 	});
 
 	it("gate default release proof refuses win32 pairs", () => {
@@ -133,13 +159,13 @@ describe("Windows private descriptor pairs (#4859)", () => {
 	it.each([5, 6, undefined])("pair IPC descriptor %j refuses adoption", (ipc) => {
 		const runtime = { ...inspection(), ipc };
 		expect(parseTable('{"a":[5,6]}', runtime).entries.get("a")).toBeNull();
-		expect(runtime.clearInherit).not.toHaveBeenCalled();
+		expect(runtime.clearInherit.mock.calls).toEqual([[5], [6]]);
 	});
 
 	it.each([5, 6])("pair non-pipe descriptor %i refuses adoption", (bad) => {
 		const runtime = { ...inspection(), isPipe: vi.fn((fd: number) => fd !== bad) };
 		expect(parseTable('{"a":[5,6]}', runtime).entries.get("a")).toBeNull();
-		expect(runtime.clearInherit).not.toHaveBeenCalled();
+		expect(runtime.clearInherit.mock.calls).toEqual([[5], [6]]);
 	});
 
 	it("N9 clearing failure leaves the pair unavailable", () => {
@@ -153,11 +179,20 @@ describe("Windows private descriptor pairs (#4859)", () => {
 		expect(runtime.clearInherit.mock.calls).toEqual([[5], [6]]);
 	});
 
-	it("N5 old-parser compatibility control refuses pairs on every Bun bump", () => {
+	it("old-parser compatibility control refuses pairs on every Bun bump", () => {
 		const result = oldParseTable('{"a":[5,6],"b":null}');
 		expect(result.parsed).toBe(true);
 		expect(Object.fromEntries(result.entries)).toEqual({ a: null, b: null });
 		expect(result.discard.size).toBe(0);
+	});
+
+	// #4859: invalid names must not change POSIX adoption or close the valid channel.
+	it("POSIX ignores invalid-name entries when counting descriptor aliases", () => {
+		const result = parseTable('{"a":7,"Bad":7}', { ...inspection(), platform: "linux", isSocket: () => true });
+		expect({ entries: Object.fromEntries(result.entries), discard: [...result.discard] }).toEqual({
+			entries: { a: 7 },
+			discard: [],
+		});
 	});
 
 	it.skipIf(process.platform === "win32")("composes both halves through a real Bun hop on POSIX", async () => {
