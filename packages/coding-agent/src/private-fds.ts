@@ -105,6 +105,7 @@ function inspectEntry(
 	fd: unknown,
 	shared: boolean,
 	runtime: PrivateFdInspection,
+	cleared: ReadonlyMap<number, boolean>,
 ): { readonly channel: PrivateFdEntry; readonly discard: number | null } {
 	const { ipc } = runtime;
 	if (Array.isArray(fd)) {
@@ -124,10 +125,8 @@ function inspectEntry(
 			!runtime.isPipe(fd[1])
 		)
 			return { channel: null, discard: null };
-		// No reads, writes or direction probes: only the type gate and receipt-time inherit clearing.
-		const clearedRead = runtime.clearInherit(fd[0]);
-		const clearedWrite = runtime.clearInherit(fd[1]);
-		return { channel: clearedRead && clearedWrite ? [fd[0], fd[1]] : null, discard: null };
+		// Receipt clearing already ran for every named integer, even when another entry was refused.
+		return { channel: cleared.get(fd[0]) && cleared.get(fd[1]) ? [fd[0], fd[1]] : null, discard: null };
 	}
 	if (!inRange(fd)) return { channel: null, discard: null };
 	if (runtime.platform === "win32" || ipc === undefined || fd === ipc || !runtime.isSocket(fd)) {
@@ -164,13 +163,6 @@ export function parseTable(
 		return { entries, parsed: false, discard: new Set() };
 	}
 	const raw = Object.entries(value).filter(([name]) => NAME.test(name));
-	const counts = new Map<number, number>();
-	// Flatten even malformed entries: a bare number or a third pair element still aliases a handle.
-	for (const fd of Object.values(value)) {
-		for (const number of Array.isArray(fd) ? fd : [fd]) {
-			if (typeof number === "number") counts.set(number, (counts.get(number) ?? 0) + 1);
-		}
-	}
 	const runtime: PrivateFdInspection = {
 		platform: process.platform,
 		bun: process.versions.bun,
@@ -181,12 +173,28 @@ export function parseTable(
 		clearInherit: clearPrivateFdInherit,
 		...inspection,
 	};
+	const cleared = new Map<number, boolean>();
+	if (runtime.platform === "win32") {
+		// Protect refused handles too, before any shape, alias, IPC, proof or type decision.
+		for (const fd of Object.values(value)) {
+			for (const number of Array.isArray(fd) ? fd : [fd]) {
+				if (inRange(number) && !cleared.has(number)) cleared.set(number, runtime.clearInherit(number));
+			}
+		}
+	}
+	const counts = new Map<number, number>();
+	// Only valid names participate, but a malformed entry's third element still aliases a handle.
+	for (const [, fd] of raw) {
+		for (const number of Array.isArray(fd) ? fd : [fd]) {
+			if (typeof number === "number") counts.set(number, (counts.get(number) ?? 0) + 1);
+		}
+	}
 	const discard = new Set<number>();
 	for (const [name, fd] of raw) {
 		// A descriptor named twice belongs to neither name.
 		const numbers: unknown[] = Array.isArray(fd) ? fd : [fd];
 		const shared = numbers.some((number) => typeof number === "number" && (counts.get(number) ?? 0) > 1);
-		const entry = inspectEntry(fd, shared, runtime);
+		const entry = inspectEntry(fd, shared, runtime, cleared);
 		entries.set(name, entry.channel);
 		if (entry.discard !== null) discard.add(entry.discard);
 	}
