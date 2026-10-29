@@ -1,6 +1,6 @@
 import type { Credential } from "@earendil-works/pi-ai";
 import type { CredentialSlot, PooledCredential } from "@earendil-works/pi-ai/auth/pool/slots";
-import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./extensions/builtin/anthropic-subscription/account-management.ts";
+import { ANTHROPIC_SUBSCRIPTION_PROVIDER_ID } from "./extensions/builtin/anthropic-subscription/provider-id.ts";
 import {
 	type AccountSlot,
 	type AnthropicSubscriptionCredential,
