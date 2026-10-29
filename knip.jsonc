@@ -583,6 +583,8 @@
       "packages/coding-agent/src/core/extensions/builtin/anthropic-subscription/auth-block-recovery.ts": ["isAuthBlockRecoverable"],
       // pre-existing at origin main aceb1cc1d9: unused exports ANTHROPIC_SUBSCRIPTION_PROVIDER_ID, resolveEffectiveLane
       "packages/coding-agent/src/core/extensions/builtin/anthropic-subscription/auth-lane.ts": ["ANTHROPIC_SUBSCRIPTION_PROVIDER_ID", "resolveEffectiveLane"],
+      // stacked-PR seam (#4436 stack): claudeCliSharedRoot is consumed from #4458 (auth-lane.ts); remove this entry there
+      "packages/coding-agent/src/core/extensions/builtin/anthropic-subscription/claude-cli-account-dir.ts": ["claudeCliSharedRoot"],
       // pre-existing at origin main aceb1cc1d9: unused exports CLAUDE_CODE_DEFAULT_CONTEXT_WINDOW
       "packages/coding-agent/src/core/extensions/builtin/anthropic-subscription/context-window.ts": ["CLAUDE_CODE_DEFAULT_CONTEXT_WINDOW"],
       // pre-existing at origin main aceb1cc1d9: unused exports objectToShape
