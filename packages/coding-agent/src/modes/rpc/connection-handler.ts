@@ -5,6 +5,9 @@ import {
 } from "../../cli/tool-runtime.ts";
 import { messagePathProjectRoot, resolveMessagePath } from "../../core/message-path-resolution.ts";
 import { clientFacingIdentity } from "./client-admission-record.ts";
+import type { ExtensionRpcRequestContext } from "../../core/extensions/rpc-context.ts";
+import type { ExtensionOwner } from "./extension-owner.ts";
+import { ExtensionOwnerLifetime } from "./extension-owner-lifetime.ts";
 /**
  * Per-connection RPC handler.
  *
@@ -62,6 +65,7 @@ import type {
 import { ExtensionRpcRequestNotFoundError } from "../../core/extensions/runner.ts";
 import { attachMcpGrantPresentation } from "../../core/mcp-grant-presentations.ts";
 import { describeUsageLimitEntry, describeUsageLimitMessage } from "../../core/retry-fallback/usage-limit.ts";
+import { carryRecovery } from "../../core/session-recovery-identity.ts";
 import { subscriptionLimits } from "../../core/subscription-limits/limit-store.ts";
 import { storedKeyHint, verifyApiKey } from "../../core/verify-api-key.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
@@ -101,7 +105,7 @@ import {
 import { EffectLedger } from "./effect-ledger.ts";
 import { EFFECT_LEDGER_CAPABILITY } from "./effect-record.ts";
 import { createRpcEventOutputBuffer } from "./event-output-buffer.ts";
-import { answeredUiRequestId, settleExtensionUiResponse } from "./extension-ui-response.ts";
+import { answeredUiRequestId, refusedExtensionUiResponse, settleExtensionUiResponse } from "./extension-ui-response.ts";
 import { answerGetEntries } from "./get-entries-command.ts";
 import { runHoldInput } from "./held-input-commands.ts";
 import { HostSessionControl } from "./host-session-control.ts";
@@ -159,6 +163,9 @@ export { buildRpcSessionState } from "./rpc-session-state.ts";
 
 /** Additive per-connection options. Absent = classic default (byte-identical). */
 export interface RpcConnectionOptions {
+	/** Trusted capture supplied by the host binding, never by a public RPC command. */
+	rpcOwner?: () => ExtensionOwner | undefined;
+	retireRpcBinding?: () => void;
 	/** Client capability flags from the handshake (e.g. custom_unsupported opt-in). */
 	capabilities?: readonly string[];
 	/** The host's per-connection role registry; a single-connection process keeps its own. */
@@ -371,6 +378,11 @@ export function createRpcConnectionHandler(
 	// already learns the new identity from its command response.
 	let replacementIssuedHere = false;
 	let session = runtimeHost.session;
+	const rpcOwners = new ExtensionOwnerLifetime(
+		options.sessionId === undefined,
+		options.rpcOwner,
+		options.retireRpcBinding,
+	);
 	let sessionControl: HostSessionControl | undefined;
 	let relocation: RpcSessionRelocation | undefined;
 	const promptCalls = new Set<Promise<unknown>>();
@@ -398,7 +410,7 @@ export function createRpcConnectionHandler(
 	});
 
 	const tagSessionRecord = <T extends object>(value: T): T | (T & { sessionId: string }) =>
-		routingSessionId === undefined ? value : { ...value, sessionId: routingSessionId };
+		routingSessionId === undefined ? value : carryRecovery(value, { ...value, sessionId: routingSessionId });
 
 	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
 		const record = tagSessionRecord(obj);
@@ -882,6 +894,7 @@ export function createRpcConnectionHandler(
 	};
 
 	const rebindSession = async (deferRefresh = false): Promise<void> => {
+		rpcOwners.retireBinding();
 		unbindMcpForms?.();
 		unbindMcpForms = undefined;
 		unsubscribeSecurityNotices?.();
@@ -1069,7 +1082,9 @@ export function createRpcConnectionHandler(
 	 *
 	 * Reuses AuthStorage.login (the same callbacks the classic TUI uses). Only the
 	 * URL-based happy path is surfaced over RPC: onAuth emits an auth_login_url
-	 * event; success/failure/cancel emit a single auth_login_end event. Callbacks
+	 * event, onProgress (for example a `provider_login_start` handler's download
+	 * line) emits auth_login_progress, and success/failure/cancel emit a single
+	 * auth_login_end event. Callbacks
 	 * that need interactive mid-flow input (onPrompt/onSelect) are answered over
 	 * the extension UI dialog channel, so clients may either answer the dialog or
 	 * finish through the browser/callback-server path. An unanswered dialog never
@@ -1098,7 +1113,9 @@ export function createRpcConnectionHandler(
 					outputEvent({ type: "auth_login_url", provider, url: info.verificationUri });
 				},
 				...createRpcLoginPromptCallbacks(createExtensionUIContext(), loginSignal),
-				onProgress: () => {},
+				onProgress: (message) => {
+					outputEvent({ type: "auth_login_progress", provider, text: message });
+				},
 				signal: controller.signal,
 			});
 			session.modelRegistry.refresh();
@@ -1140,7 +1157,10 @@ export function createRpcConnectionHandler(
 	});
 
 	// Handle a single command
-	const handleCommand = async (command: RpcCommand): Promise<RpcResponse | undefined> => {
+	const handleCommand = async (
+		command: RpcCommand,
+		requestContext?: ExtensionRpcRequestContext,
+	): Promise<RpcResponse | undefined> => {
 		const id = command.id;
 
 		switch (command.type) {
@@ -1196,7 +1216,12 @@ export function createRpcConnectionHandler(
 				if (holdAutomaticInput(session, command, hasRole(INTERACTIVE_USER_CAPABILITY)))
 					return success(id, "prompt", { disposition: "handled", heldAsNotice: true });
 				turnRequested = true;
-				const admission = handleClientInput(session, command, { output, promptCalls });
+				const admission = handleClientInput(
+					session,
+					command,
+					{ output, promptCalls },
+					{ interactiveUser: hasRole(INTERACTIVE_USER_CAPABILITY) },
+				);
 				promptCalls.add(admission);
 				void admission.finally(() => promptCalls.delete(admission));
 				return undefined;
@@ -1273,7 +1298,12 @@ export function createRpcConnectionHandler(
 				if (holdAutomaticInput(session, command, hasRole(INTERACTIVE_USER_CAPABILITY)))
 					return success(id, command.type, { disposition: "handled", heldAsNotice: true });
 				turnRequested = true;
-				await handleClientInput(session, command, { output, promptCalls });
+				await handleClientInput(
+					session,
+					command,
+					{ output, promptCalls },
+					{ interactiveUser: hasRole(INTERACTIVE_USER_CAPABILITY) },
+				);
 				return undefined;
 			}
 
@@ -1990,6 +2020,7 @@ export function createRpcConnectionHandler(
 					const data = await session.extensionRunner.requestRpc(
 						name,
 						command.type === "extension_request" ? command.data : command,
+						requestContext,
 					);
 					return success(id, command.type, data);
 				} catch (cause) {
@@ -2023,13 +2054,17 @@ export function createRpcConnectionHandler(
 				const modelRegistry = session.modelRegistry;
 				const oauthInfos = buildLoginProviderInfos(modelRegistry, "oauth");
 				const apiKeyInfos = buildLoginProviderInfos(modelRegistry, "api_key");
-				const providers: RpcAuthProvider[] = [...oauthInfos, ...apiKeyInfos].map((info) => ({
-					id: info.id,
-					name: info.name,
-					authType: info.authType,
-					status: authMethodStatus(modelRegistry, info),
-					...storedKeyHint(modelRegistry, info),
-				}));
+				const providers: RpcAuthProvider[] = [...oauthInfos, ...apiKeyInfos].map((info) => {
+					const origin = modelRegistry.getProviderOrigin(info.id);
+					return {
+						id: info.id,
+						name: info.name,
+						authType: info.authType,
+						status: authMethodStatus(modelRegistry, info),
+						...storedKeyHint(modelRegistry, info),
+						...(origin === undefined ? {} : { origin }),
+					};
+				});
 				return success(id, "get_auth_providers", { providers });
 			}
 
@@ -2109,7 +2144,7 @@ export function createRpcConnectionHandler(
 		}
 	};
 
-	const handleInputLine = async (line: string): Promise<void> => {
+	const handleInputLine = async (line: string, requestContext?: ExtensionRpcRequestContext): Promise<void> => {
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(line);
@@ -2154,16 +2189,23 @@ export function createRpcConnectionHandler(
 			"type" in parsed &&
 			parsed.type === "extension_ui_response"
 		) {
-			const requestId = answeredUiRequestId(parsed as RpcExtensionUIResponse);
-			if (!options.workerSecurityBridge && requestId !== undefined && grantRequests.has(requestId)) {
+			const response = parsed as RpcExtensionUIResponse;
+			// The grant rules apply to the request this response answers (`uiRequestId`, or `id` in the
+			// short form), the same request `settleExtensionUiResponse` settles.
+			const answered = answeredUiRequestId(response);
+			if (!options.workerSecurityBridge && answered !== undefined && grantRequests.has(answered)) {
 				const sender = options.clientInfo?.connectionId();
 				const capable =
 					sender === undefined
 						? clientCapabilities?.includes("grant_select") === true
 						: options.clientInfo?.hasCapability?.(sender, "grant_select") === true;
-				if (grantRequests.get(requestId) !== sender || !capable) return;
+				// The sender hears the refusal, so its dialog does not vanish as if the answer had counted.
+				if (grantRequests.get(answered) !== sender || !capable) {
+					output(refusedExtensionUiResponse(response.id, "grant_answer_refused"));
+					return;
+				}
 			}
-			const reply = settleExtensionUiResponse(parsed as RpcExtensionUIResponse, {
+			const reply = settleExtensionUiResponse(response, {
 				questions,
 				dialogs: pendingExtensionRequests,
 				routed: routingSessionId !== undefined,
@@ -2184,7 +2226,7 @@ export function createRpcConnectionHandler(
 			return;
 		}
 		try {
-			const response = await handleCommand(command);
+			const response = await handleCommand(command, requestContext);
 			if (response) {
 				output(response);
 				await waitForRpcBackpressure();
@@ -2247,8 +2289,9 @@ export function createRpcConnectionHandler(
 	return {
 		ready,
 		async handleInputLine(line: string) {
+			const requestContext = rpcOwners.capture()?.context;
 			await ready;
-			await handleInputLine(line);
+			await handleInputLine(line, requestContext);
 		},
 		pendingPrompts() {
 			return [...promptCalls];
@@ -2264,6 +2307,7 @@ export function createRpcConnectionHandler(
 			relocation?.connectionDetached(connectionId);
 		},
 		async dispose(disposeOptions) {
+			rpcOwners.dispose();
 			await ready;
 			await dispose(disposeOptions);
 		},

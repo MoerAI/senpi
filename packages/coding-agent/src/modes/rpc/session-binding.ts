@@ -1,5 +1,8 @@
 import { bindToProviderScope, runWithProviderScope } from "@earendil-works/pi-ai/node/provider-scope";
+import { randomUUID } from "node:crypto";
+import { carriesExtensionOwner, type ExtensionOwner } from "./extension-owner.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import { recoveryCarrier, setSessionRecoveryEpoch } from "../../core/session-recovery-identity.ts";
 import {
 	createRpcConnectionHandler,
 	type RpcConnectionHandler,
@@ -35,12 +38,28 @@ export async function createRpcSessionBinding(
 ): Promise<RpcSessionBinding> {
 	if (entry.worker) return entry.worker.bind(sessionId, writer, requestClose, options);
 	if (!entry.runtime) throw new Error("Session runtime was not created");
+	let rpcBindingGeneration = randomUUID();
+	const rpcOwnersByConnection = new Map<string, ExtensionOwner>();
 	// An in-process session executes its tools ON the host loop, so the tool this
 	// session is inside is what the loop-lag watchdog blames for a stall. The record
 	// stream already carries that transition; no extra subscription is needed.
 	const toolSpans = createToolAttributionSpans(sessionId);
+	const lane = entry.acceptance;
+	if (lane) setSessionRecoveryEpoch(entry.runtime.session, lane.recoveryEpoch);
+	if (lane) writer.registerAcceptance(sessionId, lane);
+	// The manager whose journal the lane follows; a replacement's bootstrap moves the lane to the new one.
+	let journaled = lane ? entry.runtime.session.sessionManager : undefined;
 	const enqueueRecord = (record: object): void => {
 		toolSpans.observe(record);
+		// Accepted before the writer serializes or routes it; a replacement is the next incarnation's bootstrap.
+		if (lane && "type" in record && record.type === "session_replaced") {
+			journaled = entry.runtime?.session.sessionManager;
+			lane.bootstrap({ transcript: journaled?.beginTranscriptJournal() ?? [] });
+			if (entry.runtime) setSessionRecoveryEpoch(entry.runtime.session, lane.recoveryEpoch);
+		} else if (lane) {
+			lane.applyTranscript(journaled?.drainTranscript() ?? []);
+			lane.accept(record, recoveryCarrier(record));
+		}
 		writer.enqueue(sessionId, record);
 	};
 	// Attachments share one entry, so resolve the host from the live runtime. In
@@ -102,6 +121,16 @@ export async function createRpcSessionBinding(
 			sessionId,
 			shutdownHandler: bindToProviderScope(requestClose),
 			disposeRuntime: false,
+			rpcOwner: () => {
+				const owner = writer.connectionContext.owner;
+				const connection = writer.currentConnection();
+				if (owner && connection) rpcOwnersByConnection.set(connection, owner);
+				return owner;
+			},
+			retireRpcBinding: () => {
+				rpcBindingGeneration = randomUUID();
+				rpcOwnersByConnection.clear();
+			},
 			publishLoadedSurfacesChanged: (previous, digest) => {
 				if (entry.scope.state !== "closed") writer.publishLoadedSurfacesChanged(sessionId, previous, digest);
 			},
@@ -126,13 +155,19 @@ export async function createRpcSessionBinding(
 	return {
 		handle: (command) => {
 			if (writer.handleMcpForm(command)) return Promise.resolve();
-			return runWithProviderScope(entry.scope, () => handler.handleInputLine(JSON.stringify(command)));
+			const invoke = () => runWithProviderScope(entry.scope, () => handler.handleInputLine(JSON.stringify(command)));
+			return carriesExtensionOwner(command)
+				? writer.connectionContext.withBinding(rpcBindingGeneration, invoke)
+				: invoke();
 		},
 		cancelPendingExtensionUiRequests: () =>
 			runWithProviderScope(entry.scope, () => handler.cancelPendingExtensionUiRequests()),
 		pendingPrompts: () => handler.pendingPrompts(),
-		connectionDetached: (connectionId) =>
-			runWithProviderScope(entry.scope, () => handler.connectionDetached(connectionId)),
+		connectionDetached: (connectionId) => {
+			rpcOwnersByConnection.get(connectionId)?.retire();
+			rpcOwnersByConnection.delete(connectionId);
+			runWithProviderScope(entry.scope, () => handler.connectionDetached(connectionId));
+		},
 		dispose: () => {
 			toolSpans.closeAll();
 			return runWithProviderScope(entry.scope, () => handler.dispose());
