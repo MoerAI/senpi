@@ -540,7 +540,6 @@
       // pre-existing at origin main aceb1cc1d9: unused exports RESUME_EFFECT_ENTRY
       "packages/coding-agent/src/core/agent-session.ts": ["RESUME_EFFECT_ENTRY"],
       // pre-existing at origin main aceb1cc1d9: unused exports IMPORTED_GRANTS_FIELD
-      "packages/coding-agent/src/core/anthropic-oauth-migration.ts": ["IMPORTED_GRANTS_FIELD"],
       // pre-existing at origin main aceb1cc1d9: unused exports getProviderLoginHelp
       "packages/coding-agent/src/core/auth-guidance.ts": ["getProviderLoginHelp"],
       // pre-existing at origin main aceb1cc1d9: unused exports buildLogoutProviderInfos
