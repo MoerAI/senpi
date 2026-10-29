@@ -7,10 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 beforeEach(() => vi.resetModules());
 afterEach(() => vi.restoreAllMocks());
 
-function native(failure?: string) {
+function native(failure?: string, handle: number | bigint = 123) {
 	const getHandle = vi.fn(() => {
 		if (failure === "handle conversion") throw new Error("conversion unavailable");
-		return 123;
+		return handle;
 	});
 	const setHandle = vi.fn(() => {
 		if (failure === "handle information") throw new Error("handle information unavailable");
@@ -31,7 +31,7 @@ function native(failure?: string) {
 		if (failure === "builtin") throw new Error("FFI unavailable");
 		return ffi;
 	});
-	return { builtin, getHandle };
+	return { builtin, getHandle, setHandle };
 }
 
 // #4859: protect the real receipt boundary without ever invoking the CRT on a closed descriptor.
@@ -61,6 +61,35 @@ describe("private descriptor inherit clearing", () => {
 			expect({ cleared, handleCalls: runtime.getHandle.mock.calls.length }).toEqual({
 				cleared: false,
 				handleCalls: 1,
+			});
+		} finally {
+			closeSync(fd);
+		}
+	});
+
+	// #4859: INVALID_HANDLE_VALUE is truthy; never pass any sentinel to SetHandleInformation.
+	it.each([
+		{ label: "number minus one", handle: -1 },
+		{ label: "bigint minus one", handle: ~0n },
+		{
+			label: "bigint pointer-width all ones",
+			handle: process.arch === "ia32" || process.arch === "arm" ? 0xffff_ffffn : 0xffff_ffff_ffff_ffffn,
+		},
+		{
+			label: "number pointer-width all ones",
+			handle: Number(process.arch === "ia32" || process.arch === "arm" ? 0xffff_ffffn : 0xffff_ffff_ffff_ffffn),
+		},
+		{ label: "number zero", handle: 0 },
+		{ label: "bigint zero", handle: 0n },
+	])("invalid handle $label returns false without handle information", async ({ handle }) => {
+		const runtime = native(undefined, handle);
+		const { clearPrivateFdInherit } = await import("../../src/utils/private-fd-inherit.ts");
+		const fd = openSync(import.meta.filename, "r");
+		try {
+			const cleared = clearPrivateFdInherit(fd);
+			expect({ cleared, informationCalls: runtime.setHandle.mock.calls.length }).toEqual({
+				cleared: false,
+				informationCalls: 0,
 			});
 		} finally {
 			closeSync(fd);
