@@ -23,9 +23,13 @@ export function clearPrivateFdInherit(fd: number): boolean {
 					returns: ffi.FFIType.i32,
 				},
 			});
+			const invalidHandle = BigInt.asUintN(process.arch === "ia32" || process.arch === "arm" ? 32 : 64, -1n);
 			clearInherit = (descriptor) => {
 				const handle = crt.symbols._get_osfhandle(descriptor);
-				return Boolean(handle) && kernel.symbols.SetHandleInformation(handle, 1, 0) === 1;
+				if (!handle) return false;
+				const pointer = BigInt(handle);
+				if (pointer === -1n || pointer === invalidHandle || handle === Number(invalidHandle)) return false;
+				return kernel.symbols.SetHandleInformation(handle, 1, 0) === 1;
 			};
 		}
 		return clearInherit(fd);
