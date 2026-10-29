@@ -15,6 +15,17 @@ const QUOTED_NAME = /"([a-z][a-z0-9-]{0,63})"\s*:/g;
 /** A name maps to a descriptor, or to null when the launcher declared it without a usable one. */
 export type PrivateFdEntry = number | null;
 
+/** Injectable inspection dependencies; default calls retain the process's own runtime and descriptors. */
+interface PrivateFdInspection {
+	readonly platform: NodeJS.Platform;
+	readonly bun: string | undefined;
+	readonly proven: { readonly bun: string } | false;
+	readonly ipc: number | null | undefined;
+	readonly isSocket: (fd: number) => boolean;
+	readonly isPipe: (fd: number) => boolean;
+	readonly clearInherit: (fd: number) => boolean;
+}
+
 /** What the next engine hop receives: per-name entries, or the unparseable marker. */
 export type PrivateFdForward =
 	| { readonly kind: "entries"; readonly entries: ReadonlyMap<string, PrivateFdEntry> }
@@ -76,10 +87,12 @@ function inspectEntry(
 	fd: unknown,
 	shared: boolean,
 	ipc: number | null | undefined,
+	platform: NodeJS.Platform = process.platform,
+	socket: (fd: number) => boolean = isSocket,
 ): { readonly channel: number | null; readonly discard: number | null } {
 	if (typeof fd !== "number" || !Number.isSafeInteger(fd) || fd < 5 || fd > 64)
 		return { channel: null, discard: null };
-	if (process.platform === "win32" || ipc === undefined || fd === ipc || !isSocket(fd)) {
+	if (platform === "win32" || ipc === undefined || fd === ipc || !socket(fd)) {
 		return { channel: null, discard: null };
 	}
 	if (shared || fd > ADOPTABLE_MAX) return { channel: null, discard: fd };
@@ -90,7 +103,10 @@ function inspectEntry(
  * Per entry: a valid name is always declared; only a valid, open, unshared socket in range becomes a
  * channel. A table that does not parse declares the names it still quotes, all without a channel.
  */
-function parseTable(encoded: string): {
+export function parseTable(
+	encoded: string,
+	inspection: Partial<PrivateFdInspection> = {},
+): {
 	readonly entries: Map<string, PrivateFdEntry>;
 	readonly parsed: boolean;
 	readonly discard: ReadonlySet<number>;
@@ -112,11 +128,11 @@ function parseTable(encoded: string): {
 	const raw = Object.entries(value).filter(([name]) => NAME.test(name));
 	const counts = new Map<unknown, number>();
 	for (const [, fd] of raw) counts.set(fd, (counts.get(fd) ?? 0) + 1);
-	const ipc = ipcDescriptor();
+	const runtime = { platform: process.platform, ipc: ipcDescriptor(), isSocket, ...inspection };
 	const discard = new Set<number>();
 	for (const [name, fd] of raw) {
 		// A descriptor named twice belongs to neither name.
-		const entry = inspectEntry(fd, (counts.get(fd) ?? 0) > 1, ipc);
+		const entry = inspectEntry(fd, (counts.get(fd) ?? 0) > 1, runtime.ipc, runtime.platform, runtime.isSocket);
 		entries.set(name, entry.channel);
 		if (entry.discard !== null) discard.add(entry.discard);
 	}

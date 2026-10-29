@@ -3,6 +3,7 @@ import { closeSync } from "node:fs";
 import {
 	PRIVATE_FDS_FINAL_ENV,
 	type PrivateFdEntry,
+	type PrivateFdForward,
 	takePrivateDescriptors,
 	UNPARSEABLE_TABLE,
 } from "./private-fds.ts";
@@ -17,8 +18,8 @@ const TABLE_ENV = "SENPI_PRIVATE_FDS";
 export function preparePrivateFdSpawn<T extends SpawnOptions | SpawnSyncOptions>(
 	options: T,
 	hop: { readonly final?: boolean } = {},
+	forward: PrivateFdForward = takePrivateDescriptors(),
 ) {
-	const forward = takePrivateDescriptors();
 	const env = { ...(options.env ?? process.env) };
 	delete env[TABLE_ENV];
 	delete env[PRIVATE_FDS_FINAL_ENV];
