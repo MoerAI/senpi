@@ -118,13 +118,20 @@ async function startHarness(laterExtensions: readonly ExtensionFactory[] = [late
 	const root = makeRoot("mcp-instructions-last", cleanupTasks);
 	process.env[ENV_AGENT_DIR] = root.agentDir;
 	mkdirSync(root.agentDir, { recursive: true });
-	setConfig(root, { fx: stdioServer(["--tools", "1", "--instructions", "server instructions"]) });
+	setConfig(root, {
+		fx: {
+			...stdioServer(["--tools", "1", "--instructions", "server instructions"]),
+			connectTimeoutMs: 10_000,
+		},
+	});
 	const harness = await createHarness({
 		extensionFactories: [{ path: "<builtin:mcp>", factory: mcpExtension as ExtensionFactory }, ...laterExtensions],
 	});
 	harnesses.push(harness);
 	await harness.getExtensionRunner().emit({ type: "session_start", reason: "startup" });
-	await getMcpService().whenAttachSettled();
+	// Observe the exact deferred-connect completion, including a cold SDK import.
+	// A timeout is not readiness: composing then would test a still-connecting server.
+	expect(await getMcpService().whenAttachSettled(20_000)).toBe("settled");
 	// One settled turn publishes the server's instructions to the service for the turns after it.
 	harness.setResponses([fauxAssistantMessage("warm")]);
 	await harness.session.prompt("warm");
