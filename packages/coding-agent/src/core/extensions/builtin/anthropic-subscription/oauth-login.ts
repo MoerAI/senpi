@@ -79,7 +79,7 @@ export const ANTHROPIC_LOGIN_METHOD_PROMPT = {
 } as const;
 
 /** The paste prompt's title; its placeholder carries the manual sign-in URL ("Get a code instead"). */
-export const ANTHROPIC_PASTE_CODE_MESSAGE = "Paste the code Anthropic shows after you sign in:";
+const ANTHROPIC_PASTE_CODE_MESSAGE = "Paste the code Anthropic shows after you sign in:";
 
 /** Everything the CLI sign-in touches, injectable for tests; defaults are the turn path's own boundary. */
 export type ClaudeCliLoginDeps = {
