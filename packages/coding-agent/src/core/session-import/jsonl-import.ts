@@ -73,7 +73,12 @@ export const jsonlFiles: JsonlFiles = {
 	},
 };
 
-/** S21b writes this after its fenced hatch write, using that write's stamp, never a later observer's stamp. */
+/**
+ * S21b writes this after its fenced hatch write, using that write's stamp, never a later observer's stamp.
+ * Contract: S21b holds the importer's admission line across the hatch write AND this marker. An import admitted between
+ * them would see the write without its marker, adopt it in place as `other`, and then settle on the fast path, so the
+ * fork would never happen.
+ */
 export async function writeHatchMarker(path: string, written: HatchMarker): Promise<void> {
 	const temporary = `${path}.k9f2.${randomUUID()}`;
 	const file = await open(temporary, "wx", 0o600);

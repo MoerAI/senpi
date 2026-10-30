@@ -154,6 +154,36 @@ describe("JSONL import", () => {
 		expect(await importer.importFile(path)).toMatchObject({ outcome: "extended", imported: 1 });
 	});
 
+	it("refuses a projection record whose image size differs from its written stamp", async () => {
+		const f = await fixture();
+		const contents = text("s", [entry("a")]);
+		const path = await f.put("session", contents);
+		const importer = f.reopen();
+		await importer.importFile(path);
+		const before = await importer.getLedger(path);
+		const stamp = await jsonlFiles.stat(path);
+		await expect(importer.recordProjection(path, contents, { ...stamp, size: stamp.size + 1 })).rejects.toThrow(
+			"Projection size does not match its written image",
+		);
+		expect(await importer.getLedger(path)).toEqual(before);
+	});
+
+	it("adopts a same-size divergence whose marker matches the size but not the mtime", async () => {
+		const f = await fixture();
+		const path = await f.put("session", text("s", [entry("a", null, "x")]));
+		await f.reopen().importFile(path);
+		const imported = await stat(path);
+		await writeFile(path, text("s", [entry("a", null, "y")]));
+		const mtime = new Date(imported.mtimeMs + 5_000);
+		await utimes(path, mtime, mtime);
+		const edited = await jsonlFiles.stat(path);
+		expect(edited.size).toBe(imported.size);
+		await writeHatchMarker(path, { size: edited.size, mtimeMs: edited.mtimeMs - 1_000 });
+		expect(await f.reopen().importFile(path)).toMatchObject({ outcome: "adopted", sessionId: "s" });
+		expect(await f.reopen().getLedger(path)).toMatchObject({ writerKind: "other" });
+		expect(await f.store.scanDocuments("session-import/session/")).toHaveLength(1);
+	});
+
 	it.each(["a", "b"])("detects same-size same-tick edits to entry %s, including a non-HWM entry", async (edited) => {
 		const f = await fixture();
 		const path = await f.put("session", text("s", [entry("a"), entry("b", "a")]));
