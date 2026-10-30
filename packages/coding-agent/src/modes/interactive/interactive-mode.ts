@@ -142,7 +142,7 @@ import {
 } from "../../core/model-resolver.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import { formatProviderFailure } from "../../core/provider-failure.ts";
-import { failureAlreadyDescribed } from "./provider-error-description.ts";
+import { failureAlreadyDescribed, headNoticeShownElsewhere } from "./provider-error-description.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { usageLimitCause } from "../../core/retry-fallback/usage-limit.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
@@ -6249,7 +6249,10 @@ export class InteractiveMode {
 		};
 	}
 
-	private addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void {
+	private addMessageToChat(
+		message: AgentMessage,
+		options?: { populateHistory?: boolean; replayOwnsTurnNotice?: boolean },
+	): void {
 		if (message.role === "user") this.providerErrors?.newTurn();
 		switch (message.role) {
 			case "bashExecution": {
@@ -6358,6 +6361,8 @@ export class InteractiveMode {
 				);
 				assistantComponent.setExpanded(this.toolOutputExpanded);
 				assistantComponent.setProviderErrorOwned(isNetworkProviderMessage(message));
+				if (options?.replayOwnsTurnNotice === true) assistantComponent.setOwnsTurnNotice(true);
+				if (options?.replayOwnsTurnNotice === false) assistantComponent.setProviderErrorOwned(true);
 				this.chatContainer.addChild(assistantComponent);
 				break;
 			}
@@ -6377,7 +6382,9 @@ export class InteractiveMode {
 
 	private syncTrailingAssistantText(message: AssistantMessage): void {
 		if (!this.streamingComponent) return;
-		this.streamingComponent.setProviderErrorOwned(isNetworkProviderMessage(message));
+		this.streamingComponent.setProviderErrorOwned(
+			isNetworkProviderMessage(message) || headNoticeShownElsewhere(message),
+		);
 		const head = assistantStreamingHeadMessage(message);
 		// Single writer: while smooth streaming paces the head (no toolCall block),
 		// streamingReveal owns the streaming component. Overwriting the full head
@@ -6529,7 +6536,8 @@ export class InteractiveMode {
 			if (message.role === "assistant") {
 				replayAssistantTools(message, {
 					expanded: this.toolOutputExpanded,
-					addMessage: (part) => this.addMessageToChat(part),
+					addMessage: (part, ownsTurnNotice) =>
+						this.addMessageToChat(part, { replayOwnsTurnNotice: ownsTurnNotice }),
 					addChild: (component) => this.chatContainer.addChild(component),
 					createTool: (name, id, args) => this.createToolExecutionComponent(name, id, args),
 					pending: renderedPendingTools,
