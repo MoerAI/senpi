@@ -22,7 +22,8 @@ export function replayAssistantTools(message: AssistantMessage, host: ReplayTool
 	}
 	host.addMessage(
 		firstToolIndex < 0 ? message : { ...message, content: message.content.slice(0, firstToolIndex + 1) },
-		firstToolIndex < 0 || lastRunStart < 0,
+		// An aborted turn that ends in a tool call shows its notice on the tool card, as in live mode.
+		firstToolIndex < 0 || (lastRunStart < 0 && message.stopReason !== "aborted"),
 	);
 	if (firstToolIndex < 0) return;
 	let index = firstToolIndex;
