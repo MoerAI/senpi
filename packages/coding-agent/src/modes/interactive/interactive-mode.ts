@@ -142,7 +142,11 @@ import {
 } from "../../core/model-resolver.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.ts";
 import { formatProviderFailure } from "../../core/provider-failure.ts";
-import { failureAlreadyDescribed } from "./provider-error-description.ts";
+import {
+	failureAlreadyDescribed,
+	headNoticeShownElsewhere,
+	replayOwnsTurnNotice,
+} from "./provider-error-description.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { usageLimitCause } from "../../core/retry-fallback/usage-limit.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
@@ -6343,6 +6347,7 @@ export class InteractiveMode {
 				);
 				assistantComponent.setExpanded(this.toolOutputExpanded);
 				assistantComponent.setProviderErrorOwned(isNetworkProviderMessage(message));
+				assistantComponent.setOwnsTurnNotice(replayOwnsTurnNotice(message));
 				this.chatContainer.addChild(assistantComponent);
 				break;
 			}
@@ -6362,7 +6367,9 @@ export class InteractiveMode {
 
 	private syncTrailingAssistantText(message: AssistantMessage): void {
 		if (!this.streamingComponent) return;
-		this.streamingComponent.setProviderErrorOwned(isNetworkProviderMessage(message));
+		this.streamingComponent.setProviderErrorOwned(
+			isNetworkProviderMessage(message) || headNoticeShownElsewhere(message),
+		);
 		const head = assistantStreamingHeadMessage(message);
 		// Single writer: while smooth streaming paces the head (no toolCall block),
 		// streamingReveal owns the streaming component. Overwriting the full head
