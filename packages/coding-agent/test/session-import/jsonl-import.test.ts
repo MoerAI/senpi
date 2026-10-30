@@ -217,7 +217,9 @@ describe("JSONL import", () => {
 		await f.reopen().importFile(path);
 		f.reads.length = 0;
 		await f.reopen().importFile(path);
-		const hwm = (await f.reopen().getLedger(path))!.highWaterMark;
+		const ledger = await f.reopen().getLedger(path);
+		if (!ledger) throw new Error("Expected an imported file ledger");
+		const hwm = ledger.highWaterMark;
 		expect(f.reads).toEqual([{ path, start: hwm.offset, end: hwm.end }]);
 		expect(Buffer.from(await jsonlFiles.read(path, hwm.offset, hwm.end)).toString()).toBe(JSON.stringify(entries[1]));
 	});
@@ -289,10 +291,11 @@ describe("JSONL import", () => {
 			expect((error as Error).message).toBe("cut");
 			await f.reopen().importFile(path);
 			const ledger = await f.reopen().getLedger(path);
-			expect(ledger?.sessionId).not.toBe("s");
+			if (!ledger) throw new Error("Expected an imported file ledger after recovery");
+			expect(ledger.sessionId).not.toBe("s");
 			const sessions = await f.store.scanDocuments("session-import/session/");
 			expect(sessions).toHaveLength(2);
-			expect((await f.reopen().getSession(ledger!.sessionId))?.entries).toEqual([entry("b")]);
+			expect((await f.reopen().getSession(ledger.sessionId))?.entries).toEqual([entry("b")]);
 		},
 	);
 });
