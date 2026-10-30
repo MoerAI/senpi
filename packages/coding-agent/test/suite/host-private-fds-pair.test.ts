@@ -6,7 +6,7 @@ import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { parseTable } from "../../src/private-fds.ts";
+import { closeDiscarded, parseTable } from "../../src/private-fds.ts";
 import { preparePrivateFdSpawn } from "../../src/private-fd-spawn.ts";
 import { parseTable as oldParseTable } from "../fixtures/private-fd-old-parser.ts";
 
@@ -196,6 +196,27 @@ describe("Windows private descriptor pairs (#4859)", () => {
 		const runtime = { ...inspection(), ipc: 6, clearInherit: () => false };
 		const result = parseTable('{"a":[5,6]}', runtime);
 		expect([...result.discard]).toEqual([5]);
+	});
+
+	it("discard closes the descriptor it names", () => {
+		const close = vi.fn();
+		closeDiscarded(7, close);
+		expect(close.mock.calls).toEqual([[7]]);
+	});
+
+	it("discard treats an already-closed descriptor as nothing to close", () => {
+		const close = () => {
+			throw Object.assign(new Error("bad file descriptor"), { code: "EBADF" });
+		};
+		expect(() => closeDiscarded(7, close)).not.toThrow();
+	});
+
+	it.each(["EIO", "EINTR", undefined])("discard rethrows a %s close failure", (code) => {
+		const failure = Object.assign(new Error("close failed"), code === undefined ? {} : { code });
+		const close = () => {
+			throw failure;
+		};
+		expect(() => closeDiscarded(7, close)).toThrow(failure);
 	});
 
 	it("old-parser compatibility control refuses pairs on every Bun bump", () => {

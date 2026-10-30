@@ -204,9 +204,9 @@ export function parseTable(
 }
 
 /** A discarded Windows name may not be open at all (its clear failed for that reason): nothing to close then. */
-function closeDiscarded(fd: number): void {
+export function closeDiscarded(fd: number, close: (fd: number) => void = closeSync): void {
 	try {
-		closeSync(fd);
+		close(fd);
 	} catch (error) {
 		if (!(error instanceof Error && "code" in error && error.code === "EBADF")) throw error;
 	}
