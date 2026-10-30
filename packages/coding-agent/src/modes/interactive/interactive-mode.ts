@@ -2712,7 +2712,11 @@ export class InteractiveMode {
 				(diagnostic) => diagnostic.category === "skill-ignored",
 			);
 			if (ignoredSkillDiagnostics.length > 0) {
-				addDiagnosticNotice("Skills hidden by ignore files", ignoredSkillDiagnostics);
+				addDiagnosticNotice(
+					"Skills hidden by ignore files",
+					ignoredSkillDiagnostics,
+					"An ignore file in a skills folder lists these skill folders, so they did not load.",
+				);
 			}
 
 			const skillDiagnostics = skillsResult.diagnostics.filter(
