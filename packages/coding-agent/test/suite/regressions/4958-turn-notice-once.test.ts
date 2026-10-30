@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { AssistantMessageComponent } from "../../../src/modes/interactive/components/assistant-message.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../../../src/modes/interactive/theme/theme.ts";
+import { createPresentationHarness } from "../provider-error-presentation-harness.ts";
 
 // senpi#4958: a turn-ending notice (provider error or output-token limit) shows once per turn, in the
 // live transcript and when the session is replayed, whatever the turn's text and tool-call shape.
@@ -40,6 +41,8 @@ class ToolCardStub implements Component {
 		return ["TOOL-CARD"];
 	}
 	invalidate(): void {}
+	setExpanded(): void {}
+	updateResult(): void {}
 }
 
 function renderingContext(message: AssistantMessage) {
@@ -76,10 +79,15 @@ function liveRows(steps: readonly AssistantMessage[]): string {
 	return context.chatContainer.render(200).join("\n");
 }
 
+/** Replays the message through the real session replay path (`renderSessionItems` -> `replayAssistantTools`). */
 function replayedRows(message: AssistantMessage): string {
-	const context = renderingContext(message);
-	Reflect.apply(Reflect.get(InteractiveMode.prototype, "addMessageToChat"), context, [message]);
-	return context.chatContainer.render(200).join("\n");
+	const harness = createPresentationHarness();
+	// Tool cards need a live session to resolve names; the replay path under test only places them.
+	Reflect.set(harness.mode, "createToolExecutionComponent", () => new ToolCardStub());
+	Reflect.apply(Reflect.get(harness.mode, "renderSessionItems"), harness.mode, [[message]]);
+	const rows = harness.render(200);
+	harness.dispose();
+	return rows;
 }
 
 const occurrences = (haystack: string, needle: string): number => haystack.split(needle).length - 1;

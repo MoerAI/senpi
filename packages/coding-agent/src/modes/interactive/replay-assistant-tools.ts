@@ -5,7 +5,8 @@ import type { ToolExecutionComponent } from "./components/tool-execution.ts";
 
 type ReplayToolHost = {
 	readonly expanded: boolean;
-	readonly addMessage: (message: AssistantMessage) => void;
+	/** `ownsTurnNotice`: this part is the one that shows the turn's error, abort or length notice (senpi#4958). */
+	readonly addMessage: (message: AssistantMessage, ownsTurnNotice: boolean) => void;
 	readonly addChild: (component: Component) => void;
 	readonly createTool: (name: string, id: string, args: unknown) => ToolExecutionComponent;
 	readonly pending: Map<string, ToolExecutionComponent>;
@@ -14,8 +15,14 @@ type ReplayToolHost = {
 /** Keep text/thinking in its original position, matching the live head and trailing segments. */
 export function replayAssistantTools(message: AssistantMessage, host: ReplayToolHost): void {
 	const firstToolIndex = message.content.findIndex((block) => block.type === "toolCall");
+	// Every part keeps the turn's stopReason, so only the last part may show the turn-ending notice.
+	let lastRunStart = -1;
+	for (let i = Math.max(firstToolIndex, 0) + 1; i < message.content.length; i++) {
+		if (message.content[i].type !== "toolCall" && message.content[i - 1].type === "toolCall") lastRunStart = i;
+	}
 	host.addMessage(
 		firstToolIndex < 0 ? message : { ...message, content: message.content.slice(0, firstToolIndex + 1) },
+		firstToolIndex < 0 || lastRunStart < 0,
 	);
 	if (firstToolIndex < 0) return;
 	let index = firstToolIndex;
@@ -24,7 +31,7 @@ export function replayAssistantTools(message: AssistantMessage, host: ReplayTool
 		if (content.type !== "toolCall") {
 			const start = index;
 			while (index < message.content.length && message.content[index].type !== "toolCall") index++;
-			host.addMessage({ ...message, content: message.content.slice(start, index) });
+			host.addMessage({ ...message, content: message.content.slice(start, index) }, start === lastRunStart);
 			continue;
 		}
 		index++;

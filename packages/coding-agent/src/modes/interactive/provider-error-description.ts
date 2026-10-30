@@ -30,14 +30,6 @@ export function headNoticeShownElsewhere(message: AssistantMessage): boolean {
 }
 
 /**
- * A replayed turn is one component, so it shows its turn-ending notice itself: where live mode puts it on the
- * trailing run, and for an `error` stop always, because no turn-end line is replayed (senpi#4958).
- */
-export function replayOwnsTurnNotice(message: AssistantMessage): boolean {
-	return message.stopReason === "error" || endsInTextRun(message);
-}
-
-/**
  * Whether the turn's failed assistant row already shows classified text, so a turn-end failure line
  * would print the same failure a second time (senpi#4950). Only the text run that ends the message
  * shows the error (senpi#4954), so a message that ends in a tool call, or an aborted server fallback,
