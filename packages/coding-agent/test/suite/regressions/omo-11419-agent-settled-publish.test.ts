@@ -62,6 +62,7 @@ describe("oh-my-openagent#11419 agent_settled publishes without waiting on exten
 	});
 
 	async function startWithHeldSettledHandler(settings: Partial<Settings>) {
+		const order: string[] = [];
 		const handlerEntered = Promise.withResolvers<void>();
 		const held = new Promise<void>((resolve) => {
 			release = resolve;
@@ -71,10 +72,17 @@ describe("oh-my-openagent#11419 agent_settled publishes without waiting on exten
 			settings,
 			extensionFactories: [
 				(pi: ExtensionAPI) => {
+					pi.on("agent_end", () => {
+						order.push("extension:agent_end");
+					});
+					pi.on("agent_before_settle", () => {
+						order.push("extension:agent_before_settle");
+					});
 					// Holds the first settle only, the way one slow memory pass holds one turn end.
 					pi.on("agent_settled", async () => {
 						if (holding) return;
 						holding = true;
+						order.push("extension:agent_settled");
 						handlerEntered.resolve();
 						await held;
 					});
@@ -84,14 +92,15 @@ describe("oh-my-openagent#11419 agent_settled publishes without waiting on exten
 		harness = created;
 		const settled = Promise.withResolvers<void>();
 		created.session.subscribe((event) => {
+			if (event.type === "agent_end" || event.type === "agent_settled") order.push(`subscriber:${event.type}`);
 			if (event.type === "agent_settled") settled.resolve();
 		});
-		return { created, settled: settled.promise, handlerEntered: handlerEntered.promise };
+		return { created, settled: settled.promise, handlerEntered: handlerEntered.promise, order };
 	}
 
 	it("publishes agent_settled to subscribers while an agent_settled handler never returns", async () => {
 		// given an extension whose agent_settled handler never returns and no host cap that would stop waiting on it
-		const { created, settled, handlerEntered } = await startWithHeldSettledHandler({
+		const { created, settled, handlerEntered, order } = await startWithHeldSettledHandler({
 			extensionEventHandlerWarnMs: 0,
 			extensionEventHandlerTimeoutMs: 0,
 		});
@@ -102,10 +111,74 @@ describe("oh-my-openagent#11419 agent_settled publishes without waiting on exten
 		await withinRealTime(handlerEntered, "the agent_settled handler to start");
 
 		// then subscribers hear the settle while the handler is still running, and the reply is persisted
+		expect(order).toEqual([
+			"extension:agent_end",
+			"subscriber:agent_end",
+			"extension:agent_before_settle",
+			"subscriber:agent_settled",
+			"extension:agent_settled",
+		]);
 		await withinRealTime(settled, "agent_settled to reach subscribers");
 		expect(getAssistantTexts(created)).toEqual(["the reply"]);
 		expect(created.session.isStreaming).toBe(false);
 	}, 30_000);
+
+	it.each([false, true])(
+		"surfaces a rejecting settle handler after publication (yielded: %s)",
+		async (yielded) => {
+			// Subscribe before triggering: failures before yield reach extension_error listeners; late ones reach session.log.
+			const entered = Promise.withResolvers<void>();
+			const held = Promise.withResolvers<void>();
+			release = held.resolve;
+			let first = true;
+			const created = await createHarness({
+				settings: { extensionEventHandlerWarnMs: 0, extensionEventHandlerTimeoutMs: 0 },
+				extensionFactories: [
+					(pi: ExtensionAPI) => {
+						pi.on("agent_settled", async () => {
+							if (!first) return;
+							first = false;
+							entered.resolve();
+							await held.promise;
+							throw new Error("settle handler failed");
+						});
+					},
+				],
+			});
+			harness = created;
+			const settled = Promise.withResolvers<void>();
+			created.session.subscribe((event) => {
+				if (event.type === "agent_settled") settled.resolve();
+			});
+			const failure = Promise.withResolvers<ExtensionError>();
+			created.getExtensionRunner().onError((error) => failure.resolve(error));
+			const lateFailure = stallStage(created, "late_failure");
+			created.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("second")]);
+			const prompt = created.session.prompt("one");
+			await withinRealTime(entered.promise, "the rejecting handler to start");
+			await withinRealTime(settled.promise, "settlement before the handler rejects");
+			if (yielded) await withinRealTime(created.session.prompt("two"), "the next prompt");
+			held.resolve();
+			if (yielded) {
+				await withinRealTime(lateFailure, "the late settle failure");
+				expect(sessionLogEvents(created)).toContainEqual(
+					expect.objectContaining({
+						event: "extension_handler_stalled",
+						handlerEvent: "agent_settled",
+						stage: "late_failure",
+						error: "settle handler failed",
+					}),
+				);
+			} else {
+				expect(await withinRealTime(failure.promise, "the settle extension error")).toMatchObject({
+					event: "agent_settled",
+					error: "settle handler failed",
+				});
+			}
+			await withinRealTime(prompt, "the original prompt");
+		},
+		30_000,
+	);
 
 	it("still reports the stalled handler in session.log after the settle published", async () => {
 		// given an agent_settled handler that outlives the warning budget
