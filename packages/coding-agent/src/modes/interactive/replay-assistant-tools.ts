@@ -15,10 +15,12 @@ type ReplayToolHost = {
 /** Keep text/thinking in its original position, matching the live head and trailing segments. */
 export function replayAssistantTools(message: AssistantMessage, host: ReplayToolHost): void {
 	const firstToolIndex = message.content.findIndex((block) => block.type === "toolCall");
-	// Every part keeps the turn's stopReason, so only the last part may show the turn-ending notice.
+	// Every part keeps the turn's stopReason, so one part shows the turn-ending notice: the text run that closes
+	// the message after a tool call, as in live mode, else the head row (or, for an abort, the tool card).
 	let lastRunStart = -1;
-	for (let i = Math.max(firstToolIndex, 0) + 1; i < message.content.length; i++) {
-		if (message.content[i].type !== "toolCall" && message.content[i - 1].type === "toolCall") lastRunStart = i;
+	if (firstToolIndex >= 0 && message.content[message.content.length - 1].type !== "toolCall") {
+		lastRunStart = message.content.length - 1;
+		while (message.content[lastRunStart - 1].type !== "toolCall") lastRunStart--;
 	}
 	host.addMessage(
 		firstToolIndex < 0 ? message : { ...message, content: message.content.slice(0, firstToolIndex + 1) },

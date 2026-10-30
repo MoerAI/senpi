@@ -15,6 +15,7 @@ const LIMIT_TEXT =
 	'429 {"error":{"message":"You\'ve reached your monthly usage limit","type":"exceeded_current_quota_error"}}';
 const ERROR_ROW = "account usage limit has been reached";
 const LENGTH_ROW = "maximum output token limit";
+const ABORT_ROW = "Operation aborted";
 
 const text = (value: string): Block => ({ type: "text", text: value });
 const toolCall = (id: string): Block => ({ type: "toolCall", id, name: "bash", arguments: {} });
@@ -27,9 +28,10 @@ const SHAPES: ReadonlyArray<readonly [string, readonly Block[]]> = [
 	["text, tool call", [text("before"), toolCall("t1")]],
 	["multiple tool calls", [toolCall("t1"), toolCall("t2")]],
 	["text between multiple tool calls", [text("a"), toolCall("t1"), text("b"), toolCall("t2"), text("c")]],
+	["text between tool calls, ending in a tool call", [text("a"), toolCall("t1"), text("b"), toolCall("t2")]],
 ];
 
-function turn(blocks: readonly Block[], stopReason: "error" | "length" | "stop"): AssistantMessage {
+function turn(blocks: readonly Block[], stopReason: "aborted" | "error" | "length" | "stop"): AssistantMessage {
 	return fauxAssistantMessage([...blocks], {
 		stopReason,
 		...(stopReason === "error" ? { errorMessage: LIMIT_TEXT } : {}),
@@ -106,6 +108,16 @@ describe("a turn-ending notice shows once per turn (senpi#4958)", () => {
 	it.each(SHAPES)("%s: a replayed length stop shows its notice once", (_shape, blocks) => {
 		initTheme("dark");
 		expect(occurrences(replayedRows(turn(blocks, "length")), LENGTH_ROW)).toBe(1);
+	});
+
+	// Live mode gives an abort notice only to the text run that ends the message; a turn ending in a tool call shows it on the card.
+	it.each([
+		["tool call, text", [toolCall("t1"), text("after")], 1],
+		["text, tool call", [text("before"), toolCall("t1")], 0],
+		["text between tool calls, ending in a tool call", [text("a"), toolCall("t1"), text("b"), toolCall("t2")], 0],
+	] as const)("%s: a replayed aborted turn puts its notice only on a closing text run", (_shape, blocks, rows) => {
+		initTheme("dark");
+		expect(occurrences(replayedRows(turn(blocks, "aborted")), ABORT_ROW)).toBe(rows);
 	});
 
 	it("keeps one error row when the rows were created while the turn was still streaming", () => {
