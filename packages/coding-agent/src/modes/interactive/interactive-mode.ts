@@ -2708,8 +2708,22 @@ export class InteractiveMode {
 				);
 			}
 
+			const ignoredSkillDiagnostics = skillsResult.diagnostics.filter(
+				(diagnostic) => diagnostic.category === "skill-ignored",
+			);
+			if (ignoredSkillDiagnostics.length > 0) {
+				addDiagnosticNotice(
+					"Skills hidden by ignore files",
+					ignoredSkillDiagnostics,
+					"An ignore file in a skills folder lists these skill folders, so they did not load.",
+				);
+			}
+
 			const skillDiagnostics = skillsResult.diagnostics.filter(
-				(diagnostic) => diagnostic.category !== "size-limit" && diagnostic.category !== "skill-link-blocked",
+				(diagnostic) =>
+					diagnostic.category !== "size-limit" &&
+					diagnostic.category !== "skill-link-blocked" &&
+					diagnostic.category !== "skill-ignored",
 			);
 			if (skillDiagnostics.length > 0) {
 				addDiagnosticNotice("Skill conflicts", skillDiagnostics);
