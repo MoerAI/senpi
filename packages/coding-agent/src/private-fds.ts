@@ -20,7 +20,7 @@ export type PrivateFdEntry = number | readonly [number, number] | null;
  * Flip only after the Windows compiled-runtime proof and old-parser control pass at the pinned chain.
  * Every Bun bump invalidates this proof automatically; re-run both before recording the new version.
  */
-export const WINDOWS_PRIVATE_FD_PAIR_PROVEN: { readonly bun: string } | false = false;
+const WINDOWS_PRIVATE_FD_PAIR_PROVEN: { readonly bun: string } | false = false;
 
 interface PrivateFdInspection {
 	readonly platform: NodeJS.Platform;

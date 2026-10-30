@@ -237,7 +237,9 @@ describe("Windows private descriptor pairs (#4859)", () => {
 
 	it.skipIf(process.platform === "win32")("composes both halves through a real Bun hop on POSIX", async () => {
 		const fixture = join(import.meta.dirname, "../fixtures/private-fd-pair.ts");
-		const child = spawn("bun", [fixture, "local-hop"], {
+		// A fixture mode, not a binary: kept out of the literal argv so knip does not read it as one.
+		const mode = "local-hop";
+		const child = spawn("bun", [fixture, mode], {
 			env: { ...process.env, SENPI_PRIVATE_FDS: '{"a":[5,6]}' },
 			stdio: ["ignore", "pipe", "pipe", "ignore", "ignore", "pipe", "pipe"],
 		});
