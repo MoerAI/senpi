@@ -259,7 +259,10 @@ describe("unblock is narrow: only the account-level block is lifted (#4600)", ()
 });
 
 describe("the outcome is the merged state, and dead blocks are left alone (#4603 review)", () => {
-	test("lifting the sidecar block while auth.json still holds an auth block reports still blocked", async () => {
+	// senpi#4885: generic pool rotation reads only revision-matched sidecar health, so an auth block a ChatGPT
+	// slot carries in auth.json is not a block the selector honours. The merged state after lifting the sidecar
+	// block is therefore usable, and the stored field is left exactly as it was.
+	test("an auth block stored in auth.json does not keep a ChatGPT account blocked once the sidecar block lifts", async () => {
 		await storage.modify(PROVIDER, async () => ({
 			type: "oauth",
 			access: "access-secret",
@@ -283,10 +286,15 @@ describe("the outcome is the merged state, and dead blocks are left alone (#4603
 
 		await command().handler("unblock work", ctx);
 
-		expect(notices.at(-1)?.message).toContain("still blocked");
-		expect(notices.at(-1)?.message).toContain("rejected");
-		expect(notices.at(-1)?.message).not.toContain("The next turn may use it");
-		expect(await blocked("work")).toBe(true);
+		expect(notices.at(-1)?.message).toContain("The next turn may use it");
+		expect(notices.at(-1)?.message).not.toContain("still blocked");
+		expect(await blocked("work")).toBe(false);
+		expect((await repository.listSlots(PROVIDER, "stored")).work?.blockedUntil).toBeUndefined();
+		const stored = (storage.get(PROVIDER) as PooledCredential).accounts?.find((slot) => slot.name === "work") as
+			| { blockReason?: unknown; blockedUntil?: unknown }
+			| undefined;
+		expect(stored?.blockReason).toBe("auth_error");
+		expect(stored?.blockedUntil).toBe(FAR_FUTURE);
 	});
 
 	test("an expired block is not rewritten and reports nothing to lift", async () => {
