@@ -45,6 +45,7 @@ it("retains re-admitted delivery custody through settled handlers and closes it 
 		expect(session.workObligations.active.find((record) => record.ticketId === ticket)?.state).toBe("consumed");
 		held.resolve();
 		await settlesWithin(idle.promise, "agent_idle");
+		expect(fixture.h.eventsOfType("agent_settled")).toHaveLength(1);
 		expect(session.workObligations.active.some((record) => record.ticketId === ticket)).toBe(false);
 		expect(session.lifecycle.state).toBe("done");
 		expect(fixture.h.faux.state.callCount).toBe(1);
