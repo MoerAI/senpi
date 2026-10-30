@@ -179,7 +179,7 @@ import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool, type ToolStatus } from "../../utils/tools-manager.ts";
 import { checkForNewPiVersion, getReleaseChangelogUrl } from "../../utils/version-check.ts";
-import { abortedMessageForRendering } from "./aborted-error-label.ts";
+import { abortedMessageForRendering, unrunToolCallText } from "./aborted-error-label.ts";
 import { createChatViewport } from "./chat-viewport.ts";
 import {
 	type CompactionQueuedMessage,
@@ -5532,18 +5532,15 @@ export class InteractiveMode {
 						this.providerErrors?.clear();
 						this.clearStatusIndicator("retry");
 					}
-					let errorMessage = renderedMessage.errorMessage;
 					this.syncTrailingAssistantText(renderedMessage);
 					this.assistantTextSegments.clear();
 					this.addContinuityNotice(renderedMessage);
 
 					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
-						if (!errorMessage) {
-							errorMessage = this.streamingMessage.errorMessage || "Error";
-						}
+						const text = unrunToolCallText(renderedMessage);
 						for (const [, component] of this.pendingTools.entries()) {
 							component.updateResult({
-								content: [{ type: "text", text: errorMessage }],
+								content: [{ type: "text", text }],
 								isError: true,
 							});
 						}
