@@ -14,7 +14,13 @@ import { stripAnsi } from "../../utils/ansi.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { DiscoveredResourceEntry } from "../discovered-resource-scope.ts";
 import type { DynamicSystemPromptPart } from "../dynamic-prompt/build.ts";
-import { createEventBus, type EventBus, EXTENSION_RPC_EVENT_CHANNEL, type ExtensionRpcEvent } from "../event-bus.ts";
+import {
+	createEventBus,
+	type EventBus,
+	EXTENSION_RPC_EVENT_CHANNEL,
+	EXTENSION_RPC_SUBSCRIBED_CHANNEL,
+	type ExtensionRpcEvent,
+} from "../event-bus.ts";
 import { type InputOrigin, inputAttributionOf, inputOriginOf } from "../input-origin.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import { inheritMcpMrtrPresentation } from "../mcp-mrtr-presentations.ts";
@@ -392,6 +398,22 @@ export async function emitSessionShutdownEvent(
 
 function snapshotEventHandlers(extensions: Extension[], event: ExtensionEvent["type"]) {
 	return extensions.map((ext) => ({ ext, handlers: ext.handlers.get(event)?.slice() ?? [] }));
+}
+
+/** `before_agent_start` dispatch order: every handler in load order, then the `runLast` ones (senpi#4448). */
+function beforeAgentStartDispatchOrder(extensions: Extension[]) {
+	const snapshot = snapshotEventHandlers(extensions, "before_agent_start");
+	const runsLast = (ext: Extension, handler: EventHandlerFn) => ext.runLastHandlers?.has(handler) === true;
+	const isBuiltin = (ext: Extension) => ext.path.startsWith("<builtin:");
+	const phase = (keep: (ext: Extension, handler: EventHandlerFn) => boolean) =>
+		snapshot.map(({ ext, handlers }) => ({ ext, handlers: handlers.filter((handler) => keep(ext, handler)) }));
+	// Builtin run-last handlers close the phase order, so MCP instructions stay last even after another
+	// extension's run-last handler (senpi#4448).
+	return [
+		...phase((ext, handler) => !runsLast(ext, handler)),
+		...phase((ext, handler) => runsLast(ext, handler) && !isBuiltin(ext)),
+		...phase((ext, handler) => runsLast(ext, handler) && isBuiltin(ext)),
+	];
 }
 
 type EventHandlerFn = NonNullable<ReturnType<Extension["handlers"]["get"]>>[number];
@@ -1026,10 +1048,13 @@ export class ExtensionRunner {
 		);
 	}
 
+	/** Subscribes an RPC client to extension events, then tells extensions a client just subscribed. */
 	onRpcEvent(handler: (event: ExtensionRpcEvent) => void): () => void {
-		return this.eventBus.on(EXTENSION_RPC_EVENT_CHANNEL, (data) => {
+		const off = this.eventBus.on(EXTENSION_RPC_EVENT_CHANNEL, (data) => {
 			handler(data as ExtensionRpcEvent);
 		});
+		this.eventBus.emit(EXTENSION_RPC_SUBSCRIBED_CHANNEL, undefined);
+		return off;
 	}
 
 	/**
@@ -2471,7 +2496,7 @@ export class ExtensionRunner {
 		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
 		let systemPromptModified = false;
 
-		dispatch: for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_agent_start")) {
+		dispatch: for (const { ext, handlers } of beforeAgentStartDispatchOrder(this.extensions)) {
 			for (const handler of handlers) {
 				if (options.signal?.aborted === true) break dispatch;
 				// A preview reaches only handlers that declared themselves side-effect free (senpi#2115).
